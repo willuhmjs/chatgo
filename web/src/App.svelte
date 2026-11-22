@@ -249,7 +249,7 @@
           <Admin />
         {:else}
           <div class="flex h-full items-center justify-center text-sm text-[var(--muted)]">
-            Not found — <a class="ml-1 text-[var(--indigo)] hover:underline" href="/">go home</a>
+            Not found — <a class="ml-1 text-[var(--acc)] hover:underline" href="/">go home</a>
           </div>
         {/if}
       </main>

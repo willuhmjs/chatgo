@@ -332,7 +332,7 @@
   const displayName = $derived(user?.name || user?.email || 'Signed out');
 
   const rowFocus =
-    'focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]';
+    'focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]';
 </script>
 
 <!-- row snippet (shared by pinned / folder / day sections) -->
@@ -349,7 +349,7 @@
           bind:this={renameEl}
           bind:value={renameValue}
           class="h-9 w-full rounded-lg border-0 px-2.5 text-sm text-[var(--text)] outline-none"
-          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent)"
+          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--acc) 55%, transparent)"
           onkeydown={(e) => {
             if (e.key === 'Escape') {
               e.stopPropagation();
@@ -489,7 +489,7 @@
           role="searchbox"
           aria-label="Search chats"
           placeholder="Search chats"
-          class="h-9 w-full appearance-none rounded-lg border-0 bg-transparent pr-2.5 pl-9 text-sm text-[var(--text)] outline-none transition-colors placeholder:text-[var(--faint)] hover:bg-[var(--fill-hover)] focus-visible:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+          class="h-9 w-full appearance-none rounded-lg border-0 bg-transparent pr-2.5 pl-9 text-sm text-[var(--text)] outline-none transition-colors placeholder:text-[var(--faint)] hover:bg-[var(--fill-hover)] focus-visible:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]"
           bind:value={query}
         />
       </div>
@@ -521,7 +521,7 @@
       {#each tags as t (t.id)}
         <button
           type="button"
-          class="tagchip rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+          class="tagchip rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]"
           style="--chip-h:{hueFrom(t.name)}"
           aria-pressed={activeTag === t.id}
           onclick={() => onTagClick(t.id)}
@@ -622,7 +622,7 @@
               e.preventDefault();
               go(c.id);
             }}
-            class="flex size-9 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] {activeId === c.id
+            class="flex size-9 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)] {activeId === c.id
               ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
               : ''}"
           >
@@ -658,11 +658,12 @@
           </Tooltip>
         </div>
       {:else}
-        <div class="w-full [&>div]:w-full">
         <Dropdown
           label="Account menu"
           align="start"
-          buttonClass="flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+          full
+          menuClass="w-64"
+          buttonClass="flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]"
         >
           <Avatar name={displayName} src={user.avatar_url ?? ''} size={28} />
           <span class="min-w-0 flex-1">
@@ -702,7 +703,6 @@
             </MenuItem>
           {/snippet}
         </Dropdown>
-        </div>
       {/if}
     {:else}
       <Button variant="outline" size="sm" full onclick={() => navigate('/login')}>Sign in</Button>
@@ -725,7 +725,7 @@
           bind:value={folderRenameValue}
           autofocus
           class="h-9 w-full rounded-lg border-0 px-2.5 text-sm text-[var(--text)] outline-none"
-          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent)"
+          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--acc) 55%, transparent)"
           onkeydown={(e) => {
             if (e.key === 'Escape') {
               e.stopPropagation();
@@ -791,14 +791,14 @@
     <label
       class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors hover:bg-[var(--fill-hover)]"
     >
-      <input type="radio" name="move-folder" value="" bind:group={moveChoice} class="accent-[var(--indigo)]" />
+      <input type="radio" name="move-folder" value="" bind:group={moveChoice} class="accent-[var(--acc)]" />
       <MessageSquare class="size-4 text-[var(--muted)]" /> No folder
     </label>
     {#each folders as f (f.id)}
       <label
         class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors hover:bg-[var(--fill-hover)]"
       >
-        <input type="radio" name="move-folder" value={f.id} bind:group={moveChoice} class="accent-[var(--indigo)]" />
+        <input type="radio" name="move-folder" value={f.id} bind:group={moveChoice} class="accent-[var(--acc)]" />
         <FolderIcon class="size-4 text-[var(--muted)]" /> {f.name}
       </label>
     {/each}

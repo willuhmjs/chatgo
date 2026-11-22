@@ -19,7 +19,7 @@
   aria-checked={checked}
   aria-label={label || undefined}
   {disabled}
-  class="flex items-center gap-2.5 rounded-lg py-1 pr-1 text-left focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] disabled:opacity-50"
+  class="flex items-center gap-2.5 rounded-lg py-1 pr-1 text-left focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)] disabled:opacity-50"
   onclick={() => {
     checked = !checked;
     onchange?.(checked);
@@ -47,8 +47,8 @@
     transition: background-color 0.15s ease;
   }
   .track[data-on='true'] {
-    background: var(--acc, var(--indigo));
-    border-color: var(--acc, var(--indigo));
+    background: var(--acc);
+    border-color: var(--acc);
   }
   .thumb {
     width: 1rem;

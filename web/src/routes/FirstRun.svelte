@@ -176,7 +176,7 @@
     cursor: default;
   }
   .primary:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 2px;
   }
 </style>

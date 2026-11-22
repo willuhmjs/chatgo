@@ -26,7 +26,7 @@
 </div>
 
 <style>
-  /* §1: filled panel select, quiet, indigo-soft focus ring */
+  /* §1: filled panel select, quiet, accent-soft focus ring */
   .field {
     width: 100%;
     height: 2.25rem;
@@ -40,7 +40,7 @@
     transition: box-shadow 0.12s ease;
   }
   .field:focus-visible {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 55%, transparent);
   }
   .field:disabled {
     opacity: 0.55;

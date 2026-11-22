@@ -8,6 +8,8 @@
     align = 'end',
     disabled = false,
     buttonClass = '',
+    full = false,
+    menuClass = '',
   }: {
     /** Trigger content (usually an icon). */
     children: Snippet;
@@ -18,6 +20,14 @@
     align?: 'start' | 'end';
     disabled?: boolean;
     buttonClass?: string;
+    /** Stretch the trigger to fill its container (e.g. the sidebar's account
+        row). Prefer this over wrapping the Dropdown in a `[&>div]:w-full`
+        parent — that selector also hits the fixed-position menu panel (a
+        sibling div in this component's template) and stretches it to the
+        viewport width. */
+    full?: boolean;
+    /** Extra classes for the floating panel (e.g. w-64 for the user menu). */
+    menuClass?: string;
   } = $props();
 
   let open = $state(false);
@@ -74,7 +84,7 @@
   }
 </script>
 
-<div bind:this={root} class="relative inline-flex">
+<div bind:this={root} class="relative inline-flex {full ? 'w-full' : ''}">
   <button
     bind:this={trigger}
     type="button"
@@ -83,7 +93,7 @@
     aria-label={label}
     {disabled}
     class={buttonClass ||
-      'inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]'}
+      'inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]'}
     onclick={() => (open ? close() : openMenu())}
   >
     {@render children()}
@@ -91,12 +101,14 @@
 </div>
 
 {#if open && items}
-  <!-- §7: --panel, 14px radius, shadow-menu, .pop entrance -->
+  <!-- §7: --panel, 14px radius, shadow-menu, .pop entrance. Widths: content-
+       sized by default (fixed-position shrink-to-fit), capped so long labels
+       can never span the viewport; callers pin an exact width via menuClass. -->
   <div
     bind:this={menuEl}
     role="menu"
     aria-label={label}
-    class="pop fixed z-[60] min-w-44 rounded-[14px] px-1 py-1.5"
+    class="pop fixed z-[60] min-w-44 max-w-[min(20rem,calc(100vw-1rem))] rounded-[14px] px-1 py-1.5 {menuClass}"
     style="background:var(--panel); box-shadow:var(--shadow-menu); {menuStyle(pos)}"
   >
     {@render items({ close })}

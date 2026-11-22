@@ -223,7 +223,7 @@
 <Dropdown
   label="Chat actions"
   align="end"
-  buttonClass="relative inline-flex size-7 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+  buttonClass="relative inline-flex size-7 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]"
 >
   <MoreHorizontal size={15} />
   {#if shared}

@@ -6,7 +6,14 @@
 // for two unrelated keys and App.svelte's onboarding probe is admin-only,
 // so neither can hand us the value. Idempotent; failures allow a retry.
 import { getMeSettings, setMeSettings } from './api';
-import { ACCENTS, readStoredAccent, syncAccentFromServer } from './accent.svelte.js';
+import {
+  ACCENTS,
+  isAccentMigrationPending,
+  markAccentMigrated,
+  readStoredAccent,
+  setAccent,
+  syncAccentFromServer,
+} from './accent.svelte.js';
 
 const SERVER_KEY = 'accent';
 
@@ -41,9 +48,20 @@ export function bootAccent() {
         return;
       }
       // Account has no accent (new or older server): if this device carries an
-      // explicit local choice, adopt it and push it up once.
+      // explicit local choice, adopt it and push it up once. Exception: the
+      // OLD default 'violet' with no migration flag is treated as implicit —
+      // v2 shipped violet as the default AND the pre-highlighted swatch, so a
+      // stored violet on a never-configured account is more likely "never
+      // chose" than "chose violet". Flip to blue, persist, push up, and mark
+      // the flag (see isAccentMigrationPending for the honest trade-off).
       const local = readStoredAccent();
-      if (local) void setMeSettings({ [SERVER_KEY]: local }).catch(() => {});
+      if (!local) return; // nothing stored — first-time visitor, already blue
+      if (isAccentMigrationPending()) {
+        markAccentMigrated();
+        setAccent('blue'); // persists locally + write-through to the server
+        return;
+      }
+      void setMeSettings({ [SERVER_KEY]: local }).catch(() => {});
     })
     .catch(() => {
       started = false; // offline / older server — local choice stands, retry later

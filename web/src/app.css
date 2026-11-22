@@ -2,8 +2,9 @@
 
 /* Design tokens — docs/DESIGN-POLISH.md §1 (ChatGPT-fidelity, dark = the product).
    Monochrome, quiet, spacious. --accent is WHITE (primary buttons) with --accent-fg
-   as its label; indigo survives only as --accent-soft (focus rings, active nav,
-   links) via the raw --indigo. */
+   as its label; the "quiet signal" roles (focus rings, active nav, menu hovers,
+   links) use --accent-soft, now derived from the active --acc so nothing reads
+   as leftover purple when the default is blue. */
 :root {
   /* system-first per docs/DESIGN-REF.md §4: SF/Segoe render before Inter,
      which is used only when locally installed (never fetched over the wire) */
@@ -23,8 +24,13 @@
   --faint: #9b9b9b;
   --accent: #0d0d0d;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(99, 102, 241, 0.18);
-  --indigo: #6366f1;
+  /* "quiet signal" soft fill (focus rings, menu hovers) — follows the active
+     accent via --acc; the old fixed indigo (rgba(99,102,241,.18)) read as
+     leftover purple once blue became the default. */
+  --accent-soft: color-mix(in srgb, var(--acc) 18%, transparent);
+  /* @deprecated alias — some views still reference --indigo; it now simply
+     tracks the accent so nothing renders off-palette violet. */
+  --indigo: var(--acc);
   --danger: #ef4444;
   --ok: #10a37f;
   --shadow-menu: 0 8px 28px rgba(0, 0, 0, 0.14);
@@ -45,8 +51,8 @@ html.dark {
   --faint: #6e6e6e;
   --accent: #ffffff;
   --accent-fg: #0d0d0d;
-  --accent-soft: rgba(99, 102, 241, 0.18);
-  --indigo: #6366f1;
+  --accent-soft: color-mix(in srgb, var(--acc) 18%, transparent);
+  --indigo: var(--acc);
   --danger: #ef4444;
   --ok: #10a37f;
   --shadow-menu: 0 8px 28px rgba(0, 0, 0, 0.45);

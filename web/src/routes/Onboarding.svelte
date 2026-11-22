@@ -425,7 +425,7 @@
           </p>
           <div class="mt-5 rounded-xl px-4 py-3.5 text-sm" style="background:var(--panel-2)">
             Automating something? Mint a one-time <code class="font-mono text-[12.5px]">ck_…</code> API token in
-            <a href="/settings" class="font-medium underline underline-offset-2" style="color:var(--indigo)">Settings</a>
+            <a href="/settings" class="font-medium underline underline-offset-2" style="color:var(--acc)">Settings</a>
             — it talks to the OpenAI-compatible <span class="font-mono text-[12.5px]">/v1/chat/completions</span> endpoint.
           </div>
         {/if}
@@ -555,7 +555,7 @@
   }
   .primary:focus-visible,
   .ghost:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 2px;
   }
 </style>

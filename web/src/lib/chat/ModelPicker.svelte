@@ -191,7 +191,7 @@
                       toggleDefault(m);
                     }}
                   >
-                    <Star size={13} fill={isDef ? 'currentColor' : 'none'} style={isDef ? 'color:var(--acc, var(--indigo))' : ''} />
+                    <Star size={13} fill={isDef ? 'currentColor' : 'none'} style={isDef ? 'color:var(--acc)' : ''} />
                   </button>
                   <button
                     type="button"
@@ -359,7 +359,7 @@
     color: var(--text);
   }
   .act:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 1px;
   }
   .foot {
@@ -371,7 +371,7 @@
     background: transparent;
     text-align: left;
     font-size: 0.75rem;
-    color: var(--indigo, #818cf8);
+    color: var(--acc);
     cursor: pointer;
     transition: background 120ms ease;
   }

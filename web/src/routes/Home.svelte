@@ -329,7 +329,7 @@
                 label="Choose a model"
                 align="start"
                 disabled={modelsLoading || models.length === 0}
-                buttonClass="flex h-8 min-w-0 max-w-56 items-center gap-1 rounded-full px-2.5 text-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] disabled:pointer-events-none disabled:opacity-50"
+                buttonClass="flex h-8 min-w-0 max-w-56 items-center gap-1 rounded-full px-2.5 text-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)] disabled:pointer-events-none disabled:opacity-50"
               >
                 <span class="truncate">{modelsLoading ? 'Loading models…' : model ? model.display || model.model_id : 'no models configured'}</span>
                 <ChevronDown class="size-3.5 shrink-0" />
@@ -362,7 +362,7 @@
                   {#if pickerList.hiddenByHeuristic > 0}
                     <button
                       type="button"
-                      class="mt-0.5 flex h-8 w-full items-center rounded-lg px-2.5 text-left text-xs text-[var(--indigo)] transition-colors hover:bg-[var(--fill-hover)]"
+                      class="mt-0.5 flex h-8 w-full items-center rounded-lg px-2.5 text-left text-xs text-[var(--acc)] transition-colors hover:bg-[var(--fill-hover)]"
                       onclick={() => (showAllModels = true)}
                     >
                       Show {pickerList.hiddenByHeuristic} other model{pickerList.hiddenByHeuristic === 1 ? '' : 's'}
@@ -458,7 +458,7 @@
     border-radius: 999px;
   }
   .send:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 2px;
   }
   .sug {
@@ -478,7 +478,7 @@
     color: var(--text);
   }
   .sug:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 2px;
   }
 </style>
