@@ -10,6 +10,7 @@
 //   * pending-user queue helper
 //   * capability flags for endpoints absent from the frozen contract surface
 import * as api from '$lib/api';
+import { ApiError } from '$lib/api';
 
 export { ApiError } from '$lib/api';
 export {
@@ -36,7 +37,7 @@ export {
 } from '$lib/api';
 
 export type { ApiToken, AuthConfig, ModelEntry, Provider, User } from '$lib/api';
-import type { AuthConfig, User } from '$lib/api';
+import type { AuthConfig, Provider, User } from '$lib/api';
 export type Registration = AuthConfig['registration'];
 
 // ---------- system settings (admin) ----------
@@ -68,10 +69,72 @@ export async function listPendingUsers(): Promise<User[]> {
   return (await api.listUsers()).filter((u) => u.role === 'pending');
 }
 
-// ---------- capability flags ----------
+// ---------- provider model management (admin) ----------
+//
+// api.ts is scaffold-frozen and its req() is private, so these typed calls
+// live here (the admin module owns additions). Same envelope as the rest of
+// the API: errors are {error}, success is JSON — hence a faithful mirror of
+// api.ts's req/errorFrom instead of hand-rolled per-component fetches.
 
-// CONTRACT-DEVIATION: the contract surface has no PATCH/PUT /api/models/…
-// endpoint, so display-name rename and per-model enable toggles render
-// read-only in the providers tab. Flip this to true (no other change needed)
-// once the backend ships model edits.
-export const CAN_EDIT_MODELS = false;
+async function adminReq<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let msg = res.statusText || `HTTP ${res.status}`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j.error) msg = j.error;
+    } catch {
+      /* body wasn't JSON */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** Provider row as returned by GET/POST/PUT /api/providers — the admin list
+ *  adds a key-status dot and cached-model tallies on top of api.ts's type. */
+export type ProviderAdmin = Provider & {
+  has_key?: boolean;
+  model_count: number;
+  models_enabled: number;
+};
+
+/** One cached model row of a provider, INCLUDING admin-disabled ones
+ *  (GET /api/models stays the enabled-only chat surface). */
+export interface ProviderModel {
+  model_id: string;
+  display: string;
+  context_len: number;
+  enabled: boolean;
+}
+
+export interface ModelToggle {
+  model_id: string;
+  enabled: boolean;
+}
+
+export const listProvidersAdmin = () => adminReq<ProviderAdmin[]>('GET', '/api/providers');
+
+/** Full cached model list of one provider (admin; incl. disabled rows). */
+export const listProviderModels = (id: string) =>
+  adminReq<ProviderModel[]>('GET', `/api/providers/${id}/models`);
+
+/** Bulk enable/disable — one call applies the whole batch atomically and
+ *  answers the refreshed full list (server truth for optimistic UIs). Any
+ *  unknown model_id in the batch → 404 ApiError, nothing applied. */
+export const setProviderModels = (id: string, toggles: ModelToggle[]) =>
+  adminReq<ProviderModel[]>('PUT', `/api/providers/${id}/models`, toggles);
+
+/** syncProvider with the richer envelope: count = cached rows after sync,
+ *  added = models new to the cache (admin enable choices are preserved). */
+export interface SyncResult {
+  count: number;
+  added: number;
+}
+export const syncProviderAdmin = (id: string) =>
+  adminReq<SyncResult>('POST', `/api/providers/${id}/sync`);

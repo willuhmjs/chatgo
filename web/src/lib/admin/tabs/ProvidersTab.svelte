@@ -2,7 +2,7 @@
   import { ChevronDown, ChevronRight, Inbox, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
-  import type { ModelEntry, Provider } from '$lib/admin/api-admin';
+  import type { ModelToggle, ProviderAdmin, ProviderModel } from '$lib/admin/api-admin';
   import { ctxLabel, errMsg } from '$lib/admin/format';
   import Badge from '$lib/admin/ui/Badge.svelte';
   import Confirm from '$lib/admin/ui/Confirm.svelte';
@@ -12,25 +12,30 @@
   import Toggle from '$lib/admin/ui/Toggle.svelte';
   import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, panel, panel2Style, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
-  type ModelRow = ModelEntry & { enabled?: boolean };
-
-  let providers = $state<Provider[]>([]);
-  let models = $state<ModelRow[]>([]);
+  let providers = $state<ProviderAdmin[]>([]);
   let loading = $state(true);
   let loadError = $state('');
   let syncing = $state<Record<string, boolean>>({});
   let syncingAll = $state(false);
   let expanded = $state(new Set<string>());
 
+  // Per-provider model editor: lazy-loaded on first expand (includes
+  // admin-disabled rows, which never appear in GET /api/models).
+  let models = $state<Record<string, ProviderModel[]>>({});
+  let modelsBusy = $state<Record<string, boolean>>({});
+  let modelsError = $state<Record<string, string>>({});
+
   let modalOpen = $state(false);
-  let editing = $state<Provider | null>(null);
-  let deleteTarget = $state<Provider | null>(null);
+  let editing = $state<ProviderAdmin | null>(null);
+  let deleteTarget = $state<ProviderAdmin | null>(null);
   let confirmDelete = $state(false);
+
+  const totalModels = $derived(providers.reduce((n, p) => n + p.model_count, 0));
 
   const deleteMessage = $derived.by(() => {
     const t = deleteTarget;
     if (!t) return '';
-    const n = models.filter((m) => m.provider_id === t.id).length;
+    const n = t.model_count;
     return `Delete ${t.name} and its ${n} cached model${n === 1 ? '' : 's'}? Chats pinned to it will stop working. This cannot be undone.`;
   });
 
@@ -38,9 +43,7 @@
     loading = providers.length === 0;
     loadError = '';
     try {
-      const [ps, ms] = await Promise.all([admin.listProviders(), admin.listModels()]);
-      providers = ps;
-      models = ms as ModelRow[];
+      providers = await admin.listProvidersAdmin();
     } catch (e) {
       loadError = errMsg(e, 'Could not load providers');
     } finally {
@@ -49,37 +52,57 @@
   }
   void load();
 
-  function openCreate() {
-    editing = null;
-    modalOpen = true;
-  }
-  function openEdit(p: Provider) {
-    editing = p;
-    modalOpen = true;
-  }
-
-  function toggleExpand(id: string) {
-    if (expanded.has(id)) expanded.delete(id);
-    else expanded.add(id);
-  }
-
-  async function toggleEnabled(p: Provider) {
-    const prev = p.enabled;
-    p.enabled = !prev; // optimistic; rolled back on failure
+  async function loadModels(p: ProviderAdmin) {
+    modelsBusy[p.id] = true;
+    modelsError[p.id] = '';
     try {
-      await admin.updateProvider(p.id, { enabled: p.enabled });
+      models[p.id] = await admin.listProviderModels(p.id);
     } catch (e) {
-      p.enabled = prev;
-      push(errMsg(e, 'Could not update provider'), 'error');
+      modelsError[p.id] = errMsg(e, 'Could not load models');
+    } finally {
+      modelsBusy[p.id] = false;
     }
   }
 
-  async function syncOne(p: Provider) {
+  function toggleExpand(p: ProviderAdmin) {
+    if (expanded.has(p.id)) {
+      expanded.delete(p.id);
+      return;
+    }
+    expanded.add(p.id);
+    if (!models[p.id]) void loadModels(p);
+  }
+
+  /** Bulk write with optimistic rows + revert-on-error; the PUT answers the
+   *  server-truth list so counts and flags re-sync in one step. */
+  async function applyToggles(p: ProviderAdmin, toggles: ModelToggle[]) {
+    const prev = models[p.id];
+    const next = new Map(toggles.map((t) => [t.model_id, t.enabled]));
+    models[p.id] = (prev ?? []).map((m) => (next.has(m.model_id) ? { ...m, enabled: next.get(m.model_id)! } : m));
+    modelsBusy[p.id] = true;
+    try {
+      models[p.id] = await admin.setProviderModels(p.id, toggles);
+      p.models_enabled = models[p.id].filter((m) => m.enabled).length;
+    } catch (e) {
+      models[p.id] = prev;
+      push(errMsg(e, 'Could not update models'), 'error');
+    } finally {
+      modelsBusy[p.id] = false;
+    }
+  }
+
+  async function syncOne(p: ProviderAdmin) {
     syncing[p.id] = true;
     try {
-      const r = await admin.syncProvider(p.id);
-      push(`Synced ${r.count} model${r.count === 1 ? '' : 's'} from ${p.name}`, 'success');
-      models = (await admin.listModels()) as ModelRow[];
+      const r = await admin.syncProviderAdmin(p.id);
+      push(
+        r.added > 0
+          ? `+${r.added} new model${r.added === 1 ? '' : 's'} from ${p.name} · ${r.count} cached`
+          : `No new models from ${p.name} (${r.count} cached)`,
+        'success',
+      );
+      if (expanded.has(p.id)) void loadModels(p);
+      providers = await admin.listProvidersAdmin(); // refresh cached-model tallies
     } catch (e) {
       push(`Sync failed for ${p.name}: ${errMsg(e)}`, 'error');
     } finally {
@@ -90,12 +113,15 @@
   async function syncAll() {
     if (syncingAll) return;
     syncingAll = true;
+    let added = 0;
     let total = 0;
     const failures: string[] = [];
     for (const p of providers) {
       syncing[p.id] = true;
       try {
-        total += (await admin.syncProvider(p.id)).count;
+        const r = await admin.syncProviderAdmin(p.id);
+        added += r.added;
+        total += r.count;
       } catch {
         failures.push(p.name);
       } finally {
@@ -103,9 +129,10 @@
       }
     }
     syncingAll = false;
-    models = (await admin.listModels()) as ModelRow[];
+    providers = await admin.listProvidersAdmin().catch(() => providers);
+    for (const p of providers) if (expanded.has(p.id)) void loadModels(p);
     const tail = failures.length ? ` (${failures.length} failed: ${failures.join(', ')})` : '';
-    push(`Synced ${total} model${total === 1 ? '' : 's'} total${tail}`, failures.length ? 'error' : 'success');
+    push(`${added > 0 ? `+${added} new model${added === 1 ? '' : 's'}` : 'No new models'} · ${total} cached total${tail}`, failures.length ? 'error' : 'success');
   }
 
   async function doDelete() {
@@ -127,14 +154,14 @@
 <div class="flex flex-col gap-4">
   <div class="flex items-center justify-between gap-3">
     <p class="text-sm text-[var(--muted)]">
-      {providers.length} provider{providers.length === 1 ? '' : 's'} · {models.length} cached model{models.length === 1 ? '' : 's'}
+      {providers.length} provider{providers.length === 1 ? '' : 's'} · {totalModels} cached model{totalModels === 1 ? '' : 's'}
     </p>
     <div class="flex items-center gap-2">
       <button class={btn} style={btnGhostStyle} onclick={syncAll} disabled={syncingAll || loading || providers.length === 0}>
         {#if syncingAll}<Spinner />{:else}<RefreshCw size={14} />{/if}
         Sync all
       </button>
-      <button class={btn} style={btnPrimaryStyle} onclick={openCreate}>
+      <button class={btn} style={btnPrimaryStyle} onclick={() => { editing = null; modalOpen = true; }}>
         <Plus size={14} /> Add provider
       </button>
     </div>
@@ -156,7 +183,7 @@
     >
       {#snippet icon()}<Inbox size={22} />{/snippet}
       {#snippet actions()}
-        <button class={btn} style={btnPrimaryStyle} onclick={openCreate}><Plus size={14} /> Add your first provider</button>
+        <button class={btn} style={btnPrimaryStyle} onclick={() => { editing = null; modalOpen = true; }}><Plus size={14} /> Add your first provider</button>
       {/snippet}
     </EmptyState>
   {:else}
@@ -164,7 +191,6 @@
       <table class="w-full text-sm">
         <thead>
           <tr class="uppercase tracking-wider" style={rowBorder}>
-            <th class="{th} w-8"></th>
             <th class={th}>Provider</th>
             <th class={th}>Base URL</th>
             <th class={th}>API key</th>
@@ -175,35 +201,49 @@
         </thead>
         <tbody>
           {#each providers as p (p.id)}
-            {@const count = models.filter((m) => m.provider_id === p.id).length}
             <tr class={row} style={rowBorder}>
               <td class={td}>
                 <button
-                  class="rounded p-1 text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
-                  aria-label={expanded.has(p.id) ? 'Collapse models' : 'Expand models'}
-                  onclick={() => toggleExpand(p.id)}
+                  class="flex items-center gap-1.5 text-left"
+                  aria-expanded={expanded.has(p.id)}
+                  title={expanded.has(p.id) ? 'Hide models' : 'Manage models'}
+                  onclick={() => toggleExpand(p)}
                 >
-                  {#if expanded.has(p.id)}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}
+                  {#if expanded.has(p.id)}<ChevronDown size={15} class="shrink-0 text-[var(--muted)]" />{:else}<ChevronRight size={15} class="shrink-0 text-[var(--muted)]" />{/if}
+                  <span class="font-medium">{p.name}</span>
+                  {#if p.is_default}<Badge kind="accent">default</Badge>{/if}
                 </button>
-              </td>
-              <td class={td}>
-                <span class="font-medium">{p.name}</span>
-                {#if p.is_default}<span class="ml-1.5 inline-flex"><Badge kind="accent">default</Badge></span>{/if}
               </td>
               <td class="{td} max-w-[16rem] truncate font-mono text-xs text-[var(--muted)]" title={p.base_url}>{p.base_url}</td>
               <td class={td}>
-                {#if p.has_key}
-                  <span class="font-mono text-xs tracking-widest text-[var(--muted)]" title="Key stored encrypted">••••••••</span>
-                {:else}
-                  <span class="text-xs text-[var(--muted)]">none</span>
-                {/if}
+                <span class="flex items-center gap-1.5 text-xs {p.has_key ? '' : 'text-[var(--muted)]'}" title={p.has_key ? 'Key stored encrypted' : 'No key configured'}>
+                  <span class="h-1.5 w-1.5 shrink-0 rounded-full" style="background:{p.has_key ? '#10a37f' : 'var(--faint)'}"></span>
+                  {p.has_key ? 'configured' : 'unset'}
+                </span>
               </td>
               <td class={td}>
-                <Toggle checked={p.enabled} onchange={() => toggleEnabled(p)} label="Toggle {p.name}" />
+                <Toggle
+                  checked={p.enabled}
+                  onchange={async (next) => {
+                    const prev = p.enabled;
+                    p.enabled = next; // optimistic; rolled back on failure
+                    try {
+                      await admin.updateProvider(p.id, { enabled: next });
+                    } catch (e) {
+                      p.enabled = prev;
+                      push(errMsg(e, 'Could not update provider'), 'error');
+                    }
+                  }}
+                  label="Toggle {p.name}"
+                />
               </td>
               <td class={td}>
-                <button class="text-xs text-[var(--muted)] underline-offset-2 hover:text-[var(--text)] hover:underline" onclick={() => toggleExpand(p.id)}>
-                  {count} model{count === 1 ? '' : 's'}
+                <button
+                  class="text-xs text-[var(--muted)] underline-offset-2 hover:text-[var(--text)] hover:underline"
+                  title="enabled / cached models"
+                  onclick={() => toggleExpand(p)}
+                >
+                  {p.models_enabled}/{p.model_count}
                 </button>
               </td>
               <td class="{td}">
@@ -219,7 +259,7 @@
                   <button
                     class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
                     title="Edit provider"
-                    onclick={() => openEdit(p)}
+                    onclick={() => { editing = p; modalOpen = true; }}
                   >
                     <Pencil size={14} />
                   </button>
@@ -238,43 +278,56 @@
             </tr>
 
             {#if expanded.has(p.id)}
-              <tr style={rowBorder}>
-                <td colspan={7} class="px-3 py-3" style={panel2Style}>
-                  {#if syncing[p.id]}
-                    <p class="flex items-center gap-2 py-2 text-xs text-[var(--muted)]"><Spinner /> Fetching models from {p.name}…</p>
-                  {:else if count === 0}
+              {@const rows = models[p.id] ?? []}
+              <tr>
+                <td colspan={6} class="px-3 py-3" style={panel2Style}>
+                  {#if syncing[p.id] || modelsBusy[p.id]}
+                    <p class="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
+                      <Spinner /> {syncing[p.id] ? `Fetching models from ${p.name}…` : 'Updating models…'}
+                    </p>
+                  {:else if modelsError[p.id]}
+                    <p class="flex items-center justify-between gap-3 py-1 text-xs" style={errorBannerStyle}>
+                      <span class="px-3">{modelsError[p.id]}</span>
+                      <button class="px-3 underline underline-offset-2" onclick={() => loadModels(p)}>Retry</button>
+                    </p>
+                  {:else if rows.length === 0}
                     <p class="py-2 text-xs text-[var(--muted)]">
                       No cached models — <button class="underline underline-offset-2 hover:text-[var(--text)]" onclick={() => syncOne(p)}>sync now</button>.
                     </p>
                   {:else}
                     <div class="mb-1 flex items-center justify-between">
-                      <p class="text-xs uppercase tracking-wider text-[var(--muted)]">Models · {p.name}</p>
-                      {#if !admin.CAN_EDIT_MODELS}
-                        <p class="text-[11px] text-[var(--muted)]">rename / enable need a model-edit API — shown read-only</p>
-                      {/if}
+                      <p class="text-xs uppercase tracking-wider text-[var(--muted)]">
+                        Models · {rows.filter((m) => m.enabled).length}/{rows.length} enabled
+                      </p>
+                      <div class="flex items-center gap-2 text-[11px]">
+                        <button class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]" onclick={() => applyToggles(p, rows.map((m) => ({ model_id: m.model_id, enabled: true })))}>
+                          Select all
+                        </button>
+                        <button class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]" onclick={() => applyToggles(p, rows.map((m) => ({ model_id: m.model_id, enabled: false })))}>
+                          Select none
+                        </button>
+                      </div>
                     </div>
                     <table class="w-full text-xs">
-                      <thead>
-                        <tr class="uppercase tracking-wider">
-                          <th class="{th} pl-0">Model ID</th>
-                          <th class={th}>Display name</th>
-                          <th class={th}>Status</th>
-                          <th class={th}>Context</th>
-                        </tr>
-                      </thead>
                       <tbody>
-                        {#each models.filter((m) => m.provider_id === p.id) as m (m.model_id)}
-                          <tr class="transition-colors hover:bg-[var(--fill-hover)]" style={rowBorder}>
-                            <td class="{td} pl-0 font-mono text-[var(--muted)]">{m.model_id}</td>
-                            <td class={td}>{m.display || m.model_id}</td>
+                        {#each rows as m (m.model_id)}
+                          <tr class="transition-colors hover:bg-[var(--fill-hover)] {m.enabled ? '' : 'opacity-45'}" style={rowBorder}>
+                            <td class="{td} w-10">
+                              <Toggle
+                                checked={m.enabled}
+                                onchange={(next) => applyToggles(p, [{ model_id: m.model_id, enabled: next }])}
+                                label={m.enabled ? `Disable ${m.model_id}` : `Enable ${m.model_id}`}
+                              />
+                            </td>
                             <td class={td}>
-                              {#if m.enabled === false}
-                                <Badge kind="danger">disabled</Badge>
-                              {:else}
-                                <Badge kind="success">enabled</Badge>
+                              <span class="font-medium">{m.display || m.model_id}</span>
+                              {#if m.display && m.display !== m.model_id}
+                                <span class="ml-2 font-mono text-[var(--muted)]">{m.model_id}</span>
                               {/if}
                             </td>
-                            <td class={td}><Badge>{ctxLabel(m.context_len)}</Badge></td>
+                            <td class="{td} w-24 text-right">
+                              {#if m.context_len > 0}<Badge>{ctxLabel(m.context_len)}</Badge>{/if}
+                            </td>
                           </tr>
                         {/each}
                       </tbody>

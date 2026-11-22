@@ -18,7 +18,8 @@ import (
 
 // Provider admin surface: GET/POST /api/providers, PUT/DELETE /api/providers/{id},
 // POST /api/providers/{id}/sync (refresh models cache via Providers.ListModels),
-// plus authed GET /api/models for everyone.
+// GET/PUT /api/providers/{id}/models (admin view of the cache incl. disabled
+// rows + bulk enable/disable), plus authed GET /api/models for everyone.
 
 // MaxProviderNameLen caps the display name in RUNES (L8-M2): the name lands
 // verbatim in audit detail rows (provider.create/update) and in every
@@ -35,6 +36,8 @@ func registerProviders(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("PUT /api/providers/{id}", h.handleUpdate)
 	mux.HandleFunc("DELETE /api/providers/{id}", h.handleDelete)
 	mux.HandleFunc("POST /api/providers/{id}/sync", h.handleSync)
+	mux.HandleFunc("GET /api/providers/{id}/models", h.handleProviderModels)
+	mux.HandleFunc("PUT /api/providers/{id}/models", h.handleProviderModelsUpdate)
 	mux.HandleFunc("GET /api/models", h.handleModels)
 }
 
@@ -45,18 +48,71 @@ type providerJSON struct {
 	Name      string `json:"name"`
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"api_key"` // MASKED ("…abcd") — never the real key
+	HasKey    bool   `json:"has_key"` // key status dot without revealing anything
 	Enabled   bool   `json:"enabled"`
 	IsDefault bool   `json:"is_default"`
 	Sort      int    `json:"sort"`
 	CreatedAt int64  `json:"created_at"`
+	// Cached-model tallies so the admin table can render counts without
+	// pulling every row (the expandable editor fetches them per provider).
+	ModelCount    int `json:"model_count"`
+	ModelsEnabled int `json:"models_enabled"`
 }
 
 func providerView(p *store.Provider) providerJSON {
 	return providerJSON{
 		ID: p.ID, Name: p.Name, BaseURL: p.BaseURL,
-		APIKey: maskKey(p.APIKey), Enabled: p.Enabled, IsDefault: p.IsDefault,
+		APIKey: maskKey(p.APIKey), HasKey: p.APIKey != "" || p.KeyUnreadable,
+		Enabled: p.Enabled, IsDefault: p.IsDefault,
 		Sort: p.Sort, CreatedAt: p.CreatedAt,
 	}
+}
+
+// view is providerView plus the cached-model tallies (one ForProvider query
+// per row; provider tables are admin-scale and tiny).
+func (h *providersH) view(ctx context.Context, p *store.Provider) (providerJSON, error) {
+	out := providerView(p)
+	ms, err := h.d.Store.Models.ForProvider(ctx, p.ID)
+	if err != nil {
+		return out, err
+	}
+	for _, m := range ms {
+		out.ModelCount++
+		if m.Enabled {
+			out.ModelsEnabled++
+		}
+	}
+	return out, nil
+}
+
+// modelRowJSON is one cached model row for the admin per-provider view. Unlike
+// GET /api/models this includes DISABLED rows and carries the enabled flag —
+// it is the management surface, so requireAdmin gates it.
+type modelRowJSON struct {
+	ModelID    string `json:"model_id"`
+	Display    string `json:"display"`
+	ContextLen int    `json:"context_len"`
+	Enabled    bool   `json:"enabled"`
+}
+
+func modelsView(ms []store.ModelRow) []modelRowJSON {
+	out := make([]modelRowJSON, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, modelRowJSON{
+			ModelID: m.ModelID, Display: m.Display,
+			ContextLen: m.ContextLen, Enabled: m.Enabled,
+		})
+	}
+	return out
+}
+
+// modelToggleReq is one entry of the bulk PUT /api/providers/{id}/models body
+// ([{model_id, enabled}, …]). Bulk beats per-model PATCH: the "select all /
+// none" UI and every single toggle land in one round-trip, and the whole
+// write is one store transaction (no half-applied batches).
+type modelToggleReq struct {
+	ModelID string `json:"model_id"`
+	Enabled bool   `json:"enabled"`
 }
 
 // providerReq is the POST/PUT body. Pointers = "field present": PUT patches
@@ -108,7 +164,12 @@ func (h *providersH) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]providerJSON, 0, len(provs))
 	for _, p := range provs {
-		out = append(out, providerView(p))
+		v, err := h.view(r.Context(), p)
+		if err != nil {
+			httpx.InternalError(w, r, err)
+			return
+		}
+		out = append(out, v)
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
@@ -153,7 +214,12 @@ func (h *providersH) create(w http.ResponseWriter, r *http.Request, actor *store
 		}
 	}
 	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.create", p.Name, h.d.Auth.RequestIP(r))
-	httpx.JSON(w, http.StatusCreated, providerView(p))
+	v, err := h.view(r.Context(), p)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, v)
 }
 
 // PUT /api/providers/{id} (admin) — partial patch; api_key keeps/clears/sets
@@ -215,7 +281,12 @@ func (h *providersH) update(w http.ResponseWriter, r *http.Request, id string, a
 		}
 	}
 	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.update", p.Name, h.d.Auth.RequestIP(r))
-	httpx.JSON(w, http.StatusOK, providerView(p))
+	v, err := h.view(r.Context(), p)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, v)
 }
 
 // DELETE /api/providers/{id} (admin) → 204.
@@ -237,7 +308,10 @@ func (h *providersH) del(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 // handleSync: POST /api/providers/{id}/sync — pull the upstream model list
-// and atomically replace the cache (context_len persisted, models enabled).
+// and refresh the cache (context_len persisted). Admin enable/disable choices
+// are PRESERVED: models already cached keep their enabled flag, only models
+// new to the cache start enabled=true. Models that vanished upstream are
+// dropped (the whole cache row-set is replaced).
 func (h *providersH) handleSync(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.d.requireAdmin(w, r); !ok {
 		return
@@ -259,20 +333,118 @@ func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string) {
 		httpx.ErrorJSON(w, http.StatusBadGateway, "could not fetch models from provider")
 		return
 	}
+	cached, err := h.d.Store.Models.ForProvider(r.Context(), p.ID)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	prevEnabled := make(map[string]bool, len(cached))
+	for _, m := range cached {
+		prevEnabled[m.ModelID] = m.Enabled
+	}
 	rows := make([]store.ModelRow, 0, len(models))
+	added := 0
 	for _, m := range models {
 		if m.ID == "" {
 			continue
 		}
+		enabled, isNew := prevEnabled[m.ID]
+		if !isNew {
+			enabled = true // first-seen model: instance-default is enabled
+			added++
+		}
 		rows = append(rows, store.ModelRow{
-			ModelID: m.ID, Display: m.Display, ContextLen: m.ContextLen, Enabled: true,
+			ModelID: m.ID, Display: m.Display, ContextLen: m.ContextLen, Enabled: enabled,
 		})
 	}
 	if err := h.d.Store.Models.ReplaceForProvider(r.Context(), p.ID, rows); err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]int{"count": len(rows)})
+	httpx.JSON(w, http.StatusOK, map[string]int{"count": len(rows), "added": added})
+}
+
+// handleProviderModels: GET /api/providers/{id}/models — the FULL cached model
+// list of one provider incl. disabled rows (admin; GET /api/models stays the
+// enabled-only chat surface).
+func (h *providersH) handleProviderModels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.d.requireAdmin(w, r); !ok {
+		return
+	}
+	h.providerModels(w, r, r.PathValue("id"))
+}
+
+func (h *providersH) providerModels(w http.ResponseWriter, r *http.Request, id string) {
+	if _, err := h.d.Store.Providers.Get(r.Context(), id); err != nil {
+		providerLookupFail(w, r, err)
+		return
+	}
+	ms, err := h.d.Store.Models.ForProvider(r.Context(), id)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, modelsView(ms))
+}
+
+// handleProviderModelsUpdate: PUT /api/providers/{id}/models (admin) — bulk
+// enable/disable, body [{model_id, enabled}, …]. Every model_id must exist in
+// the provider's cache (one unknown id → 404, nothing applied). Returns the
+// refreshed full list so the admin UI can reconcile without a follow-up GET.
+func (h *providersH) handleProviderModelsUpdate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	h.providerModelsUpdate(w, r, r.PathValue("id"), actor)
+}
+
+func (h *providersH) providerModelsUpdate(w http.ResponseWriter, r *http.Request, id string, actor *store.User) {
+	p, err := h.d.Store.Providers.Get(r.Context(), id)
+	if err != nil {
+		providerLookupFail(w, r, err)
+		return
+	}
+	var reqs []modelToggleReq
+	if err := httpx.DecodeLoose(r, &reqs); err != nil {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid model body")
+		return
+	}
+	if len(reqs) == 0 {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "at least one model toggle is required")
+		return
+	}
+	want := make(map[string]bool, len(reqs)) // duplicate ids: last write wins
+	for _, t := range reqs {
+		if t.ModelID == "" {
+			httpx.ErrorJSON(w, http.StatusBadRequest, "model_id is required")
+			return
+		}
+		want[t.ModelID] = t.Enabled
+	}
+	rows, err := h.d.Store.Models.ForProvider(r.Context(), id)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	seen := 0
+	for i := range rows {
+		if en, ok := want[rows[i].ModelID]; ok {
+			rows[i].Enabled = en
+			seen++
+		}
+	}
+	if seen != len(want) {
+		httpx.ErrorJSON(w, http.StatusNotFound, "model not found")
+		return
+	}
+	if err := h.d.Store.Models.ReplaceForProvider(r.Context(), id, rows); err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.update",
+		p.Name+" · "+strconv.Itoa(seen)+" model enablement(s) updated", h.d.Auth.RequestIP(r))
+	httpx.JSON(w, http.StatusOK, modelsView(rows))
 }
 
 // handleModels: GET /api/models — flattened enabled models (authed, any role).
