@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCheck, Copy, Inbox, ShieldOff, UserCheck, Users } from 'lucide-svelte';
+  import { CheckCheck, ChevronDown, Copy, Inbox, ShieldOff, Star, UserCheck, Users } from 'lucide-svelte';
   import { session } from '$lib/session.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
@@ -10,7 +10,8 @@
   import EmptyState from '$lib/admin/ui/EmptyState.svelte';
   import Modal from '$lib/admin/ui/Modal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, mono, panel, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import Toggle from '$lib/admin/ui/Toggle.svelte';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, mono, panel, panel2Style, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   let users = $state<User[]>([]);
   let loading = $state(true);
@@ -144,6 +145,148 @@
       push('Clipboard blocked — select the text and copy manually', 'error');
     }
   }
+
+  // ----- per-user model prefs (expandable row, Admin→Users) -----
+  //
+  // Reads/writes the user's own me-settings rows (hidden_models /
+  // default_model) through the admin surface — same storage the user edits in
+  // their Settings, same validators, last writer wins. Values here stay in
+  // the stored shape (hidden = string[] decoded from the JSON array text) so
+  // a PUT round-trips byte-compatible with what /api/me/settings would write.
+
+  // NOTE: $state does NOT deep-proxy Set instances (Svelte 5 class-instance
+  // semantics) — same $state.raw + copy-on-write idiom as ProvidersTab.
+  let expanded = $state.raw(new Set<string>());
+  let prefHidden = $state<Record<string, string[]>>({}); // decoded hidden lists
+  let prefDefault = $state<Record<string, string>>({});
+  let prefsBusy = $state<Record<string, boolean>>({});
+  let prefsError = $state<Record<string, string>>({});
+
+  // Instance-enabled catalog (GET /api/models), shared across every expanded
+  // row; lazy single-flight, re-tried after a failure.
+  let catalog = $state<admin.ModelEntry[] | null>(null);
+  let catalogError = $state('');
+  let catalogPromise: Promise<void> | null = null;
+  function loadCatalog(): Promise<void> {
+    if (!catalogPromise) {
+      catalogPromise = admin
+        .listModels()
+        .then((ms) => {
+          catalog = ms;
+          catalogError = '';
+        })
+        .catch((e) => {
+          catalogPromise = null; // allow retry
+          catalogError = errMsg(e, 'Could not load the model list');
+        });
+    }
+    return catalogPromise;
+  }
+
+  function parseHidden(v: string | undefined): string[] {
+    if (!v) return [];
+    try {
+      const a = JSON.parse(v);
+      return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return []; // stored value the user-side parser would also drop
+    }
+  }
+
+  const modelKey = (m: admin.ModelEntry) => `${m.provider_id}:${m.model_id}`;
+
+  const catalogGroups = $derived.by(() => {
+    const groups: { label: string; models: admin.ModelEntry[] }[] = [];
+    const byLabel = new Map<string, admin.ModelEntry[]>();
+    for (const m of catalog ?? []) {
+      const label = m.provider || m.provider_id;
+      let g = byLabel.get(label);
+      if (!g) {
+        g = [];
+        byLabel.set(label, g);
+        groups.push({ label, models: g });
+      }
+      g.push(m);
+    }
+    return groups;
+  });
+
+  function visibleCount(u: User): number {
+    const hidden = new Set(prefHidden[u.id] ?? []);
+    return (catalog ?? []).filter((m) => !hidden.has(modelKey(m))).length;
+  }
+  /** Hidden entries pointing at models the instance no longer enables —
+   *  honest bookkeeping so "n/m visible" can't hide orphaned entries. */
+  function staleHiddenCount(u: User): number {
+    const keys = new Set((catalog ?? []).map(modelKey));
+    return (prefHidden[u.id] ?? []).filter((k) => !keys.has(k)).length;
+  }
+
+  async function loadPrefs(u: User) {
+    prefsBusy[u.id] = true;
+    prefsError[u.id] = '';
+    try {
+      const [p] = await Promise.all([admin.getUserModelPrefs(u.id), loadCatalog()]);
+      prefDefault[u.id] = p.default_model || '';
+      prefHidden[u.id] = parseHidden(p.hidden_models);
+    } catch (e) {
+      prefsError[u.id] = errMsg(e, 'Could not load model prefs');
+    } finally {
+      prefsBusy[u.id] = false;
+    }
+  }
+
+  function toggleExpand(u: User) {
+    // $state.raw Set: mutate-in-place would not notify — rebuild + reassign.
+    const next = new Set(expanded);
+    if (next.has(u.id)) {
+      next.delete(u.id);
+    } else {
+      next.add(u.id);
+      if (!prefHidden[u.id]) void loadPrefs(u);
+    }
+    expanded = next;
+  }
+
+  /** Bulk hidden_models write with optimistic list + revert-on-error; the PUT
+   *  answers the stored rows so the panel re-syncs on server truth (same
+   *  shape as ProvidersTab's applyToggles). */
+  async function applyHidden(u: User, next: string[]) {
+    const prev = prefHidden[u.id] ?? [];
+    prefHidden[u.id] = next; // optimistic; rolled back on failure
+    prefsBusy[u.id] = true;
+    try {
+      const saved = await admin.setUserModelPrefs(u.id, { hidden_models: JSON.stringify(next) });
+      prefHidden[u.id] = parseHidden(saved.hidden_models);
+    } catch (e) {
+      prefHidden[u.id] = prev;
+      push(errMsg(e, 'Could not update model visibility'), 'error');
+    } finally {
+      prefsBusy[u.id] = false;
+    }
+  }
+
+  function setModelVisible(u: User, key: string, visible: boolean) {
+    const cur = prefHidden[u.id] ?? [];
+    if (cur.includes(key) === !visible) return; // already there
+    void applyHidden(u, visible ? cur.filter((k) => k !== key) : [...cur, key]);
+  }
+
+  async function setDefault(u: User, key: string) {
+    const prev = prefDefault[u.id] ?? '';
+    if (prev === key) return;
+    prefDefault[u.id] = key; // optimistic
+    prefsBusy[u.id] = true;
+    try {
+      const saved = await admin.setUserModelPrefs(u.id, { default_model: key });
+      prefDefault[u.id] = saved.default_model || '';
+    } catch (e) {
+      prefDefault[u.id] = prev;
+      push(errMsg(e, 'Could not change the default model'), 'error');
+    } finally {
+      prefsBusy[u.id] = false;
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-6">
@@ -239,6 +382,7 @@
                 <th class={th}>Role</th>
                 <th class={th}>Created</th>
                 <th class={th}>Last active</th>
+                <th class={th}>Models</th>
                 <th class="{th} text-right">2FA</th>
               </tr>
             </thead>
@@ -267,6 +411,24 @@
                   </td>
                   <td class="{td} text-xs text-[var(--muted)]">{relTime(u.created_at)}</td>
                   <td class="{td} text-xs text-[var(--muted)]">{relTime(u.last_active_at)}</td>
+                  <td class={td}>
+                    <button
+                      class="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
+                      aria-expanded={expanded.has(u.id)}
+                      title="Choose which models {u.email} sees"
+                      onclick={() => toggleExpand(u)}
+                    >
+                      <span class="tabular-nums">
+                        {#if prefHidden[u.id]}{visibleCount(u)}/{(catalog ?? []).length}{:else}—{/if}
+                      </span>
+                      <span>models</span>
+                      <ChevronDown
+                        size={13}
+                        class="transition-transform {expanded.has(u.id) ? 'text-[var(--acc)]' : 'text-[var(--faint)]'}"
+                        style={expanded.has(u.id) ? 'transform:rotate(180deg)' : ''}
+                      />
+                    </button>
+                  </td>
                   <td class="{td} text-right">
                     <button
                       class="inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)]"
@@ -281,6 +443,118 @@
                     </button>
                   </td>
                 </tr>
+
+                {#if expanded.has(u.id)}
+                  {@const loaded = prefHidden[u.id] !== undefined}
+                  <tr>
+                    <td colspan={7} class="px-3 py-3" style={panel2Style}>
+                      {#if prefsError[u.id]}
+                        <p class="flex items-center justify-between gap-3 py-1 text-xs" style={errorBannerStyle}>
+                          <span class="px-3">{prefsError[u.id]}</span>
+                          <button class="px-3 underline underline-offset-2" onclick={() => loadPrefs(u)}>Retry</button>
+                        </p>
+                      {:else if !loaded || !catalog}
+                        <p class="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
+                          <Spinner /> Loading model prefs…
+                        </p>
+                      {:else if catalogError}
+                        <p class="flex items-center justify-between gap-3 py-1 text-xs" style={errorBannerStyle}>
+                          <span class="px-3">{catalogError}</span>
+                          <button class="px-3 underline underline-offset-2" onclick={() => loadPrefs(u)}>Retry</button>
+                        </p>
+                      {:else if catalog.length === 0}
+                        <p class="py-2 text-xs text-[var(--muted)]">
+                          No instance-enabled models right now — enable some in the Providers tab first.
+                        </p>
+                      {:else}
+                        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <p class="text-xs uppercase tracking-wider text-[var(--muted)]">
+                            Visible to {u.email} · {visibleCount(u)}/{catalog.length}
+                            {#if prefsBusy[u.id]}<Spinner size={12} />{/if}
+                          </p>
+                          <button
+                            class="text-[11px] text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-40"
+                            disabled={prefsBusy[u.id]}
+                            title="Show every instance-enabled model to this user (clears their hidden list)"
+                            onclick={() => applyHidden(u, [])}
+                          >
+                            Reset to all visible
+                          </button>
+                        </div>
+                        <p class="mb-2 text-xs leading-relaxed text-[var(--muted)]">
+                          {#if prefDefault[u.id]}
+                            Default: <span class="font-medium text-[var(--text)]">★ {prefDefault[u.id]}</span>
+                            <button
+                              class="ml-2 underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-40"
+                              disabled={prefsBusy[u.id]}
+                              onclick={() => setDefault(u, '')}
+                            >clear</button>
+                          {:else}
+                            No default model set.
+                          {/if}
+                        </p>
+                        {#each catalogGroups as g (g.label)}
+                          <p class="mb-0.5 mt-2 text-[11px] uppercase tracking-wider text-[var(--faint)]">{g.label}</p>
+                          <table class="w-full text-xs">
+                            <tbody>
+                              {#each g.models as m (modelKey(m))}
+                                {@const key = modelKey(m)}
+                                {@const visible = !(prefHidden[u.id] ?? []).includes(key)}
+                                <tr class="transition-colors hover:bg-[var(--fill-hover)] {visible ? '' : 'opacity-45'}" style={rowBorder}>
+                                  <td class="{td} w-10">
+                                    <Toggle
+                                      checked={visible}
+                                      disabled={prefsBusy[u.id]}
+                                      onchange={(next) => setModelVisible(u, key, next)}
+                                      label={visible ? `Hide ${m.display || m.model_id} from ${u.email}` : `Show ${m.display || m.model_id} to ${u.email}`}
+                                    />
+                                  </td>
+                                  <td class={td}>
+                                    <span class="font-medium">{m.display || m.model_id}</span>
+                                    {#if m.display && m.display !== m.model_id}
+                                      <span class="ml-2 font-mono text-[var(--muted)]">{m.model_id}</span>
+                                    {/if}
+                                    {#if prefDefault[u.id] === key}<Badge kind="accent">★ default</Badge>{/if}
+                                  </td>
+                                  <td class="{td} w-32 text-right">
+                                    {#if prefDefault[u.id] === key}
+                                      <button
+                                        class="underline underline-offset-2 text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-40"
+                                        disabled={prefsBusy[u.id]}
+                                        onclick={() => setDefault(u, '')}
+                                      >Clear default</button>
+                                    {:else}
+                                      <button
+                                        class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] disabled:opacity-40"
+                                        disabled={prefsBusy[u.id]}
+                                        title="Set as {u.email}'s default model"
+                                        onclick={() => setDefault(u, key)}
+                                      >
+                                        <Star size={12} /> Set default
+                                      </button>
+                                    {/if}
+                                  </td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        {/each}
+                        {#if staleHiddenCount(u) > 0}
+                          <p class="mt-2 text-[11px] text-[var(--muted)]">
+                            +{staleHiddenCount(u)} hidden {staleHiddenCount(u) === 1 ? 'entry points' : 'entries point'}
+                            at models the instance does not currently enable — they stay stored and take effect again if
+                            such a model returns.
+                          </p>
+                        {/if}
+                        <p class="mt-2 text-xs leading-relaxed text-[var(--muted)]">
+                          Users can also hide models themselves; this list sets what they start with. There is no way to
+                          lock it: the user's own hide list lives in exactly this storage, so their changes overwrite
+                          what you set here — and your next change overwrites theirs, last write wins.
+                        </p>
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -291,7 +565,8 @@
           user back to “pending” deactivates them until the next approval. “Reset 2FA” is the lockout recovery path:
           it clears their authenticator setup, signs out every one of their sessions, and for password accounts sets
           a one-time password shown exactly once here — share it over a secure channel and have them change it
-          immediately.
+          immediately. The “models” control opens that user's model visibility panel — it edits the same list their
+          own Settings screen writes, so it is a starting point, not a lock.
         </p>
       {/if}
     </section>

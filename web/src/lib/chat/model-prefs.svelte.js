@@ -101,3 +101,23 @@ export function unhideAll() {
   modelPrefs.hiddenModels = [];
   return persist(HIDDEN_KEY, JSON.stringify([]));
 }
+
+/**
+ * Bulk show/hide with ONE PUT (Settings' per-provider "Hide all / Show all").
+ * Optimistic write-through like hide/unhide: merges or removes `keys` in
+ * hidden_models locally first, then persists. No request when nothing changes.
+ * @param {string[]} keys canonical "providerID:modelID" keys
+ * @param {boolean} hidden true ⇒ hide them all, false ⇒ show them all
+ */
+export function setHiddenAll(/** @type {string[]} */ keys, /** @type {boolean} */ hidden) {
+  const cur = new Set(modelPrefs.hiddenModels);
+  const next = new Set(cur);
+  for (const k of keys) {
+    if (hidden) next.add(k);
+    else next.delete(k);
+  }
+  const same = next.size === cur.size && [...next].every((k) => cur.has(k));
+  if (same) return Promise.resolve();
+  modelPrefs.hiddenModels = [...next];
+  return persist(HIDDEN_KEY, JSON.stringify(modelPrefs.hiddenModels));
+}

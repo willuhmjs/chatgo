@@ -31,7 +31,7 @@
   import Lightbox from '$lib/chat/Lightbox.svelte';
   import IconButton from '$lib/chat/ui/IconButton.svelte';
   import ChatActionsMenu from '$lib/chat/ChatActionsMenu.svelte';
-  import { refreshCapabilities, stopSpeaking, models } from '$lib/chat/state.svelte.js';
+  import { refreshCapabilities, stopSpeaking, models, loadModels } from '$lib/chat/state.svelte.js';
 
   // fires the staged new-chat prompt exactly once per component instance
   let firedPending = false;
@@ -106,7 +106,12 @@
   }
 
   $effect(() => {
-    if (id) void load();
+    if (!id) return;
+    // Prime the shared model cache alongside the chat fetch so the picker
+    // trigger and assistant wordmark resolve display names on a fresh load
+    // (loadModels is idempotent — ModelPicker reuses the same promise).
+    void loadModels();
+    void load();
   });
 
   // abort in-flight work when switching chats / unmounting

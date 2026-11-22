@@ -151,6 +151,8 @@ func registerAdmin(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/me/settings", h.handleMeGet)
 	mux.HandleFunc("PUT /api/me/settings", h.handleMePut)
 	mux.HandleFunc("POST /api/me/password", h.handleMePassword)
+	mux.HandleFunc("GET /api/users/{id}/model-prefs", h.handleUserModelsGet)
+	mux.HandleFunc("PUT /api/users/{id}/model-prefs", h.handleUserModelsPut)
 }
 
 // settingsView loads every setting with key-ish values masked and per-user
@@ -492,4 +494,108 @@ func stripNamespacedSettings(m map[string]string) {
 			delete(m, k)
 		}
 	}
+}
+
+// ---------- GET/PUT /api/users/{id}/model-prefs (admin → one user) ----------
+//
+// Admin-side control of exactly the two me-settings rows the user edits in
+// Settings (me.<uid>.default_model / me.<uid>.hidden_models). Same storage,
+// same validators (meSettingValidators is reused verbatim, never copied), so
+// an admin write is byte-indistinguishable from the user's own write — which
+// also means there is no "lock": the two writers overwrite each other
+// last-writer-wins, and the admin UI says so plainly.
+//
+// Routes ride the /api/users* prefix so api.AuthPolicy's admin group gates
+// them at the policy layer too (requireAdmin below stays defense-in-depth).
+
+// adminModelPrefKeys is the admin-editable subset of meSettingKeys: the
+// model-visibility pair. Value checks come from meSettingValidators, size cap
+// from maxSettingValue — one source of truth with handleMePut.
+var adminModelPrefKeys = map[string]bool{
+	"default_model": true,
+	"hidden_models": true,
+}
+
+// GET /api/users/{id}/model-prefs → {"default_model":…,"hidden_models":…}.
+// Values are the stored raw strings; absent rows read as "" (unset default /
+// no hide list — the FE treats "" hidden_models as the empty array).
+func (h *adminH) handleUserModelsGet(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.d.requireAdmin(w, r); !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if _, err := h.d.Store.Users.GetByID(r.Context(), id); err != nil {
+		userLookupFail(w, r, err) // unknown id → 404, same as approve/role
+		return
+	}
+	httpx.JSON(w, http.StatusOK, h.userModelPrefs(r, id))
+}
+
+// PUT /api/users/{id}/model-prefs {"default_model"?,"hidden_models"?} — both
+// keys optional; every key is validated before ANY row is written (stricter
+// than handleMePut's per-key interleaving, so a rejected key can never leave
+// its sibling half-applied). Answers the resulting prefs, like the provider
+// model editor answers with server truth.
+func (h *adminH) handleUserModelsPut(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	target, err := h.d.Store.Users.GetByID(r.Context(), id)
+	if err != nil {
+		userLookupFail(w, r, err)
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := httpx.Decode(r, &raw); err != nil {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "body must be a JSON object")
+		return
+	}
+	write := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if !adminModelPrefKeys[k] {
+			httpx.ErrorJSON(w, http.StatusBadRequest, "unknown setting key "+k)
+			return
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			httpx.ErrorJSON(w, http.StatusBadRequest, k+" must be a string")
+			return
+		}
+		if len(s) > maxSettingValue {
+			httpx.ErrorJSON(w, http.StatusBadRequest, k+" too large")
+			return
+		}
+		if msg := meSettingValidators[k](s); msg != "" {
+			httpx.ErrorJSON(w, http.StatusBadRequest, msg)
+			return
+		}
+		write[k] = s
+	}
+	for k, s := range write {
+		if err := h.d.Store.Settings.Set(r.Context(), meSettingPrefix+id+"."+k, s); err != nil {
+			httpx.InternalError(w, r, err)
+			return
+		}
+	}
+	audit.Record(r.Context(), h.d.Store.DB, actor, "user.update",
+		actor.Email+" set model prefs for "+target.Email, h.d.Auth.RequestIP(r))
+	httpx.JSON(w, http.StatusOK, h.userModelPrefs(r, id))
+}
+
+// userModelPrefs reads the admin-editable model rows for one user into a bare
+// {key:value} map (both keys always present, "" when the row is absent).
+// Read errors degrade like meSettings: homelab-scale KV reads, never fatal.
+func (h *adminH) userModelPrefs(r *http.Request, userID string) map[string]string {
+	out := make(map[string]string, len(adminModelPrefKeys))
+	for k := range adminModelPrefKeys {
+		v, err := h.d.Store.Settings.Get(r.Context(), meSettingPrefix+userID+"."+k)
+		if err != nil || v == nil {
+			out[k] = ""
+			continue
+		}
+		out[k] = *v
+	}
+	return out
 }

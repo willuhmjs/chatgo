@@ -138,3 +138,24 @@ export interface SyncResult {
 }
 export const syncProviderAdmin = (id: string) =>
   adminReq<SyncResult>('POST', `/api/providers/${id}/sync`);
+
+// ---------- per-user model prefs (admin) ----------
+//
+// Admin-side view of the SAME me.<uid>.{default_model,hidden_models} rows the
+// user edits in their own Settings — the values are raw stored strings
+// (hidden_models is a JSON array literal as text; "" = never written). Same
+// validators server-side, and no lock: user and admin overwrite each other
+// last-writer-wins, so the UI must present this as a starting point.
+
+export interface UserPrefs {
+  default_model: string;
+  hidden_models: string;
+}
+
+export const getUserModelPrefs = (id: string) =>
+  adminReq<UserPrefs>('GET', `/api/users/${id}/model-prefs`);
+
+/** Either key optional. The PUT validates every key before writing any and
+ *  answers the resulting prefs (server truth, like setProviderModels). */
+export const setUserModelPrefs = (id: string, patch: Partial<UserPrefs>) =>
+  adminReq<UserPrefs>('PUT', `/api/users/${id}/model-prefs`, patch);

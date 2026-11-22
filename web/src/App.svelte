@@ -151,6 +151,21 @@
     };
   });
 
+  // Live re-title while streaming: ChatView's SSE `title` handler broadcasts
+  // chatgo:title once the server generates the chat's auto-title. Without
+  // this the mobile bar keeps the placeholder fetched at route change until
+  // the next navigation (the sidebar refreshes itself via location.path).
+  $effect(() => {
+    const onTitle = (e: Event) => {
+      const d = (e as CustomEvent<{ chat_id?: string; title?: string }>).detail;
+      if (d?.title && route.name === 'chat' && d.chat_id === route.params.id) {
+        chatTitle = d.title;
+      }
+    };
+    window.addEventListener('chatgo:title', onTitle);
+    return () => window.removeEventListener('chatgo:title', onTitle);
+  });
+
   // ⌘B — collapse sidebar (desktop) / toggle drawer (mobile); Esc closes drawer
   $effect(() => {
     const offB = onShortcut('mod+b', () => {
@@ -174,7 +189,7 @@
       const a = (e.target as Element | null)?.closest?.('a');
       if (!a) return;
       const href = a.getAttribute('href');
-      if (!href || !href.startsWith('/') || a.target || a.download || a.hasAttribute('data-no-spa')) return;
+      if (!href || !href.startsWith('/') || a.target || a.hasAttribute('download') || a.hasAttribute('data-no-spa')) return;
       e.preventDefault();
       navigate(href);
     };

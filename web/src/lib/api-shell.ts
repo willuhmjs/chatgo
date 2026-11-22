@@ -111,9 +111,14 @@ export function takePendingPrompt(chatId: string): string | null {
 /**
  * Create a chat with the home-picked model and stash `prompt` for ChatView
  * (see takePendingPrompt). Returns the fresh chat for navigation.
+ *
+ * Deliberately NO title: the store's "New chat" placeholder lets the server
+ * generate a real one on the first exchange (internal/chat/title.go —
+ * TaskModel, falling back to first-48-runes). Pre-naming with a prompt slice
+ * made startTitle treat the chat as "already titled" and skip generation.
  */
 export async function startChat(prompt: string, model?: ModelEntry): Promise<Chat> {
-  const body: Partial<Chat> = { title: prompt.slice(0, 60) };
+  const body: Partial<Chat> = {};
   if (model) {
     body.provider_id = model.provider_id;
     body.model_id = model.model_id;

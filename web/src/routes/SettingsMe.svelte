@@ -28,8 +28,26 @@
     type TwoFactorStatus,
   } from '$lib/security-api';
   import { copyText } from '$lib/chatview-api';
-  import { modelPrefs, load as loadModelPrefs, setDefault, unhide, unhideAll } from '$lib/chat/model-prefs.svelte.js';
-  import { loadModels, findModel } from '$lib/chat/state.svelte.js';
+  import {
+    modelPrefs,
+    load as loadModelPrefs,
+    setDefault,
+    hide,
+    isHidden,
+    setHiddenAll,
+    unhide,
+    unhideAll,
+  } from '$lib/chat/model-prefs.svelte.js';
+  import { hueColor } from '$lib/hue';
+  import {
+    loadModels,
+    refreshModels,
+    findModel,
+    modelKey,
+    models as modelStore,
+    modelsByProvider,
+    matchesQuery,
+  } from '$lib/chat/state.svelte.js';
   import TokensPanel from '$lib/admin/TokensPanel.svelte';
   import Badge from '$lib/admin/ui/Badge.svelte';
   import Confirm from '$lib/admin/ui/Confirm.svelte';
@@ -46,7 +64,7 @@
     input,
     inputStyle,
   } from '$lib/admin/ui/styles';
-  import { Check, Copy, Eye, Moon, Pencil, ShieldCheck, Sun, Trash2 } from 'lucide-svelte';
+  import { Check, ChevronDown, Copy, Moon, Pencil, Search, ShieldCheck, Star, Sun, Trash2 } from 'lucide-svelte';
 
   let { tab = 'profile' }: { tab?: 'profile' | 'preferences' | 'account' } = $props();
 
@@ -361,12 +379,43 @@
     return m ? m.display || m.model_id : key;
   }
 
+  // ----- Models card: provider-grouped visibility catalog -----
+  // Reads models.items + modelPrefs $state directly (no local copies), so the
+  // card, the pickers, the palette and Home stay in lockstep on every write.
+  let modelSearch = $state('');
+  /** Provider ids the user collapsed; a non-empty search force-expands all. */
+  let collapsedProviders = $state<Set<string>>(new Set());
+
+  const catalogGroups = $derived.by(() =>
+    modelsByProvider(modelStore.items.filter((m) => matchesQuery(m, modelSearch))),
+  );
+  const totalHidden = $derived(modelStore.items.filter((m) => isHidden(modelKey(m))).length);
+  const totalVisible = $derived(modelStore.items.length - totalHidden);
+
+  /** Hidden keys with no catalog row — the admin removed/synced the model out
+   *  from under a hidden_models entry. Kept until the user prunes them. */
+  const staleHidden = $derived(
+    modelStore.loaded
+      ? modelPrefs.hiddenModels.filter((k) => !modelStore.items.some((m) => modelKey(m) === k))
+      : [],
+  );
+
+  function toggleProviderCollapse(id: string) {
+    const next = new Set(collapsedProviders);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    collapsedProviders = next;
+  }
+
   // Lazy boot for the Models card: prefs fetch is idempotent/shared, model
-  // cache only needed here for friendly labels.
+  // cache only needed here for friendly labels. The silent refreshModels()
+  // re-GET lands models synced (or removed) upstream since the last load —
+  // stale-row detection below depends on a current items list.
   $effect(() => {
     if (tab !== 'preferences') return;
     void loadModelPrefs();
     void loadModels();
+    void refreshModels();
   });
 
   // Lazy section boot: 2FA status read + memory list fire the first time the
@@ -494,7 +543,8 @@
     <section class="rounded-2xl p-4 sm:p-5" style="background:var(--panel); color:var(--text)">
       <h2 class="text-[15px] font-medium">Models</h2>
       <p class="mt-0.5 mb-1 text-xs text-[var(--muted)]">
-        Default model and models hidden from the pickers. Saved to your account.
+        Which models show up in the pickers, and the one new chats start on. Visibility is saved to
+        your account — it follows you across devices.
       </p>
 
       <div class="flex items-center justify-between gap-4 border-t py-3.5" style="border-color:var(--border)">
@@ -525,45 +575,169 @@
 
       <div class="border-t py-3.5" style="border-color:var(--border)">
         <div class="flex items-center justify-between gap-3">
-          <p class="text-sm font-medium">Hidden models</p>
-          {#if modelPrefs.hiddenModels.length > 0}
+          <p class="text-sm font-medium">Model visibility</p>
+          {#if totalHidden > 0}
             <button
               type="button"
               class={btn}
               style={btnGhostStyle}
               onclick={() => {
                 void unhideAll();
-                push('All models unhidden', 'success');
+                push('All models shown', 'success');
               }}
             >
-              Unhide all
+              Show all
             </button>
           {/if}
         </div>
         {#if !modelPrefs.loaded}
           <p class="mt-1 text-xs text-[var(--muted)]">Loading…</p>
-        {:else if !modelPrefs.hiddenModels.length}
-          <p class="mt-1 text-xs text-[var(--muted)]">
-            Nothing hidden — use the eye button in any model picker to tuck models away.
-          </p>
         {:else}
-          <ul class="mt-1">
-            {#each modelPrefs.hiddenModels as key (key)}
-              <li class="flex items-center gap-2.5 py-1.5">
-                <span class="min-w-0 flex-1 truncate text-sm text-[var(--muted)]">{prefModelLabel(key)}</span>
-                <span class="hidden max-w-40 shrink-0 truncate font-mono text-[11px] text-[var(--faint)] sm:block">{key}</span>
+          {#if modelStore.loaded && modelStore.items.length}
+            <p class="mt-0.5 text-xs text-[var(--muted)]">
+              {totalVisible} of {modelStore.items.length} shown — turning one off tucks it out of
+              every picker, instantly.
+            </p>
+          {/if}
+
+          {#if modelStore.items.length}
+            <div class="relative mt-2">
+              <Search
+                class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted)]"
+              />
+              <input
+                type="text"
+                class={input}
+                style="{inputStyle}; padding-left: 2rem"
+                placeholder="Search models…"
+                aria-label="Search models"
+                bind:value={modelSearch}
+              />
+            </div>
+          {/if}
+
+          {#if modelStore.loading && !modelStore.items.length}
+            <p class="mt-2 text-xs text-[var(--muted)]">Loading models…</p>
+          {:else if modelStore.error && !modelStore.items.length}
+            <p class="mt-2 text-xs" style="color:var(--danger)">{modelStore.error}</p>
+          {:else if !modelStore.items.length}
+            <p class="mt-2 text-xs text-[var(--muted)]">
+              No models yet — sync a provider in Admin first.
+            </p>
+          {:else if !catalogGroups.length}
+            <p class="mt-2 text-xs text-[var(--muted)]">No models match “{modelSearch.trim()}”.</p>
+          {:else}
+            {#each catalogGroups as g (g.id)}
+              {@const keys = g.models.map((m) => modelKey(m))}
+              {@const groupHidden = g.models.filter((m) => isHidden(modelKey(m))).length}
+              {@const open = modelSearch.trim() !== '' || !collapsedProviders.has(g.id)}
+              <div class="mt-2 flex items-center gap-1">
                 <button
                   type="button"
-                  class="iconbtn"
-                  aria-label="Unhide {prefModelLabel(key)}"
-                  title="Unhide — back in the pickers"
-                  onclick={() => void unhide(key)}
+                  class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-[var(--fill-hover)]"
+                  aria-expanded={open}
+                  onclick={() => toggleProviderCollapse(g.id)}
                 >
-                  <Eye class="size-3.5" />
+                  <ChevronDown
+                    class="size-3.5 shrink-0 text-[var(--faint)] transition-transform {open ? '' : '-rotate-90'}"
+                  />
+                  <span
+                    class="size-2 shrink-0 rounded-full"
+                    style="background:{hueColor(g.id)}"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="truncate text-xs font-medium uppercase tracking-wide text-[var(--muted)]">{g.label}</span>
+                  <span class="shrink-0 text-[11px] tabular-nums text-[var(--faint)]">
+                    {g.models.length - groupHidden}&thinsp;/&thinsp;{g.models.length}
+                  </span>
                 </button>
-              </li>
+                <div class="flex shrink-0 items-center gap-0.5">
+                  {#if groupHidden < g.models.length}
+                    <button
+                      type="button"
+                      class="groupbtn"
+                      title="Hide every model in {g.label}"
+                      onclick={() => void setHiddenAll(keys, true)}
+                    >
+                      Hide all
+                    </button>
+                  {/if}
+                  {#if groupHidden > 0}
+                    <button
+                      type="button"
+                      class="groupbtn"
+                      title="Show every model in {g.label}"
+                      onclick={() => void setHiddenAll(keys, false)}
+                    >
+                      Show all
+                    </button>
+                  {/if}
+                </div>
+              </div>
+              {#if open}
+                {#each g.models as m (modelKey(m))}
+                  {@const key = modelKey(m)}
+                  {@const hidden = isHidden(key)}
+                  {@const isDef = key === modelPrefs.defaultModel}
+                  <div class="flex items-center gap-2.5 rounded-lg px-1 py-1.5 transition-colors hover:bg-[var(--fill-hover)]">
+                    <button
+                      type="button"
+                      class="iconbtn"
+                      aria-pressed={isDef}
+                      aria-label={isDef ? 'Clear default model' : 'Set as default model'}
+                      title={isDef ? 'Account default — click to clear' : 'Set as default model'}
+                      onclick={() => void setDefault(isDef ? '' : key)}
+                    >
+                      <Star
+                        class="size-3.5"
+                        fill={isDef ? 'currentColor' : 'none'}
+                        style={isDef ? 'color:var(--acc)' : ''}
+                      />
+                    </button>
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-sm {hidden ? 'text-[var(--muted)]' : ''}">
+                        {m.display || m.model_id}
+                      </p>
+                      {#if m.display && m.display !== m.model_id}
+                        <p class="truncate font-mono text-[11px] leading-tight text-[var(--faint)]">{m.model_id}</p>
+                      {/if}
+                    </div>
+                    <Toggle
+                      label={`Show ${m.display || m.model_id} in the pickers`}
+                      checked={!hidden}
+                      onchange={(next) => void (next ? unhide(key) : hide(key))}
+                    />
+                  </div>
+                {/each}
+              {/if}
             {/each}
-          </ul>
+          {/if}
+
+          {#if staleHidden.length}
+            <div class="mt-4 border-t pt-3" style="border-color:var(--border)">
+              <p class="text-xs font-medium text-[var(--muted)]">Removed upstream</p>
+              <p class="mt-0.5 text-[11px] leading-relaxed text-[var(--faint)]">
+                Models you hid that an admin has since removed — still saved on your account.
+                Remove them to clean up.
+              </p>
+              <ul class="mt-1">
+                {#each staleHidden as key (key)}
+                  <li class="flex items-center gap-2.5 py-1">
+                    <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--faint)]">{key}</span>
+                    <span class="shrink-0 text-[11px] text-[var(--faint)]">no longer available</span>
+                    <button
+                      type="button"
+                      class="groupbtn"
+                      aria-label="Remove {key} from your saved preferences"
+                      onclick={() => void unhide(key)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
         {/if}
       </div>
     </section>
@@ -971,5 +1145,25 @@
   }
   .iconbtn-danger:hover {
     color: var(--danger);
+  }
+  /* tiny quiet text button (Models card): per-provider Hide all / Show all
+     and stale-entry Remove — smaller than .btn, same hover fill language */
+  .groupbtn {
+    padding: 2px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .groupbtn:hover {
+    background: var(--fill-hover);
+    color: var(--text);
+  }
+  .groupbtn:focus-visible {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 1px;
   }
 </style>
