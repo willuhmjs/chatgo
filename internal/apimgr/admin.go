@@ -467,8 +467,53 @@ func (h *adminH) handleMePut(w http.ResponseWriter, r *http.Request) {
 			httpx.InternalError(w, r, err)
 			return
 		}
+		if k == "name" {
+			// Display-name overlay (SECREV-3 S3-4 side observation): the
+			// me-setting alone is invisible to GET /api/auth/me, so the saved
+			// name reverted to the registration name on every reload. Mirror
+			// it onto the user row now that the value passed validation.
+			if err := h.applyMeName(r, u.ID, s); err != nil {
+				httpx.InternalError(w, r, err)
+				return
+			}
+		}
 	}
 	httpx.JSON(w, http.StatusOK, h.meSettings(r, u.ID))
+}
+
+// applyMeName mirrors the validated "name" me-setting onto the users row so
+// /api/auth/me (and the Sidebar displayName chain name→email→"Signed out")
+// reflects it after a reload. Semantics chosen from the FE, honest to the
+// schema:
+//   - "" CLEARS the row (users.name is NOT NULL with an empty-string default,
+//     so "" is the
+//     schema's own "no name"; SettingsMe never sends blank — its Save trims
+//     and bails — but a direct API caller clearing the setting gets a
+//     cleared user row too, so setting and identity probe can never diverge;
+//     the FE chain then renders the email).
+//   - All-or-nothing: a failed user-row update answers 500, NOT a 200 — the
+//     caller must not believe the profile name took effect when it did not.
+//     (The settings row is already written at that point; the client's retry
+//     re-upserts both rows to the same value, so a retry converges.)
+//
+// No UsersRepo.Update exists and internal/store is out of this fix's scope,
+// so this follows internal/auth/totp.go's precedent for writing a users
+// column the repo does not expose: one scoped statement via Store.DB.
+func (h *adminH) applyMeName(r *http.Request, userID, name string) error {
+	if _, err := h.d.Store.Users.GetByID(r.Context(), userID); err != nil {
+		return err // session without a live user row → server inconsistency, 500
+	}
+	res, err := h.d.Store.DB.ExecContext(r.Context(),
+		`UPDATE users SET name = ?2 WHERE id = ?1`, userID, name)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 // meSettings collects "me.<uid>.*" rows into a bare {key:value} map.

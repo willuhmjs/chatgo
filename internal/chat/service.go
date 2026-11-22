@@ -49,6 +49,17 @@ const (
 	// errMsgProviderDisabled surfaces when the chat's provider row has been
 	// disabled by an admin after the chat was created.
 	errMsgProviderDisabled = "model provider disabled"
+	// errMsgModelDisabled surfaces when the chat's cached model row has been
+	// disabled by an admin after the chat was created (SECREV-3 S2-1: the
+	// per-model kill must stop spend even into pre-existing chats).
+	errMsgModelDisabled = "chat: this model has been disabled by an admin"
+	// errMsgModelGone surfaces when the chat's model is no longer cached for
+	// its provider at all (removed upstream by a later sync). Same verdict
+	// as create/switch: validateChatModel (internal/apichat/chats.go) answers
+	// an uncached model 404 "model not found", so the send path refuses too
+	// — a vanished model is treated like a disabled one, never passed
+	// through to upstream on trust.
+	errMsgModelGone = "chat: this model is no longer available"
 
 	// turnUpstreamTimeout bounds the whole upstream phase (connect + full
 	// stream) of one turn so a stalled provider cannot pin a turn slot,
@@ -289,6 +300,32 @@ func (s *Service) loadChat(ctx context.Context, userID, chatID string) (*store.C
 	return chat, nil
 }
 
+// checkChatModel enforces the admin models cache for the chat's stored model
+// on the SEND path (SECREV-3 S2-1). A non-empty refuse is the client-safe
+// SSE error message (errMsgModelDisabled / errMsgModelGone); err is non-nil
+// only when the cache itself is unreadable — the caller must then fail the
+// turn generically, never allow it. See run() step 7b for the policy's
+// create-path provenance.
+func (s *Service) checkChatModel(ctx context.Context, chat *store.Chat) (refuse string, err error) {
+	if chat.ModelID == "" {
+		return "", nil // provider-only chat: create accepts it, so send does too
+	}
+	models, err := s.Store.Models.ForProvider(ctx, chat.ProviderID)
+	if err != nil {
+		return "", err
+	}
+	for i := range models {
+		if models[i].ModelID != chat.ModelID {
+			continue
+		}
+		if !models[i].Enabled {
+			return errMsgModelDisabled, nil
+		}
+		return "", nil
+	}
+	return errMsgModelGone, nil
+}
+
 // run is the streaming goroutine: persist → meta → title/search → upstream →
 // persist assistant → done|error. release returns the turn slot acquired by
 // Send and must be non-nil.
@@ -425,6 +462,31 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	if !provRow.Enabled {
 		slog.Warn("chat: provider disabled; refusing turn", "chat_id", chatID, "provider_id", chat.ProviderID)
 		emit(ctx, out, EventError, ErrorData{Message: errMsgProviderDisabled})
+		return
+	}
+
+	// 7b. The chat's cached model row is authoritative the same way
+	// (SECREV-3 S2-1): a per-model disable must stop spend even into
+	// pre-existing chats, with the same immediacy as the provider kill above.
+	// Policy mirrors validateChatModel on the create/switch path
+	// (internal/apichat/chats.go) exactly, so the two agree:
+	//   - chat without a model (ModelID == ""): no check — create accepts
+	//     provider-only chats, including providers whose catalog was never
+	//     synced (zero cached rows);
+	//   - cached row with enabled=0: refuse (the admin toggled it off);
+	//   - no cached row for (provider, model), zero-row provider included:
+	//     refuse — create answers this 404 "model not found", so a model
+	//     that vanished from the cache (deleted upstream by a later sync)
+	//     must not keep answering on pre-existing chats either.
+	// One indexed read on the models cache, same place in the flow as the
+	// provider row read above.
+	if refuse, err := s.checkChatModel(ctx, chat); err != nil {
+		s.fail(ctx, out, "chat: model lookup failed", err)
+		return
+	} else if refuse != "" {
+		slog.Warn("chat: model disabled; refusing turn", "chat_id", chatID,
+			"provider_id", chat.ProviderID, "model_id", chat.ModelID, "error", refuse)
+		emit(ctx, out, EventError, ErrorData{Message: refuse})
 		return
 	}
 
