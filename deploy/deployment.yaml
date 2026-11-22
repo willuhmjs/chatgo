@@ -1,0 +1,62 @@
+# ChatGo single binary: static Go + embedded SPA, distroless nonroot.
+# Memory target < 128Mi (see README); limit doubles as the DoS blast-radius cap.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatgo
+  namespace: chatgo
+  labels:
+    app: chatgo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate        # SQLite on an RWO volume — never two pods at once
+  selector:
+    matchLabels:
+      app: chatgo
+  template:
+    metadata:
+      labels:
+        app: chatgo
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532      # distroless "nonroot"
+        fsGroup: 65532        # so the PVC is writable by nonroot
+      containers:
+      - name: chatgo
+        image: ghcr.io/OWNER/chatgo:latest   # CI pushes ghcr.io/<org>/chatgo — fix OWNER
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        envFrom:
+        - configMapRef: {name: chatgo-config}   # PUBLIC_URL, OIDC_ISSUER, OIDC_CLIENT_ID, …
+        - secretRef: {name: chatgo-secrets}     # SESSION_SECRET, OIDC_CLIENT_SECRET
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /healthz, port: http}
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: chatgo-data-pvc-enc

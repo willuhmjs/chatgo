@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -60,7 +61,11 @@ func CapJSONBody(maxBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if ct := r.Header.Get("Content-Type"); ct != "" && !isMultipart(ct) && r.Body != nil {
-				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+				lim := maxBytes
+				if strings.HasPrefix(r.URL.Path, "/v1/") && lim < 4<<20 {
+					lim = 4 << 20 // OpenAI-compat payloads legitimately get big
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, lim)
 			}
 			next.ServeHTTP(w, r)
 		})

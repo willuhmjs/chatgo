@@ -131,8 +131,13 @@ func AuthPolicy(a *auth.Auth, next http.Handler) http.Handler {
 			strings.HasPrefix(p, "/api/users"),
 			p == "/api/settings" || strings.HasPrefix(p, "/api/settings/"):
 			admin.ServeHTTP(w, r)
-		case strings.HasPrefix(p, "/api/"), strings.HasPrefix(p, "/files/"), strings.HasPrefix(p, "/v1/"):
+		case strings.HasPrefix(p, "/api/"), strings.HasPrefix(p, "/files/"):
 			authed.ServeHTTP(w, r)
+		case strings.HasPrefix(p, "/v1/"):
+			// Token-authed proxy: proxy.go enforces Bearer ck_ itself (and
+			// falls back to an attached session); forcing session here would
+			// 401 automation clients before the handler ever ran.
+			optional.ServeHTTP(w, r)
 		default:
 			optional.ServeHTTP(w, r)
 		}

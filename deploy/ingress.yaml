@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatgo
+  namespace: chatgo
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: chatgo-redirect-https@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: chat2.will.net
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: chatgo
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - chat2.will.net
+    secretName: chatgo-tls

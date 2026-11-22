@@ -1,0 +1,19 @@
+# Non-secret runtime config. SSO points at Authelia (client `chatgo`, redirect URI
+# https://chat2.will.net/api/auth/oidc/callback — register it in Authelia's config).
+# PUBLIC_URL must match the ingress host: it enables Secure cookies and builds the OIDC redirect.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chatgo-config
+  namespace: chatgo
+data:
+  PUBLIC_URL: https://chat2.will.net
+  OIDC_ISSUER: https://sso.will.net
+  OIDC_CLIENT_ID: chatgo
+  OIDC_DISPLAY_NAME: Authelia
+  REGISTRATION: approve
+  DATA_DIR: /data
+  # Optional extras (uncomment + fill):
+  # TASK_MODEL: "<providerID>:<modelID>"   # cheap model for titles/summaries
+  # SEARXNG_URL: http://searxng.<ns>.svc:8080   # enables web-search toggle (loopback/in-cluster OK)
+  # TRUSTED_URL_NETS: "10.42.0.0/16"       # only if providers live inside the cluster net

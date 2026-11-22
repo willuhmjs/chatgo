@@ -36,4 +36,5 @@ func Register(mux *http.ServeMux, d *Deps) {
 	registerMessages(mux, d)
 	registerShare(mux, d)
 	registerFoldersTags(mux, d)
+	registerFiles(mux, d)
 }
