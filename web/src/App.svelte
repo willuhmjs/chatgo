@@ -7,6 +7,8 @@
   import { initTheme } from '$lib/theme.svelte.js';
   import { initShortcuts, onShortcut } from '$lib/shortcuts.svelte.js';
   import { bootstrap, isAdmin, isOnboardDismissed, session, shouldOnboard } from '$lib/session.svelte.js';
+  import { load as loadModelPrefs } from '$lib/chat/model-prefs.svelte.js';
+  import { bootAccent } from '$lib/accent-sync.svelte.js';
   import Toasts from '$lib/extra/ToastHost.svelte';
   import CommandPalette from '$lib/extra/CommandPalette.svelte';
 
@@ -84,6 +86,23 @@
   $effect(() => {
     void location.path;
     mobileOpen = false;
+  });
+
+  // Server-synced model prefs (default + hidden) — one fetch shared via the
+  // model-prefs module; Home/ModelPicker/CommandPalette/Settings read it live.
+  // Re-runs on login/logout; the module re-fetches after a failure.
+  $effect(() => {
+    if (!session.ready || !session.user) return;
+    void loadModelPrefs();
+  });
+
+  // Server-synced accent (docs/FEATURES-V2.md): pulls the me-settings "accent"
+  // key so the choice follows the account, and pushes a pre-existing local
+  // choice up once. Separate module call rather than reusing the onboarding
+  // getMeSettings below — that one only runs for admins on /home.
+  $effect(() => {
+    if (!session.ready || !session.user) return;
+    void bootAccent();
   });
 
   // fresh-admin wizard nudge (AUTHGATE-CONTRACT §3): an admin on home whose
@@ -220,6 +239,10 @@
           <Compare />
         {:else if route.name === 'gallery'}
           <Gallery />
+        {:else if route.name === 'knowledge'}
+          <Knowledge />
+        {:else if route.name === 'images'}
+          <Images />
         {:else if route.name === 'settings'}
           <Settings />
         {:else if route.name === 'admin'}

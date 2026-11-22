@@ -55,7 +55,8 @@
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', dismiss);
     window.addEventListener('scroll', dismiss, true);
-    menuEl?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    (menuEl?.querySelector<HTMLElement>('[data-autofocus]') ??
+      menuEl?.querySelector<HTMLElement>('[role="menuitem"]'))?.focus();
     return () => {
       document.removeEventListener('pointerdown', onDown);
       window.removeEventListener('keydown', onKey, true);

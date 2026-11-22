@@ -4,8 +4,9 @@
 //
 // Routes (owned here, mounted by Register):
 //
-//	POST /api/images/generate {prompt, provider_id?, size?, n?} → {images:[…]}
-//	GET  /api/images                                            → own newest 50
+//	POST   /api/images/generate     {prompt, provider_id?, size?, n?} → {images:[…]}
+//	GET    /api/images                                            → own newest 50
+//	DELETE /api/images/{id}                                       → own image, 204
 //
 // RAM discipline: single 120s request context, 12 MiB upstream response cap
 // streamed straight into the JSON decoder (the raw body is never buffered
@@ -95,6 +96,7 @@ func Register(mux *http.ServeMux, d *Deps) {
 	h := &handler{d: d}
 	mux.HandleFunc("POST /api/images/generate", h.handleGenerate)
 	mux.HandleFunc("GET /api/images", h.handleList)
+	mux.HandleFunc("DELETE /api/images/{id}", h.handleDelete)
 }
 
 // user resolves the session caller (AuthPolicy's Require already gated the
@@ -113,13 +115,16 @@ func (h *handler) user(w http.ResponseWriter, r *http.Request) (*store.User, boo
 }
 
 // imageOut is one generated image in the API response (files.Meta-compatible
-// plus urls served by the existing /files/{id}/{name} route).
+// plus urls served by the existing /files/{id}/{name} route). CreatedAt is
+// unix seconds from the files row (house time convention: every JSON-facing
+// created_at in the repo is an int64 unix stamp, cf. apichat.fileDTO).
 type imageOut struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Mime string `json:"mime"`
-	Size int64  `json:"size"`
-	URL  string `json:"url"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Mime      string `json:"mime"`
+	Size      int64  `json:"size"`
+	URL       string `json:"url"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // ---------- POST /api/images/generate ----------

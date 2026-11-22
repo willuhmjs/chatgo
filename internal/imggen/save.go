@@ -113,7 +113,15 @@ func (h *handler) saveImage(ctx context.Context, userID string, idx int, b64 str
 	if err != nil {
 		return nil, err
 	}
-	return &imageOut{ID: meta.ID, Name: meta.Name, Mime: meta.Mime, Size: meta.Size, URL: meta.URL}, nil
+	out := &imageOut{ID: meta.ID, Name: meta.Name, Mime: meta.Mime, Size: meta.Size, URL: meta.URL}
+	// files.Meta is the frozen POST /api/files shape (no created_at), so the
+	// honest timestamp comes straight from the row Save just wrote — one
+	// indexed read per image (n ≤ 4). A read hiccup leaves 0; the row itself
+	// is saved and will list correctly.
+	if f, err := h.d.Store.Files.Get(ctx, meta.ID); err == nil {
+		out.CreatedAt = f.CreatedAt
+	}
+	return out, nil
 }
 
 // ---------- GET /api/images ----------
@@ -134,8 +142,42 @@ func (h *handler) handleList(w http.ResponseWriter, r *http.Request) {
 	for _, f := range files {
 		out = append(out, imageOut{
 			ID: f.ID, Name: f.Name, Mime: f.Mime, Size: f.Size,
-			URL: "/files/" + f.ID + "/" + url.PathEscape(f.Name),
+			URL:       "/files/" + f.ID + "/" + url.PathEscape(f.Name),
+			CreatedAt: f.CreatedAt,
 		})
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"images": out})
+}
+
+// ---------- DELETE /api/images/{id} ----------
+
+// handleDelete removes the caller's own generated image — row, stored bytes
+// and thumbnail — via files.Service.Delete (row-first, so a failed unlink
+// can never orphan a visible row). Ownership is fully knowable: every files
+// row carries a NOT NULL user_id (schema.sql), so foreign ids, unknown ids
+// and non-image rows (which belong to the /api/files surface, not here) all
+// answer the identical 404 — no existence leak, matching handleFileGet and
+// DataURL. No audit record: repo convention audits auth/admin/credential
+// actions (token.*, provider.*, user.*), never routine user-content deletes
+// (chats, prompts, memories are unaudited).
+func (h *handler) handleDelete(w http.ResponseWriter, r *http.Request) {
+	u, ok := h.user(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	f, err := h.d.Files.Get(r.Context(), id)
+	if err != nil || f.UserID != u.ID || f.Kind != store.FileKindImage {
+		httpx.ErrorJSON(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.d.Files.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.ErrorJSON(w, http.StatusNotFound, "not found") // raced away
+			return
+		}
+		httpx.InternalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

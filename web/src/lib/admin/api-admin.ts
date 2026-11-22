@@ -60,24 +60,6 @@ function isRegistration(v: string | undefined): v is Registration {
   return v === 'open' || v === 'approve' || v === 'closed';
 }
 
-export async function getSystemSettings(): Promise<SystemSettings> {
-  const all = await api.getSettings();
-  return {
-    task_model: all['task_model'] ?? '',
-    system_prompt: all['system_prompt'] ?? '',
-    search_url: all['search_url'] ?? '',
-    registration: isRegistration(all['registration']) ? all['registration'] : 'approve',
-  };
-}
-
-/** PUT only the allowlisted keys; returns the persisted value for rebasing dirty state. */
-export async function putSystemSettings(s: SystemSettings): Promise<SystemSettings> {
-  const body: Partial<Record<SettingsKey, string>> = {};
-  for (const k of SETTINGS_KEYS) body[k] = s[k];
-  await api.setSettings(body as Record<string, string>);
-  return s;
-}
-
 // ---------- users helpers ----------
 
 /** Pending approval queue. CONTRACT-DEVIATION: no /api/users/pending route in

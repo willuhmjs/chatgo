@@ -293,7 +293,6 @@ export async function uploadFile(file: File, chatId?: string): Promise<FileMeta>
 }
 export const listFiles = (kind?: string) =>
   req<FileMeta[]>('GET', kind ? `/api/files?kind=${kind}` : '/api/files');
-export const fileURL = (f: FileMeta) => f.url;
 
 // ---------- folders & tags ----------
 
@@ -326,26 +325,3 @@ export const setUserRole = (id: string, role: string) => req<User>('PUT', `/api/
 export const listTokens = () => req<ApiToken[]>('GET', '/api/tokens');
 export const createToken = (name: string) => req<ApiToken>('POST', '/api/tokens', { name });
 export const deleteToken = (id: string) => req<void>('DELETE', `/api/tokens/${id}`);
-
-// ---------- /v1 OpenAI-compatible proxy (raw, SSE pass-through owned by caller) ----------
-
-/**
- * Raw POST /v1/chat/completions with a ck_… api token. Returns the Response
- * so callers can stream `body` themselves (OpenAI wire format, not ours).
- */
-export async function completeProxy(
-  body: unknown,
-  apiKey: string,
-  signal?: AbortSignal,
-): Promise<Response> {
-  const res = await fetch('/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) throw await errorFrom(res);
-  return res;
-}
-
-export const healthz = () => req<{ status: string; version: string }>('GET', '/healthz');

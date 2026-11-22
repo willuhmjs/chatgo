@@ -251,3 +251,62 @@ func TestAdminSettingsKBEmbedModel(t *testing.T) {
 		t.Fatalf("non-admin PUT wrote despite 403: %v (err %v)", v, err)
 	}
 }
+
+// P0-2: profile Save (SettingsMe → api-shell setMeName) PUTs the "name"
+// me-setting, which used to miss the allowlist entirely and 400 every time.
+// Round-trip: 200 + echoed bare, stored namespaced, GET strips the prefix,
+// and empty clears (the FE never sends blank, but the key behaves like the
+// others).
+func TestMeSettingsNameRoundTrip(t *testing.T) {
+	env := newMeSettingsEnv(t)
+	ctx := context.Background()
+
+	rec := env.do(t, http.MethodPut, "/api/me/settings", `{"name":"Ada Lovelace"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT name = %d, want 200 (body %q)", rec.Code, rec.Body)
+	}
+	if got := decodeMap(t, rec)["name"]; got != "Ada Lovelace" {
+		t.Fatalf("PUT response = %q, want the name echoed", got)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "me."+env.userID+".name"); err != nil || v == nil || *v != "Ada Lovelace" {
+		t.Fatalf("stored row = %v (err %v), want Ada Lovelace", v, err)
+	}
+
+	rec = env.do(t, http.MethodGet, "/api/me/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d (body %q)", rec.Code, rec.Body)
+	}
+	if got := decodeMap(t, rec)["name"]; got != "Ada Lovelace" {
+		t.Fatalf("GET round-trip = %q, want Ada Lovelace", got)
+	}
+
+	// Empty clears (200), like default_model/kb_embed_model do.
+	rec = env.do(t, http.MethodPut, "/api/me/settings", `{"name":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT empty name = %d, want 200 (body %q)", rec.Code, rec.Body)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "me."+env.userID+".name"); err != nil || v == nil || *v != "" {
+		t.Fatalf("after clear stored = %v (err %v), want empty string", v, err)
+	}
+}
+
+// P0-2 validator: ≤100 RUNES, not bytes — 100 two-byte chars pass while 101
+// fail with the house 400 envelope, and the rejection must not clobber the
+// previously good value.
+func TestMeSettingsNameLengthCap(t *testing.T) {
+	env := newMeSettingsEnv(t)
+	ctx := context.Background()
+
+	rec := env.do(t, http.MethodPut, "/api/me/settings", `{"name":"`+strings.Repeat("é", 100)+`"}`) // 200 bytes, 100 runes
+	if rec.Code != http.StatusOK {
+		t.Fatalf("100-rune (200-byte) name = %d %q, want 200", rec.Code, rec.Body)
+	}
+
+	rec = env.do(t, http.MethodPut, "/api/me/settings", `{"name":"`+strings.Repeat("é", 101)+`"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "name must be at most 100 characters") {
+		t.Fatalf("101-rune name = %d %q, want 400 'name must be at most 100 characters'", rec.Code, rec.Body)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "me."+env.userID+".name"); err != nil || v == nil || *v != strings.Repeat("é", 100) {
+		t.Fatalf("rejected PUT mutated the row: %v (err %v), want the 100-rune value intact", v, err)
+	}
+}

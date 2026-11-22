@@ -54,9 +54,8 @@ export function setHomeModel(id: string) {
 export const setMeName = (name: string) => api.setMeSettings({ name });
 
 /**
- * CONTRACT-DEVIATION: POST /api/me/password is NOT in docs/CONTRACTS.md §HTTP
- * surface. Local users only; server will 404 until the endpoint exists — the
- * error is surfaced as a friendly toast by callers. TODO: wire when BE ships it.
+ * POST /api/me/password — local accounts only (OIDC-only users get a server
+ * error). Throttled per session (5/min); errors surface as friendly toasts.
  */
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   const res = await fetch('/api/me/password', {

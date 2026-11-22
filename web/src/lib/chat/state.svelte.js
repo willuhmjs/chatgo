@@ -3,6 +3,7 @@
 import { listModels } from '../api';
 import { probeSearchEnabled, lsGet, lsSet, LS_KEYS, stripForTTS } from '../chatview-api';
 import { isHljsReady, onHljsReady } from './markdown';
+import { isHidden } from './model-prefs.svelte.js';
 
 // ---------- hljs readiness (markdown.ts is runes-free; bridge lives here) ----------
 
@@ -51,16 +52,102 @@ export function findModel(providerId, modelId) {
     ?? models.items.find((m) => m.model_id === modelId);
 }
 
-/** Group models by provider display name (stable order). */
-export function modelsByProvider() {
-  /** @type {Map<string, import('../api').ModelEntry[]>} */
+/** Canonical model identity key — "providerID:modelID", used everywhere. */
+export const modelKey = (/** @type {import('../api').ModelEntry} */ m) =>
+  `${m.provider_id}:${m.model_id}`;
+
+/** Case-insensitive substring search over display, model_id and provider
+ *  (same haystack ModelPicker has always filtered on). Empty query ⇒ true. */
+export function matchesQuery(/** @type {import('../api').ModelEntry} */ m, /** @type {string} */ q) {
+  const f = (q ?? '').trim().toLowerCase();
+  if (!f) return true;
+  return `${m.display} ${m.model_id} ${m.provider || m.provider_id}`.toLowerCase().includes(f);
+}
+
+// Non-chat model families (embedding / rerank / audio / image …), mirroring
+// the backend imggen selection heuristics. Matched at word-ish boundaries as
+// word PREFIXES: `embed` hits text-embedding-3-large, `transcri` hits
+// gpt-4o-transcribe, `dall` hits dall-e-3 — without swallowing words that
+// merely contain the substring (e.g. a hypothetical "searchocr" id).
+const NON_CHAT_WORDS = [
+  'embed',
+  'rerank',
+  'asr',
+  'tts',
+  'whisper',
+  'audio',
+  'voice',
+  'ocr',
+  'moderation',
+  'image',
+  'dall',
+  'imagen',
+  'flux',
+  'sd3',
+  'stable-diffusion',
+  'diffusion',
+  'aligner',
+  'transcri',
+];
+const NON_CHAT_RES = NON_CHAT_WORDS.map((w) => new RegExp(`(?:^|[^a-z0-9])${w}`));
+
+/** Heuristic: plausibly a chat/completions model? Excludes embedding,
+ *  rerank, TTS/ASR, moderation and image-generation families by id + display. */
+export function isLikelyChatModel(/** @type {import('../api').ModelEntry} */ m) {
+  const hay = `${m.model_id} ${m.display ?? ''}`.toLowerCase();
+  return !NON_CHAT_RES.some((re) => re.test(hay));
+}
+
+/**
+ * Default picker list: drop hidden models, then drop non-chat families — but
+ * only when that actually trims ≥1 item AND at least one chat model survives
+ * (i.e. the provider list is mixed). The caller gets the heuristic-dropped
+ * count so it can render a "show the rest" footer that lifts it per session.
+ * @param {import('../api').ModelEntry[]} items
+ * @param {{ showAll?: boolean }} [opts]
+ */
+export function pickerModels(items, opts = {}) {
+  const visible = items.filter((m) => !isHidden(modelKey(m)));
+  if (opts.showAll) return { models: visible, hiddenByHeuristic: 0 };
+  const chat = visible.filter(isLikelyChatModel);
+  const dropped = visible.length - chat.length;
+  if (dropped >= 1 && chat.length >= 1) return { models: chat, hiddenByHeuristic: dropped };
+  return { models: visible, hiddenByHeuristic: 0 };
+}
+
+/**
+ * Group models by PROVIDER ID (stable order) — keying by display name used to
+ * merge two providers that share a name and render every model twice. Labels
+ * are the display name; when two ids share one label the id is appended in
+ * parens. Exact provider_id:model_id repeats are dropped defensively.
+ * @param {import('../api').ModelEntry[]} [items]
+ * @returns {{ id: string; label: string; models: import('../api').ModelEntry[] }[]}
+ */
+export function modelsByProvider(items = models.items) {
+  /** @type {Map<string, { id: string; label: string; models: import('../api').ModelEntry[] }>} */
   const map = new Map();
-  for (const m of models.items) {
-    const key = m.provider || m.provider_id || 'unknown';
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(m);
+  /** @type {Set<string>} */
+  const seen = new Set();
+  for (const m of items) {
+    const key = modelKey(m);
+    if (seen.has(key)) continue; // server handed us the same model twice
+    seen.add(key);
+    const id = m.provider_id || m.provider || 'unknown';
+    let g = map.get(id);
+    if (!g) {
+      g = { id, label: m.provider || m.provider_id || 'unknown', models: [] };
+      map.set(id, g);
+    }
+    g.models.push(m);
   }
-  return [...map.entries()];
+  const groups = [...map.values()];
+  /** @type {Map<string, number>} */
+  const labelCount = new Map();
+  for (const g of groups) labelCount.set(g.label, (labelCount.get(g.label) ?? 0) + 1);
+  for (const g of groups) {
+    if ((labelCount.get(g.label) ?? 0) > 1) g.label = `${g.label} (${g.id})`;
+  }
+  return groups;
 }
 
 // ---------- capabilities (web-search toggle visibility) ----------

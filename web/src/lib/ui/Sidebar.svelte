@@ -436,6 +436,22 @@
           <Search class="size-[18px]" />
         </IconButton>
       </Tooltip>
+      <Tooltip text="Knowledge" side="right">
+        <a
+          href="/knowledge"
+          aria-label="Knowledge"
+          onclick={(e) => { e.preventDefault(); navigate('/knowledge'); }}
+          class="grid size-9 place-items-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
+        ><BookOpen class="size-[18px]" /></a>
+      </Tooltip>
+      <Tooltip text="Images" side="right">
+        <a
+          href="/images"
+          aria-label="Images"
+          onclick={(e) => { e.preventDefault(); navigate('/images'); }}
+          class="grid size-9 place-items-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
+        ><ImageIcon class="size-[18px]" /></a>
+      </Tooltip>
     </div>
   {:else}
     <div class="flex h-12 shrink-0 items-center gap-0.5 px-2">

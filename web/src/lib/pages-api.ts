@@ -252,7 +252,9 @@ export const deletePrompt = (id: string) => req<void>('DELETE', `/api/prompts/${
 //     {files:[{id,url,name?}]}; ALSO accepted: {images:[<url-string> | {id,url,name?}]}
 //     and bare arrays. Items without a url are dropped (no b64 support assumed).
 //   GET /api/images → newest-50 own images as FileMeta-shaped rows
-//     [{id,name,mime,size|bytes,kind,url}]; bare array or {files|items|data: []}.
+//     [{id,name,mime,size|bytes,kind,url,created_at(unix-sec)}];
+//     bare array or {files|items|data: []}.
+//   DELETE /api/images/{id} → 204 (own images only; foreign/unknown → 404).
 //   size is sent as a plain number ("512") — if the Go handler wants OpenAI's
 //   "512x512" string instead, change the one `size:` line in generateImages.
 
@@ -260,6 +262,12 @@ export interface GeneratedImage {
   id: string;
   url: string;
   name: string;
+}
+
+/** Gallery row: FileMeta plus the server timestamp (unix seconds). */
+export interface ImageFile extends FileMeta {
+  /** 0 when the server did not report it (older build) — callers fall back. */
+  created_at: number;
 }
 
 function normImage(item: unknown): GeneratedImage | null {
@@ -283,7 +291,7 @@ export async function generateImages(
     .filter((i): i is GeneratedImage => i !== null);
 }
 
-export async function listImages(): Promise<FileMeta[]> {
+export async function listImages(): Promise<ImageFile[]> {
   const data = await req<unknown>('GET', '/api/images');
   return listOf<Raw>(data, 'files', 'items', 'data')
     .map((f) => ({
@@ -293,9 +301,12 @@ export async function listImages(): Promise<FileMeta[]> {
       size: firstNum(f.size, f.bytes),
       kind: 'image' as const,
       url: firstStr(f.url),
+      created_at: firstNum(f.created_at),
     }))
     .filter((f) => f.url !== '');
 }
+
+export const deleteImage = (id: string) => req<void>('DELETE', `/api/images/${encodeURIComponent(id)}`);
 
 /**
  * Provider dropdown options for the generate box: distinct providers of

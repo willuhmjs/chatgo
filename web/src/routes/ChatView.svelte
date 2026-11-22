@@ -30,6 +30,7 @@
   import ParamDrawer from '$lib/chat/ParamDrawer.svelte';
   import Lightbox from '$lib/chat/Lightbox.svelte';
   import IconButton from '$lib/chat/ui/IconButton.svelte';
+  import ChatActionsMenu from '$lib/chat/ChatActionsMenu.svelte';
   import { refreshCapabilities, stopSpeaking } from '$lib/chat/state.svelte.js';
 
   // fires the staged new-chat prompt exactly once per component instance
@@ -359,6 +360,7 @@
             <IconButton title="Chat parameters" active={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)}>
               <SlidersHorizontal size={15} />
             </IconButton>
+            <ChatActionsMenu {chat} onupdated={chatUpdated} />
           {:else}
             <div class="flex-1"></div>
           {/if}

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"chatgo/internal/api/httpx"
 	"chatgo/internal/audit"
@@ -252,9 +253,86 @@ const meSettingPrefix = "me."
 
 // meSettingKeys: "theme" is the UI pref; "setup_done" is written by the
 // onboarding wizard (App.svelte's fresh-admin nudge reads it back); "accent"
-// is reserved for the color-picker wave. All plain strings, 8KB-capped like
-// every other setting value.
-var meSettingKeys = map[string]bool{"theme": true, "setup_done": true, "accent": true}
+// is reserved for the color-picker wave; "default_model" pins the composer's
+// initial model; "hidden_models" is the picker's per-user hide list; "name"
+// is the profile display name SettingsMe's Save writes (api-shell setMeName).
+// All plain strings, 8KB-capped like every other setting value; the model
+// keys and name are further validated by meSettingValidators below.
+var meSettingKeys = map[string]bool{
+	"theme":         true,
+	"setup_done":    true,
+	"accent":        true,
+	"default_model": true,
+	"hidden_models": true,
+	"name":          true,
+}
+
+// maxHiddenModels caps one hidden_models list (task: ≤512 entries; the total
+// stays under maxSettingValue via the existing 8KB check).
+const maxHiddenModels = 512
+
+// meSettingValidators mirrors settingValidators for the per-user surface:
+// only keys present here get value checks in handleMePut (theme/setup_done/
+// accent stay free text). Values arrive already unmarshalled from JSON.
+var meSettingValidators = map[string]func(string) string{
+	"default_model": validateMeDefaultModel,
+	"hidden_models": validateMeHiddenModels,
+	"name":          validateMeName,
+}
+
+// maxMeNameRunes caps the profile display name (P0-2: SettingsMe's Save 400'd
+// because "name" was missing from meSettingKeys entirely).
+const maxMeNameRunes = 100
+
+// validateMeName accepts "" (cleared — the UI falls back to the account
+// email) and anything up to 100 runes. Rune count, not bytes: the 8KB byte
+// cap in handleMePut already guards storage, and a byte budget here would
+// punish CJK/emoji names ~3× per character.
+func validateMeName(v string) string {
+	if utf8.RuneCountInString(v) > maxMeNameRunes {
+		return "name must be at most 100 characters"
+	}
+	return ""
+}
+
+// validateMeDefaultModel accepts "" (unset) or "providerID:modelID" with the
+// same first-colon, both-halves-non-empty shape as validateKBEmbedModel.
+func validateMeDefaultModel(v string) string {
+	if v == "" {
+		return ""
+	}
+	i := strings.IndexByte(v, ':')
+	if i <= 0 || i == len(v)-1 {
+		return `default_model must be "providerID:modelID" or empty`
+	}
+	return ""
+}
+
+// validateMeHiddenModels accepts a JSON array of "providerID:modelID"
+// strings, e.g. `["ollama:llama3","openai:gpt-4"]` (the FE JSON.parses the
+// stored value back). "null" and other JSON scalars are rejected: the value
+// must literally be an array. Entry strings get the same colon rule as
+// validateMeDefaultModel.
+func validateMeHiddenModels(v string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" || trimmed[0] != '[' {
+		return `hidden_models must be a JSON array of "providerID:modelID" strings`
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		return `hidden_models must be a JSON array of "providerID:modelID" strings`
+	}
+	if len(entries) > maxHiddenModels {
+		return "hidden_models must have at most 512 entries"
+	}
+	for _, e := range entries {
+		i := strings.IndexByte(e, ':')
+		if i <= 0 || i == len(e)-1 {
+			return `hidden_models entries must be "providerID:modelID"`
+		}
+	}
+	return ""
+}
 
 // handleMeGet returns the caller's own prefs (namespaced keys stripped) plus
 // the computed search_enabled capability the composer probes for.
@@ -369,6 +447,12 @@ func (h *adminH) handleMePut(w http.ResponseWriter, r *http.Request) {
 		if len(s) > maxSettingValue {
 			httpx.ErrorJSON(w, http.StatusBadRequest, k+" too large")
 			return
+		}
+		if validator, ok := meSettingValidators[k]; ok {
+			if msg := validator(s); msg != "" {
+				httpx.ErrorJSON(w, http.StatusBadRequest, msg)
+				return
+			}
 		}
 		if err := h.d.Store.Settings.Set(r.Context(), meSettingPrefix+u.ID+"."+k, s); err != nil {
 			httpx.InternalError(w, r, err)

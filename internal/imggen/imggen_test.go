@@ -8,12 +8,16 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"chatgo/internal/auth"
 	"chatgo/internal/config"
@@ -32,6 +36,7 @@ type env struct {
 	user        *store.User
 	srv         *httptest.Server
 	upstreamURL string
+	dataDir     string
 	cookie      string
 	mu          sync.Mutex
 	reqBody     string // raw body of the last upstream request
@@ -71,7 +76,7 @@ func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
 		t.Fatalf("auth.New: %v", err)
 	}
 
-	e := &env{t: t, st: st, status: 200}
+	e := &env{t: t, st: st, status: 200, dataDir: cfg.DataDir}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/images/generations" {
 			http.NotFound(w, r)
@@ -162,6 +167,20 @@ func (e *env) get(path string) *http.Response {
 	return resp
 }
 
+func (e *env) del(path string) *http.Response {
+	e.t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, e.srv.URL+path, nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req.Header.Set("Cookie", e.cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resp
+}
+
 func (e *env) seedProvider(t *testing.T, id, baseURL string, imageModels ...string) *store.Provider {
 	t.Helper()
 	p := &store.Provider{ID: id, Name: "P-" + id, BaseURL: baseURL, APIKey: "test-key", Enabled: true}
@@ -191,11 +210,12 @@ func decodeBody(t *testing.T, resp *http.Response, dst any) {
 
 type genResult struct {
 	Images []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Mime string `json:"mime"`
-		Size int64  `json:"size"`
-		URL  string `json:"url"`
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Mime      string `json:"mime"`
+		Size      int64  `json:"size"`
+		URL       string `json:"url"`
+		CreatedAt int64  `json:"created_at"`
 	} `json:"images"`
 	Error string `json:"error"`
 }
@@ -511,6 +531,130 @@ func TestListImagesIsOwnOnly(t *testing.T) {
 	decodeBody(t, resp, &list)
 	if len(list.Images) != 1 || list.Images[0].Name != "own.png" {
 		t.Fatalf("list leaked or missed rows: %+v", list.Images)
+	}
+}
+
+// TestGenerateAndListCarryCreatedAt: imageOut exposes the files row's
+// created_at (unix seconds, house convention) on BOTH the generate response
+// and GET /api/images — the FE history tiles render server relative time
+// from it.
+func TestGenerateAndListCarryCreatedAt(t *testing.T) {
+	e := newEnv(t)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+	e.respond(200, `{"data":[{"b64_json":"`+tinyPNG+`"}]}`)
+
+	before := time.Now().Add(-time.Minute).Unix()
+	resp := e.post("/api/images/generate", `{"prompt":"a clock"}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusOK || len(out.Images) != 1 {
+		t.Fatalf("generate = %d, %d images", resp.StatusCode, len(out.Images))
+	}
+	gen := out.Images[0].CreatedAt
+	if gen < before || gen > time.Now().Add(time.Minute).Unix() {
+		t.Fatalf("generate created_at = %d, want ~now", gen)
+	}
+	row, err := e.st.Files.Get(t.Context(), out.Images[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.CreatedAt != gen {
+		t.Errorf("generate created_at %d != row created_at %d", gen, row.CreatedAt)
+	}
+
+	lr := e.get("/api/images")
+	var list genResult
+	decodeBody(t, lr, &list)
+	if len(list.Images) != 1 {
+		t.Fatalf("list = %+v", list.Images)
+	}
+	if list.Images[0].CreatedAt != row.CreatedAt {
+		t.Errorf("list created_at = %d, want %d", list.Images[0].CreatedAt, row.CreatedAt)
+	}
+}
+
+// TestDeleteImageRemovesRowAndBytes: DELETE /api/images/{id} → 204; the row
+// and the on-disk bytes vanish (listing + dir both checked), sibling images
+// are untouched, and a second delete of the gone id 404s.
+func TestDeleteImageRemovesRowAndBytes(t *testing.T) {
+	e := newEnv(t)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+	e.respond(200, `{"data":[{"b64_json":"`+tinyPNG+`"},{"b64_json":"`+tinyPNG+`"}]}`)
+
+	resp := e.post("/api/images/generate", `{"prompt":"two foxes","n":2}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusOK || len(out.Images) != 2 {
+		t.Fatalf("generate = %d, %d images (%s)", resp.StatusCode, len(out.Images), out.Error)
+	}
+	victim, keeper := out.Images[0], out.Images[1]
+	row, err := e.st.Files.Get(t.Context(), victim.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskPath := filepath.Join(e.dataDir, filepath.FromSlash(row.Path))
+
+	dr := e.del("/api/images/" + victim.ID)
+	dr.Body.Close()
+	if dr.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d, want 204", dr.StatusCode)
+	}
+	if _, err := e.st.Files.Get(t.Context(), victim.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("row after delete: %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(diskPath); !os.IsNotExist(err) {
+		t.Errorf("stored bytes survived: stat = %v", err)
+	}
+	// (thumbnail unlink is covered inside files.Service.Delete; asserting it
+	// here would race the async thumb worker in the files package)
+
+	lr := e.get("/api/images")
+	var list genResult
+	decodeBody(t, lr, &list)
+	if len(list.Images) != 1 || list.Images[0].ID != keeper.ID {
+		t.Fatalf("listing after delete = %+v, want only keeper", list.Images)
+	}
+
+	dr = e.del("/api/images/" + victim.ID)
+	dr.Body.Close()
+	if dr.StatusCode != http.StatusNotFound {
+		t.Errorf("re-delete = %d, want 404", dr.StatusCode)
+	}
+}
+
+// TestDeleteImageForeignUnknownAndNonImage404: foreign ids, unknown ids and
+// (own) non-image rows all get the identical 404 with the target row intact
+// — the no-existence-leak policy, and the /api/files surface stays out of
+// reach through the images route.
+func TestDeleteImageForeignUnknownAndNonImage404(t *testing.T) {
+	e := newEnv(t)
+	other := &store.User{Email: "other@example.com", Role: store.RoleUser}
+	if err := e.st.Users.Insert(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+	foreign := &store.File{UserID: other.ID, Name: "their.png", Mime: "image/png", Size: 70,
+		Path: "files/their.png", Kind: store.FileKindImage}
+	upload := &store.File{UserID: e.user.ID, Name: "doc.txt", Mime: "text/plain", Size: 12,
+		Path: "files/doc.txt", Kind: store.FileKindUpload}
+	for _, f := range []*store.File{foreign, upload} {
+		if err := e.st.Files.Insert(t.Context(), f); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, id := range []string{foreign.ID, "no-such-image", upload.ID} {
+		resp := e.del("/api/images/" + id)
+		var out struct{ Error string }
+		decodeBody(t, resp, &out)
+		if resp.StatusCode != http.StatusNotFound || out.Error == "" {
+			t.Errorf("DELETE %s = %d (%q), want 404 + message", id, resp.StatusCode, out.Error)
+		}
+	}
+	if _, err := e.st.Files.Get(t.Context(), foreign.ID); err != nil {
+		t.Errorf("foreign row touched: %v", err)
+	}
+	if _, err := e.st.Files.Get(t.Context(), upload.ID); err != nil {
+		t.Errorf("own upload row deleted through images route: %v", err)
 	}
 }
 

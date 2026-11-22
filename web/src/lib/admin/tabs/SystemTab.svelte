@@ -9,8 +9,14 @@
   import Spinner from '$lib/admin/ui/Spinner.svelte';
   import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, panelStyle } from '$lib/admin/ui/styles';
 
-  let saved = $state<SystemSettings | null>(null);
-  let form = $state<SystemSettings>({ task_model: '', system_prompt: '', search_url: '', registration: 'approve' });
+  // The four keys api-admin's SystemSettings types plus the two other writable
+  // globals the server allowlist accepts (title, kb_embed_model). api-admin's
+  // typed get/put is frozen at the four keys, so this tab goes through the raw
+  // getSettings/setSettings that same module re-exports instead.
+  type SystemForm = SystemSettings & { title: string; kb_embed_model: string };
+
+  let saved = $state<SystemForm | null>(null);
+  let form = $state<SystemForm>({ title: '', task_model: '', kb_embed_model: '', system_prompt: '', search_url: '', registration: 'approve' });
   let models = $state<ModelEntry[]>([]);
   let loading = $state(true);
   let loadError = $state('');
@@ -18,7 +24,9 @@
 
   const dirty = $derived(
     saved !== null &&
-      (form.task_model !== saved.task_model ||
+      (form.title !== saved.title ||
+        form.task_model !== saved.task_model ||
+        form.kb_embed_model !== saved.kb_embed_model ||
         form.system_prompt !== saved.system_prompt ||
         form.search_url !== saved.search_url ||
         form.registration !== saved.registration),
@@ -28,9 +36,19 @@
     loading = saved === null;
     loadError = '';
     try {
-      const [s, ms] = await Promise.all([admin.getSystemSettings(), admin.listModels().catch(() => [] as ModelEntry[])]);
-      saved = s;
-      form = { ...s };
+      // Raw getSettings instead of admin.getSystemSettings: the typed wrapper
+      // is frozen at four keys and drops title/kb_embed_model, which the
+      // server allowlist also accepts. One GET, all six keys mapped here.
+      const [all, ms] = await Promise.all([admin.getSettings(), admin.listModels().catch(() => [] as ModelEntry[])]);
+      saved = {
+        title: all['title'] ?? '',
+        task_model: all['task_model'] ?? '',
+        kb_embed_model: all['kb_embed_model'] ?? '',
+        system_prompt: all['system_prompt'] ?? '',
+        search_url: all['search_url'] ?? '',
+        registration: all['registration'] === 'open' || all['registration'] === 'closed' ? all['registration'] : 'approve',
+      };
+      form = { ...saved };
       models = ms;
     } catch (e) {
       loadError = errMsg(e, 'Could not load system settings');
@@ -48,7 +66,11 @@
     if (saving || !dirty) return;
     saving = true;
     try {
-      saved = await admin.putSystemSettings({ ...form });
+      // Single raw setSettings PUT (not admin.putSystemSettings, which would
+      // silently drop the two extra keys and need a second request): the
+      // server validates the whole batch before writing anything.
+      await admin.setSettings({ ...form });
+      saved = { ...form };
       push('System settings saved', 'success');
     } catch (e) {
       push(errMsg(e, 'Could not save settings'), 'error');
@@ -94,6 +116,17 @@
     >
       <section class="flex flex-col gap-5 rounded-2xl p-5" style="background:var(--panel)">
         <div>
+          <h2 class="text-[15px] font-medium">Instance</h2>
+          <p class="mt-0.5 text-xs text-[var(--muted)]">How this deployment introduces itself.</p>
+        </div>
+
+        <Field label="Instance title" hint="Display name for this ChatGo instance. Optional — blank uses the built-in default.">
+          <input class={input} style={inputStyle} placeholder="ChatGo" autocomplete="off" bind:value={form.title} />
+        </Field>
+      </section>
+
+      <section class="flex flex-col gap-5 rounded-2xl p-5" style="background:var(--panel)">
+        <div>
           <h2 class="text-[15px] font-medium">Background tasks</h2>
           <p class="mt-0.5 text-xs text-[var(--muted)]">Used for auto chat titles and context summaries. Optional — leave blank to disable those features.</p>
         </div>
@@ -108,6 +141,22 @@
             bind:value={form.task_model}
           />
           <datalist id="task-model-options">
+            {#each models as m (`${m.provider_id}/${m.model_id}`)}
+              <option value={modelOptionValue(m)}>{modelOptionLabel(m)}</option>
+            {/each}
+          </datalist>
+        </Field>
+
+        <Field label="Embedding model" hint="Format: provider:model — e.g. openai:text-embedding-3-small. Used for knowledge-base embeddings; blank auto-detects from synced models.">
+          <input
+            class={`${input} font-mono text-xs`}
+            style={inputStyle}
+            placeholder="providerID:modelID"
+            list="kb-embed-model-options"
+            autocomplete="off"
+            bind:value={form.kb_embed_model}
+          />
+          <datalist id="kb-embed-model-options">
             {#each models as m (`${m.provider_id}/${m.model_id}`)}
               <option value={modelOptionValue(m)}>{modelOptionLabel(m)}</option>
             {/each}

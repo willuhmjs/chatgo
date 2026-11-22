@@ -28,6 +28,8 @@
     type TwoFactorStatus,
   } from '$lib/security-api';
   import { copyText } from '$lib/chatview-api';
+  import { modelPrefs, load as loadModelPrefs, setDefault, unhide, unhideAll } from '$lib/chat/model-prefs.svelte.js';
+  import { loadModels, findModel } from '$lib/chat/state.svelte.js';
   import TokensPanel from '$lib/admin/TokensPanel.svelte';
   import Badge from '$lib/admin/ui/Badge.svelte';
   import Confirm from '$lib/admin/ui/Confirm.svelte';
@@ -44,7 +46,7 @@
     input,
     inputStyle,
   } from '$lib/admin/ui/styles';
-  import { Check, Copy, Moon, Pencil, ShieldCheck, Sun, Trash2 } from 'lucide-svelte';
+  import { Check, Copy, Eye, Moon, Pencil, ShieldCheck, Sun, Trash2 } from 'lucide-svelte';
 
   let { tab = 'profile' }: { tab?: 'profile' | 'preferences' | 'account' } = $props();
 
@@ -63,6 +65,11 @@
     orange: '#fbbf24',
     pink: '#f472b6',
   };
+
+  /** Picker label for an accent id ("violet" → "Violet"). */
+  function accentLabel(a: string): string {
+    return a.charAt(0).toUpperCase() + a.slice(1);
+  }
 
   // ----- profile -----
   let name = $state(session.user?.name ?? '');
@@ -335,6 +342,23 @@
     name = session.user?.name ?? '';
   });
 
+  // ----- preferences: model prefs (server-synced, $lib/chat/model-prefs) -----
+  /** Friendly label for a "providerID:modelID" key; falls back to the key. */
+  function prefModelLabel(key: string): string {
+    const i = key.indexOf(':');
+    if (i < 0) return key;
+    const m = findModel(key.slice(0, i), key.slice(i + 1));
+    return m ? m.display || m.model_id : key;
+  }
+
+  // Lazy boot for the Models card: prefs fetch is idempotent/shared, model
+  // cache only needed here for friendly labels.
+  $effect(() => {
+    if (tab !== 'preferences') return;
+    void loadModelPrefs();
+    void loadModels();
+  });
+
   // Lazy section boot: 2FA probe + memory list fire the first time the account
   // tab renders, never at app boot (docs/WAVE2-PLAN.md §FE-SEC-FE).
   $effect(() => {
@@ -420,24 +444,30 @@
       <div class="flex items-center justify-between gap-4 border-t py-3.5" style="border-color:var(--border)">
         <div>
           <p class="text-sm font-medium">Accent color</p>
-          <p class="text-xs text-[var(--muted)]">Tints bubbles, highlights and the send button. Saved on this device.</p>
+          <p class="text-xs text-[var(--muted)]">
+            Tints bubbles, highlights and the send button. Accent color follows your account across
+            devices.
+          </p>
         </div>
-        <div class="flex items-center gap-1.5" role="radiogroup" aria-label="Accent color">
+        <div class="flex flex-wrap items-start justify-end gap-1" role="radiogroup" aria-label="Accent color">
           {#each ACCENTS as a (a)}
-            <button
-              type="button"
-              class="swatch"
-              style="background:{SWATCH[a]};{accent.name === a ? ' box-shadow:0 0 0 2px var(--panel), 0 0 0 4px var(--acc)' : ''}"
-              role="radio"
-              aria-checked={accent.name === a}
-              aria-label={a}
-              title={a}
-              onclick={() => setAccent(a)}
-            >
-              {#if accent.name === a}
-                <Check class="size-3" style="color:#0d0d0d" />
-              {/if}
-            </button>
+            <div class="flex w-11 flex-col items-center gap-1 pt-0.5">
+              <button
+                type="button"
+                class="swatch"
+                style="background:{SWATCH[a]};{accent.name === a ? ' box-shadow:0 0 0 2px var(--panel), 0 0 0 4px var(--acc)' : ''}"
+                role="radio"
+                aria-checked={accent.name === a}
+                aria-label={accentLabel(a)}
+                title={accentLabel(a)}
+                onclick={() => setAccent(a)}
+              >
+                {#if accent.name === a}
+                  <Check class="size-3" style="color:#0d0d0d" />
+                {/if}
+              </button>
+              <span class="text-[10px] leading-none text-[var(--muted)]">{accentLabel(a)}</span>
+            </div>
           {/each}
         </div>
       </div>
@@ -448,6 +478,83 @@
           <p class="text-xs text-[var(--muted)]">When off, use ⌘/Ctrl + Enter to send.</p>
         </div>
         <Toggle label="Send on Enter" bind:checked={sendOnEnter} onchange={() => setSendOnEnter(sendOnEnter)} />
+      </div>
+    </section>
+
+    <section class="rounded-2xl p-4 sm:p-5" style="background:var(--panel); color:var(--text)">
+      <h2 class="text-[15px] font-medium">Models</h2>
+      <p class="mt-0.5 mb-1 text-xs text-[var(--muted)]">
+        Default model and models hidden from the pickers. Saved to your account.
+      </p>
+
+      <div class="flex items-center justify-between gap-4 border-t py-3.5" style="border-color:var(--border)">
+        <div class="min-w-0">
+          <p class="text-sm font-medium">Default model</p>
+          <p class="truncate text-xs text-[var(--muted)]">
+            {#if modelPrefs.defaultModel}
+              {prefModelLabel(modelPrefs.defaultModel)}
+            {:else}
+              No default — new chats start on the first chat model.
+            {/if}
+          </p>
+        </div>
+        {#if modelPrefs.defaultModel}
+          <button
+            type="button"
+            class={btn}
+            style={btnGhostStyle}
+            onclick={() => {
+              void setDefault('');
+              push('Default model cleared', 'success');
+            }}
+          >
+            Clear default
+          </button>
+        {/if}
+      </div>
+
+      <div class="border-t py-3.5" style="border-color:var(--border)">
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-sm font-medium">Hidden models</p>
+          {#if modelPrefs.hiddenModels.length > 0}
+            <button
+              type="button"
+              class={btn}
+              style={btnGhostStyle}
+              onclick={() => {
+                void unhideAll();
+                push('All models unhidden', 'success');
+              }}
+            >
+              Unhide all
+            </button>
+          {/if}
+        </div>
+        {#if !modelPrefs.loaded}
+          <p class="mt-1 text-xs text-[var(--muted)]">Loading…</p>
+        {:else if !modelPrefs.hiddenModels.length}
+          <p class="mt-1 text-xs text-[var(--muted)]">
+            Nothing hidden — use the eye button in any model picker to tuck models away.
+          </p>
+        {:else}
+          <ul class="mt-1">
+            {#each modelPrefs.hiddenModels as key (key)}
+              <li class="flex items-center gap-2.5 py-1.5">
+                <span class="min-w-0 flex-1 truncate text-sm text-[var(--muted)]">{prefModelLabel(key)}</span>
+                <span class="hidden max-w-40 shrink-0 truncate font-mono text-[11px] text-[var(--faint)] sm:block">{key}</span>
+                <button
+                  type="button"
+                  class="iconbtn"
+                  aria-label="Unhide {prefModelLabel(key)}"
+                  title="Unhide — back in the pickers"
+                  onclick={() => void unhide(key)}
+                >
+                  <Eye class="size-3.5" />
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </div>
     </section>
   {:else if tab === 'account'}

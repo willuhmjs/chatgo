@@ -28,15 +28,40 @@
     type PromptEntry,
   } from '$lib/chat-features-api';
   import { hueColor } from '$lib/hue';
+  import { isLikelyChatModel, matchesQuery, pickerModels } from '$lib/chat/state.svelte.js';
+  import {
+    modelPrefs,
+    load as loadModelPrefs,
+    setDefault,
+  } from '$lib/chat/model-prefs.svelte.js';
   import { ArrowUp, ChevronDown, Clock, LoaderCircle } from 'lucide-svelte';
 
   const user = $derived(session.user);
   const pending = $derived(user?.role === 'pending');
 
+  const keyOf = (m: ModelEntry) => `${m.provider_id}:${m.model_id}`;
+
   let models = $state<ModelEntry[]>([]);
   let modelsLoading = $state(true);
+  // localStorage fast-path/offline fallback; the server default_model (once
+  // loaded) and the chat-heuristic first pick layer on top in the resolver.
   let selectedId = $state(getHomeModel());
-  const model = $derived(models.find((m) => `${m.provider_id}:${m.model_id}` === selectedId) ?? models[0]);
+  let userPicked = false; // stop the resolver from overriding an explicit pick
+  let modelFilter = $state('');
+  let showAllModels = $state(false); // lifts the chat heuristic for the session
+  const model = $derived(
+    models.find((m) => keyOf(m) === selectedId) ?? models.find((m) => isLikelyChatModel(m)) ?? models[0],
+  );
+
+  /** Flat picker list: hidden + non-chat filtered, then the filter text. */
+  const pickerList = $derived.by(() => {
+    const { models: list, hiddenByHeuristic } = pickerModels(models, { showAll: showAllModels });
+    const f = modelFilter.trim();
+    return {
+      list: f ? list.filter((m) => matchesQuery(m, f)) : list,
+      hiddenByHeuristic,
+    };
+  });
 
   let draft = $state('');
   let sending = $state(false);
@@ -66,15 +91,12 @@
       modelsLoading = false;
       return;
     }
+    void loadModelPrefs(); // idempotent; shares the app-boot fetch
     let cancelled = false;
     void api
       .listModels()
       .then((ms) => {
-        if (cancelled) return;
-        models = ms;
-        if (!models.some((m) => `${m.provider_id}:${m.model_id}` === selectedId) && models[0]) {
-          selectedId = `${models[0].provider_id}:${models[0].model_id}`;
-        }
+        if (!cancelled) models = ms;
       })
       .catch(() => {
         if (!cancelled) models = [];
@@ -85,6 +107,28 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  // Default-model resolution chain: server default_model (once loaded and
+  // still existing) wins → valid chatgo:home-model (fast path / offline
+  // fallback) → first CHAT model → first model. Re-runs when either list or
+  // prefs land; stays out of the way after an explicit pick this session.
+  $effect(() => {
+    void modelPrefs.loaded;
+    if (!models.length || userPicked) return;
+    const has = (k: string) => (k && models.some((m) => keyOf(m) === k) ? k : '');
+    const dm = has(modelPrefs.defaultModel);
+    if (dm) {
+      if (selectedId !== dm) {
+        selectedId = dm;
+        setHomeModel(dm); // keep the offline fast-path in sync
+      }
+      return;
+    }
+    if (!has(selectedId)) {
+      const first = models.find((m) => isLikelyChatModel(m)) ?? models[0];
+      selectedId = keyOf(first);
+    }
   });
 
   $effect(() => {
@@ -102,8 +146,10 @@
   });
 
   function pickModel(m: ModelEntry) {
-    selectedId = `${m.provider_id}:${m.model_id}`;
+    userPicked = true;
+    selectedId = keyOf(m);
     setHomeModel(selectedId);
+    void setDefault(selectedId); // server-side default (fire-and-forget)
     ta?.focus();
   }
 
@@ -288,12 +334,41 @@
                 <span class="truncate">{modelsLoading ? 'Loading models…' : model ? model.display || model.model_id : 'no models configured'}</span>
                 <ChevronDown class="size-3.5 shrink-0" />
                 {#snippet items({ close })}
-                  {#each models as m (`${m.provider_id}:${m.model_id}`)}
+                  <div class="border-b px-1 pb-1.5 pt-0.5" style="border-color:var(--border)">
+                    <input
+                      type="text"
+                      bind:value={modelFilter}
+                      data-autofocus
+                      class="w-full bg-transparent px-1.5 text-[13px] outline-none placeholder:text-[var(--faint)]"
+                      style="color:var(--text)"
+                      placeholder="Filter models…"
+                      aria-label="Filter models"
+                    />
+                  </div>
+                  {#if !pickerList.list.length}
+                    <p class="px-2.5 py-2 text-xs text-[var(--muted)]">No match.</p>
+                  {/if}
+                  {#each pickerList.list as m (keyOf(m))}
                     <MenuItem selected={m.provider_id === model?.provider_id && m.model_id === model?.model_id} onclick={() => pickModel(m)} {close}>
-                      {#snippet icon()}<span class="mdot" style="background:{hueColor(m.provider || m.provider_id)}" aria-hidden="true"></span>{/snippet}
-                      {m.display || m.model_id}
+                      {#snippet icon()}<span class="mdot" style="background:{hueColor(m.provider_id)}" aria-hidden="true"></span>{/snippet}
+                      <span class="flex min-w-0 items-baseline gap-1.5">
+                        <span class="shrink truncate">{m.display || m.model_id}</span>
+                        {#if m.display && m.display !== m.model_id}
+                          <span class="truncate text-[11px] text-[var(--faint)]">{m.model_id}</span>
+                        {/if}
+                      </span>
                     </MenuItem>
                   {/each}
+                  {#if pickerList.hiddenByHeuristic > 0}
+                    <button
+                      type="button"
+                      class="mt-0.5 flex h-8 w-full items-center rounded-lg px-2.5 text-left text-xs text-[var(--indigo)] transition-colors hover:bg-[var(--fill-hover)]"
+                      onclick={() => (showAllModels = true)}
+                    >
+                      Show {pickerList.hiddenByHeuristic} other model{pickerList.hiddenByHeuristic === 1 ? '' : 's'}
+                      (embeddings, audio, images…)
+                    </button>
+                  {/if}
                 {/snippet}
               </Dropdown>
               <span class="hidden truncate text-xs text-[var(--faint)] sm:inline">

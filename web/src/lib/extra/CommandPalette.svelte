@@ -12,6 +12,7 @@
   import { toggleTheme } from '$lib/theme.svelte.js';
   import { fuzzyScore } from './fuzzy';
   import { modelLabel, saveLastModel, dispatchPickModel } from '$lib/extra-api';
+  import { pickerModels } from '$lib/chat/state.svelte.js';
   import { ok as toastOk, fail as toastFail } from './toasts';
   import { Command, Search, Sparkles, SunMoon, LogOut, Settings, GitCompare, Images, X } from 'lucide-svelte';
 
@@ -97,6 +98,8 @@
       { id: 'a-theme', section: 'Actions', label: 'Toggle theme', hint: session.user ? 'dark ↔ light' : 'dark ↔ light', run: () => (toggleTheme(), closePalette()) },
       { id: 'a-compare', section: 'Actions', label: 'Go to Compare', hint: '/compare', run: () => (navigate('/compare'), closePalette()) },
       { id: 'a-gallery', section: 'Actions', label: 'Go to Gallery', hint: '/gallery', run: () => (navigate('/gallery'), closePalette()) },
+      { id: 'a-knowledge', section: 'Actions', label: 'Go to Knowledge', hint: '/knowledge', run: () => (navigate('/knowledge'), closePalette()) },
+      { id: 'a-images', section: 'Actions', label: 'Go to Images', hint: '/images', run: () => (navigate('/images'), closePalette()) },
       { id: 'a-settings', section: 'Actions', label: 'Go to Settings', hint: '/settings', run: () => (navigate('/settings'), closePalette()) },
       isAdmin() && { id: 'a-admin', section: 'Actions', label: 'Go to Admin', hint: '/admin', run: () => (navigate('/admin'), closePalette()) },
       session.user && { id: 'a-logout', section: 'Actions', label: 'Log out', run: doLogout },
@@ -120,8 +123,10 @@
       { name: 'Actions', items: actions },
       {
         name: 'Models',
-        items: models.map((m) => ({
-          id: `m-${m.provider_id}-${m.model_id}`,
+        // same hidden + chat-heuristic filtering as the model pickers; the
+        // palette is a chat-model switcher, so no "show others" escape hatch
+        items: pickerModels(models).models.map((m) => ({
+          id: `m-${m.provider_id}:${m.model_id}`,
           section: 'Models',
           label: modelLabel(m),
           hint: m.provider ?? m.provider_id,

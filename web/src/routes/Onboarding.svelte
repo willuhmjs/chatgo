@@ -59,14 +59,23 @@
   let approving = $state<Record<string, boolean>>({});
 
   const pending = $derived(users.filter((u) => u.role === 'pending'));
+  // Group by PROVIDER ID (optgroups must key by this — two providers sharing
+  // a display name used to collide). Labels get the id in parens on collision.
   const grouped = $derived.by(() => {
-    const byProvider = new Map<string, { label: string; models: ModelEntry[] }>();
+    const byProvider = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
     for (const m of models) {
-      const g = byProvider.get(m.provider_id) ?? { label: m.provider || m.provider_id, models: [] };
+      const id = m.provider_id || m.provider || 'unknown';
+      const g = byProvider.get(id) ?? { id, label: m.provider || m.provider_id || 'unknown', models: [] };
       g.models.push(m);
-      byProvider.set(m.provider_id, g);
+      byProvider.set(id, g);
     }
-    return [...byProvider.values()];
+    const groups = [...byProvider.values()];
+    const labelCount = new Map<string, number>();
+    for (const g of groups) labelCount.set(g.label, (labelCount.get(g.label) ?? 0) + 1);
+    for (const g of groups) {
+      if ((labelCount.get(g.label) ?? 0) > 1) g.label = `${g.label} (${g.id})`;
+    }
+    return groups;
   });
 
   // Route guard — wizard is admin-only.
@@ -339,10 +348,12 @@
             {:else}
               <select class="inp" bind:value={taskModel}>
                 {#if !taskModel}<option value="">Choose a model…</option>{/if}
-                {#each grouped as g (g.label)}
+                {#each grouped as g (g.id)}
                   <optgroup label={g.label}>
                     {#each g.models as m (`${m.provider_id}:${m.model_id}`)}
-                      <option value="{m.provider_id}:{m.model_id}">{m.display || m.model_id}</option>
+                      <option value="{m.provider_id}:{m.model_id}">
+                        {m.display && m.display !== m.model_id ? `${m.display} · ${m.model_id}` : m.display || m.model_id}
+                      </option>
                     {/each}
                   </optgroup>
                 {/each}

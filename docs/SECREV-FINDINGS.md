@@ -273,7 +273,21 @@ re-run bench/smoke_v2.sh, full gates, commit, SECURITY.md delta.
   68→20.5, RSS 96→47 measured symmetric; FK-ordering file-row-first + compensating
   discardIngest keeps legacy all-or-nothing failure end-state (crash-window partial
   documented); sequential depth-1 queue > concurrent (half the vecs, no goroutine).
-  ALL RES CLUSTERS 5/5. FINAL SUITE + smoke_v2 RUNNING → commit → LIFT DEPLOY HOLD.)
+  ALL RES CLUSTERS 5/5. COMMITTED daefd64. DEPLOY HOLD LIFTED. Preview = v0.3.2-res.
+
+## v3 feature queue (post-security round, user requests)
+- MOD-BE RUNNING: me-settings keys default_model + hidden_models (+meSettingValidators)
+  in apimgr/admin.go + admin_memodels_test.go. CONTRACT: default_model ""|"pid:mid";
+  hidden_models JSON-array-string ≤512 "pid:mid".
+- MOD-FE RUNNING: model picker overhaul (dup-render fix via provider_id keying —
+  USER HAS DUPLICATE PROVIDER ROW, suggest delete in Providers; search in Home picker;
+  ★default + eye-hide rows w/ model-prefs.svelte.js module; chat-model heuristic
+  collapse w/ 'show N others'; SettingsMe Models manager; onboarding raw-id labels;
+  CommandPalette filter; localStorage home-model kept as fast-path).
+- ACCENT QUEUED (must wait MOD-FE — collides SettingsMe.svelte + App.svelte boot):
+  default violet→blue; surface picker prominently (quick-access); WIRE THE DEAD
+  syncAccentFromServer() hook + write-through on setAccent (accent key already in
+  meSettingKeys, zero BE work). User informed swatches exist NOW in Settings→Appearance.
 - C5 DONE (README v2 + SECURITY.md post-fix delta; refused premature claims; re-link
   deps on C1/C2/C6 at final verify; RAM row placeholder).
 - C7 DONE (oidc.go 2FA gate reusing issueTOTPToken — no wrapper needed; Login.svelte
