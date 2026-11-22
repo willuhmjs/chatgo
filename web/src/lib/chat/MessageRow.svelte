@@ -129,7 +129,7 @@
           <button
             class="rounded-full px-3.5 py-1.5 font-medium disabled:opacity-40"
             style="background:var(--accent); color:var(--accent-fg, #0d0d0d)"
-            disabled={!editText.trim() || editText.trim() === message.content || busy}
+            disabled={!editText.trim() || busy}
             onclick={saveEdit}>Save &amp; resend</button
           >
           <button class="rounded-full px-2.5 py-1.5 disabled:opacity-40" style="color:var(--muted)" onclick={() => (editing = false)}>
