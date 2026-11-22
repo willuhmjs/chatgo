@@ -31,7 +31,7 @@
   import Lightbox from '$lib/chat/Lightbox.svelte';
   import IconButton from '$lib/chat/ui/IconButton.svelte';
   import ChatActionsMenu from '$lib/chat/ChatActionsMenu.svelte';
-  import { refreshCapabilities, stopSpeaking } from '$lib/chat/state.svelte.js';
+  import { refreshCapabilities, stopSpeaking, models } from '$lib/chat/state.svelte.js';
 
   // fires the staged new-chat prompt exactly once per component instance
   let firedPending = false;
@@ -402,6 +402,14 @@
           {#if messages.length}
             <MessageList
               {messages}
+              wordmark={(() => {
+                const mid = chat?.model_id;
+                if (!mid) return 'ChatGo';
+                const e =
+                  models.items.find((x) => x.provider_id === chat?.provider_id && x.model_id === mid) ??
+                  models.items.find((x) => x.model_id === mid);
+                return e?.display || mid;
+              })()}
               {ratings}
               busy={stream.active}
               onretry={retry}

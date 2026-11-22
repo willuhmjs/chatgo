@@ -16,6 +16,7 @@
     messages,
     busy = false,
     ratings,
+    wordmark = 'ChatGo',
     onretry,
     onedit,
     onrate,
@@ -25,6 +26,7 @@
     messages: UIMessage[];
     busy?: boolean;
     ratings?: RatingsMap;
+    wordmark?: string;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
     onrate?: (m: UIMessage, value: 1 | -1) => void;
@@ -149,7 +151,7 @@
         <div class="flex min-w-0 flex-col gap-5">
           {#each g.items as m, i (m.id)}
             <div class="flex min-w-0 flex-col {riseClass(m.id)}">
-              {#if i === 0}<span class="wordmark">ChatGo</span>{/if}
+              {#if i === 0}<span class="wordmark">{wordmark}</span>{/if}
               <MessageRow
                 message={m}
                 {busy}
