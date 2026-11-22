@@ -85,13 +85,15 @@ md.use({
         }
       }
       const langAttr = raw ? ` class="language-${esc(label)}"` : '';
+      // Copy/Wrap buttons are intentionally NOT emitted here: everything this
+      // renderer returns goes through the strict pass-1 sanitize, whose
+      // FORBID_TAGS forbids <button> (attacker markup must die there). The
+      // buttons our DOM-created UI needs are added by enhance() AFTER that
+      // pass, and survive the post-enhance re-sanitize via ENHANCE_CFG.
       return (
         `<div class="codeblock"><div class="codebar">` +
         `<span class="codelang">${esc(label)}</span>` +
-        `<span class="codeacts">` +
-        `<button type="button" class="codebtn code-wrap" title="Toggle soft wrap">Wrap</button>` +
-        `<button type="button" class="codebtn code-copy" title="Copy code">Copy</button>` +
-        `</span></div><pre><code${langAttr}>${inner}</code></pre></div>`
+        `</div><pre><code${langAttr}>${inner}</code></pre></div>`
       );
     },
     link({ href, title, tokens }) {
@@ -114,7 +116,7 @@ md.use({
  * defaults. FORBID_TAGS already covers svg/math/template/form/style plus the
  * usual vectors.
  */
-export const PURIFY_CFG: Parameters<typeof DOMPurify.sanitize>[1] = {
+export const PURIFY_CFG: NonNullable<Parameters<typeof DOMPurify.sanitize>[1]> = {
   USE_PROFILES: { html: true },
   ALLOW_DATA_ATTR: false,
   // class stays allowed (contract: "allow classes"); strip vectors + layout hijacks
@@ -159,6 +161,35 @@ export const PURIFY_CFG: Parameters<typeof DOMPurify.sanitize>[1] = {
 
 // ---------- post-processing (tables scroll-x, safe external links) ----------
 
+// Dedicated DOMPurify instance (v3 default export doubles as a factory).
+// Isolates the chat pipeline from hooks any module might attach to the
+// shared default instance. Off-browser this falls through to DOMPurify's
+// no-DOM path (isSupported=false → pass-through), consistent with the
+// `typeof DOMParser` guard in enhance().
+const purify = DOMPurify(typeof window !== 'undefined' ? window : undefined);
+
+// Config for the post-enhance re-sanitize: identical strict policy except
+// (a) `target` lifted from FORBID_ATTR + ADD_ATTR'd, and (b) `button` lifted
+// from FORBID_TAGS.
+// (a) Safe because the primary pass already stripped attacker-supplied
+//     `target` (FORBID_ATTR there), so the only `target` still in the HTML is
+//     the `_blank` enhance() itself sets on https/mailto links. (ADD_ATTR is
+//     required too: the `html` USE_PROFILE does not allow `target` on its own.)
+// (b) Safe because every `<button>` that could carry attacker attributes was
+//     removed by pass 1 (FORBID_TAGS there still forbids `button`); the only
+//     buttons reaching this final pass are the inert ones enhance() creates
+//     via DOM APIs (createElement — never attacker-parsed markup). FORBID_ATTR
+//     stays as strict as pass 1's (form/formaction/autofocus/style/…) and the
+//     html profile still drops every event handler, so even a hypothetical
+//     mXSS-regenerated button would arrive fully de-armed. Harness-verified
+//     against the mXSS corpus + 21 button-smuggle payloads.
+export const ENHANCE_CFG: typeof PURIFY_CFG = {
+  ...PURIFY_CFG,
+  FORBID_TAGS: (PURIFY_CFG.FORBID_TAGS ?? []).filter((tag) => tag !== 'button'),
+  ADD_ATTR: ['target'],
+  FORBID_ATTR: (PURIFY_CFG.FORBID_ATTR ?? []).filter((attr) => attr !== 'target'),
+};
+
 function enhance(html: string): string {
   if (!html || typeof DOMParser === 'undefined') return html;
   const doc = new DOMParser().parseFromString(`<!doctype html><html><body>${html}</body></html>`, 'text/html');
@@ -175,7 +206,31 @@ function enhance(html: string): string {
       a.setAttribute('rel', 'noopener noreferrer');
     }
   }
-  return doc.body.innerHTML;
+  // Code-block action buttons (delegated handlers live in Markdown.svelte,
+  // selectors .code-copy/.code-wrap). Created with DOM APIs here — after the
+  // strict pass-1 sanitize, before the post-enhance re-sanitize — so
+  // attacker-supplied <button> markup (which pass 1 forbids) can never be
+  // what reaches the page.
+  for (const bar of Array.from(doc.querySelectorAll('.codebar'))) {
+    if (bar.querySelector('.codeacts')) continue;
+    const acts = doc.createElement('span');
+    acts.className = 'codeacts';
+    const mkBtn = (cls: string, title: string, text: string): void => {
+      const btn = doc.createElement('button');
+      btn.setAttribute('type', 'button');
+      btn.className = `codebtn ${cls}`;
+      btn.title = title;
+      btn.textContent = text;
+      acts.appendChild(btn);
+    };
+    mkBtn('code-wrap', 'Toggle soft wrap', 'Wrap');
+    mkBtn('code-copy', 'Copy code', 'Copy');
+    bar.appendChild(acts);
+  }
+  // mXSS hardening: mutations + DOMParser re-parse + innerHTML re-serialize
+  // is exactly the mutate→re-parse pattern mXSS payloads ride on, so run one
+  // final sanitize before the string reaches `{@html}`.
+  return purify.sanitize(doc.body.innerHTML, ENHANCE_CFG) as string;
 }
 
 // ---------- public API ----------
@@ -200,7 +255,7 @@ export function renderMarkdown(src: string, opts: RenderOpts = {}): string {
   if (sawCode) ensureHljs();
   let out: string;
   try {
-    out = DOMPurify.sanitize(html, PURIFY_CFG) as string;
+    out = purify.sanitize(html, PURIFY_CFG) as string;
   } catch {
     out = `<p>${esc(src)}</p>`;
   }

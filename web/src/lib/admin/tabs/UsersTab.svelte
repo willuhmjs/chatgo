@@ -1,20 +1,36 @@
 <script lang="ts">
-  import { CheckCheck, Inbox, UserCheck, Users } from 'lucide-svelte';
+  import { CheckCheck, Copy, Inbox, ShieldOff, UserCheck, Users } from 'lucide-svelte';
   import { session } from '$lib/session.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
   import type { User } from '$lib/admin/api-admin';
   import { errMsg, relTime } from '$lib/admin/format';
   import Badge from '$lib/admin/ui/Badge.svelte';
+  import Confirm from '$lib/admin/ui/Confirm.svelte';
   import EmptyState from '$lib/admin/ui/EmptyState.svelte';
+  import Modal from '$lib/admin/ui/Modal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, panel, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, mono, panel, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   let users = $state<User[]>([]);
   let loading = $state(true);
   let loadError = $state('');
   let selected = $state(new Set<string>());
   let approving = $state(false);
+
+  // 2FA lockout recovery (POST /api/users/{id}/reset-2fa)
+  interface Reset2FAResult {
+    ok: boolean;
+    was_enabled: boolean;
+    /** Present ONLY for local accounts; shown once, never recoverable. */
+    new_password?: string;
+    sessions_revoked: number;
+  }
+  let resetTarget = $state<User | null>(null);
+  let confirmReset = $state(false);
+  /** Set after a successful reset — the password exists ONLY in this state. */
+  let resetResult = $state<{ email: string; res: Reset2FAResult } | null>(null);
+  let resetReveal = $state(false);
 
   const pending = $derived(users.filter((u) => u.role === 'pending'));
   const active = $derived(users.filter((u) => u.role !== 'pending'));
@@ -81,6 +97,49 @@
     } catch (err) {
       u.role = prev;
       push(errMsg(err, 'Could not change role'), 'error');
+    }
+  }
+
+  // One-off fetch for the out-of-contract /reset-2fa route: api.ts is the
+  // frozen scaffold fetch wrapper and cannot grow a method here, so this
+  // follows the accepted audit-api.ts deviation pattern (typed local fetch).
+  async function resetUser2FA(id: string): Promise<Reset2FAResult> {
+    const res = await fetch(`/api/users/${id}/reset-2fa`, { method: 'POST', credentials: 'include' });
+    if (!res.ok) {
+      let msg = res.statusText || `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { error?: string };
+        if (typeof j?.error === 'string' && j.error) msg = j.error;
+      } catch {
+        /* body wasn't JSON */
+      }
+      throw new admin.ApiError(res.status, msg);
+    }
+    return (await res.json()) as Reset2FAResult;
+  }
+
+  async function doReset2FA() {
+    const u = resetTarget;
+    if (!u) return;
+    try {
+      const res = await resetUser2FA(u.id);
+      resetResult = { email: u.email, res };
+      resetReveal = true;
+      resetTarget = null;
+    } catch (err) {
+      push(errMsg(err, 'Could not reset 2FA'), 'error');
+      throw err; // keep the confirm dialog open (Confirm.svelte contract)
+    }
+  }
+
+  async function copyNewPassword() {
+    const pw = resetResult?.res.new_password;
+    if (!pw) return;
+    try {
+      await navigator.clipboard.writeText(pw);
+      push('Password copied to clipboard', 'success');
+    } catch {
+      push('Clipboard blocked — select the text and copy manually', 'error');
     }
   }
 </script>
@@ -178,6 +237,7 @@
                 <th class={th}>Role</th>
                 <th class={th}>Created</th>
                 <th class={th}>Last active</th>
+                <th class="{th} text-right">2FA</th>
               </tr>
             </thead>
             <tbody>
@@ -205,6 +265,19 @@
                   </td>
                   <td class="{td} text-xs text-[var(--muted)]">{relTime(u.created_at)}</td>
                   <td class="{td} text-xs text-[var(--muted)]">{relTime(u.last_active_at)}</td>
+                  <td class="{td} text-right">
+                    <button
+                      class="inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)]"
+                      style="color:var(--danger)"
+                      title="Clear two-factor authentication for {u.email} and sign all their sessions out"
+                      onclick={() => {
+                        resetTarget = u;
+                        confirmReset = true;
+                      }}
+                    >
+                      <ShieldOff size={13} /> Reset 2FA
+                    </button>
+                  </td>
                 </tr>
               {/each}
             </tbody>
@@ -213,9 +286,65 @@
         <p class="text-xs leading-relaxed text-[var(--muted)]">
           Your own row is locked: ChatGo disables self role changes so you can't lock yourself out of the admin
           console. Demoting the last remaining admin is rejected server-side — promote another admin first. Setting a
-          user back to “pending” deactivates them until the next approval.
+          user back to “pending” deactivates them until the next approval. “Reset 2FA” is the lockout recovery path:
+          it clears their authenticator setup, signs out every one of their sessions, and for password accounts sets
+          a one-time password shown exactly once here — share it over a secure channel and have them change it
+          immediately.
         </p>
       {/if}
     </section>
   {/if}
 </div>
+
+<Confirm
+  bind:open={confirmReset}
+  title="Reset two-factor authentication"
+  message={resetTarget
+    ? `Recover ${resetTarget.email} from a lost authenticator? Their 2FA setup is cleared and every active session is signed out immediately. If the account uses a password, a new one-time password is generated and shown once — it cannot be retrieved afterwards.`
+    : ''}
+  confirmLabel="Reset 2FA"
+  danger
+  onconfirm={doReset2FA}
+/>
+
+<Modal bind:open={resetReveal} title={resetResult ? `2FA reset — ${resetResult.email}` : '2FA reset'}>
+  {#if resetResult}
+    <div class="flex flex-col gap-3">
+      <p class="text-sm text-[var(--muted)]">
+        {resetResult.res.was_enabled ? 'Two-factor authentication was cleared.' : 'That account had no 2FA enabled.'}
+        {resetResult.res.sessions_revoked === 1
+          ? '1 active session was signed out.'
+          : `${resetResult.res.sessions_revoked} active sessions were signed out.`}
+      </p>
+      {#if resetResult.res.new_password}
+        <p class="text-xs font-medium" style="color:var(--danger)">
+          ⚠ One-time password — shown once and never recoverable. Share it via a secure channel; the user must change
+          it at their next sign-in.
+        </p>
+        <div class="flex items-center gap-2">
+          <code class="min-w-0 flex-1 select-all break-all rounded-xl px-3 py-2 {mono}" style="background:var(--bg-deep); color:var(--text)"
+            >{resetResult.res.new_password}</code
+          >
+          <button class={`${btn} uppercase tracking-wide`} style={btnPrimaryStyle} onclick={copyNewPassword}>
+            <Copy size={13} /> Copy
+          </button>
+        </div>
+      {:else}
+        <p class="text-sm text-[var(--muted)]">
+          This account signs in through single sign-on, so no password was set — they can sign in again through the
+          identity provider without a verification code.
+        </p>
+      {/if}
+    </div>
+    {#snippet footer()}
+      <button
+        class={btn}
+        style={btnGhostStyle}
+        onclick={() => {
+          resetReveal = false;
+          resetResult = null;
+        }}>Done — I saved it</button
+      >
+    {/snippet}
+  {/if}
+</Modal>

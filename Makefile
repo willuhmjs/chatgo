@@ -3,7 +3,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BIN     := bin/chatgo
 LDFLAGS := -s -w -X main.version=$(VERSION)
-IMAGE   ?= ghcr.io/OWNER/chatgo:local   # placeholder; CI pushes ghcr.io/<org>/chatgo
+IMAGE   ?= chatgo:local                 # local dev tag; CI pushes ghcr.io/<org>/chatgo
 
 # Dev convenience only — never rely on a generated secret in production.
 SESSION_SECRET ?= $(shell openssl rand -hex 32)

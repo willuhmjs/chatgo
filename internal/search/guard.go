@@ -21,6 +21,15 @@ var (
 	// cgnatNet is 100.64.0.0/10 (carrier-grade NAT); never dialable.
 	cgnatNet = mustCIDR("100.64.0.0/10")
 
+	// deny6to4Net is 6to4 and denyTeredoNet Teredo; both can embed private
+	// or loopback IPv4s inside their payload (2002:7f00:1:: = 127.0.0.1)
+	// and Go's IsLoopback/IsPrivate never see through them. Reaching the
+	// embedded address anyway requires OS tunnel routes we never rely on,
+	// so both transition ranges are denied on the literal prefix instead
+	// of decoded (review L4-I4: deny defensively).
+	deny6to4Net   = mustCIDR("2002::/16")
+	denyTeredoNet = mustCIDR("2001::/32")
+
 	// Injection points so tests can fake DNS + observe the final dial.
 	// Production paths must go through these; never call net.Dialer directly.
 	lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -89,6 +98,13 @@ func (p *ipPolicy) allow(ip net.IP) error {
 	}
 	if ip.IsUnspecified() || ip.IsMulticast() {
 		return fmt.Errorf("search: address %s is not dialable", ip)
+	}
+	// 6to4 / Teredo transition ranges are denied outright (before the
+	// loopback and TrustedURLNets "allow" quirks below): a literal like
+	// 2002:7f00:1:: embeds 127.0.0.1 but looks like plain global unicast to
+	// every Go predicate, so only the explicit prefix denial stops it.
+	if deny6to4Net.Contains(ip) || denyTeredoNet.Contains(ip) {
+		return fmt.Errorf("search: 6to4/Teredo transition address %s is never allowed", ip)
 	}
 
 	if ip.IsLoopback() {

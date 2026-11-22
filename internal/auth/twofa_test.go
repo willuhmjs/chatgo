@@ -112,13 +112,38 @@ func Test2FARoundTrip(t *testing.T) {
 		t.Fatalf("challenge payload = %+v", challenge)
 	}
 
-	// Wrong code → 401; correct code → session via the SAME cookie path.
+	// Wrong code → 401 AND the challenge is BURNED (C6 / L6-H1: one minted
+	// token = one guess). Even the CORRECT code on that same token is now
+	// refused; the only recovery is a fresh password login, itself capped
+	// at 5/min/IP — which is what collapses the pre-fix ~119 guesses/min/IP
+	// brute-force budget to one guess per throttled login.
 	bad := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge.TOTPToken, "code": "123456"})
 	if bad.Status != 401 {
 		t.Fatalf("bad totp code = %d, want 401", bad.Status)
 	}
+	if ck := bad.Header.Get("Set-Cookie"); ck != "" {
+		t.Fatalf("failed verify leaked a cookie: %q", ck)
+	}
 	code, _ := totp.Code(secret, time.Now())
-	good := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge.TOTPToken, "code": code})
+	burned := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge.TOTPToken, "code": code})
+	if burned.Status != 401 || burned.Header.Get("Set-Cookie") != "" {
+		t.Fatalf("correct code on burned token = %d (cookie %q), want 401 + no cookie",
+			burned.Status, burned.Header.Get("Set-Cookie"))
+	}
+	// Re-login mints a fresh challenge; the correct code then yields the
+	// session through the SAME cookie path as a password login.
+	lr2 := e.login(email, totpPW)
+	if lr2.Status != 200 {
+		t.Fatalf("re-login for fresh challenge = %d %q", lr2.Status, lr2.Body)
+	}
+	var challenge2 struct {
+		TOTPToken string `json:"totp_token"`
+	}
+	lr2.json(t, &challenge2)
+	if challenge2.TOTPToken == "" || challenge2.TOTPToken == challenge.TOTPToken {
+		t.Fatalf("fresh challenge payload = %+v", challenge2)
+	}
+	good := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge2.TOTPToken, "code": code})
 	if good.Status != 200 {
 		t.Fatalf("totp verify = %d %q", good.Status, good.Body)
 	}
@@ -131,12 +156,15 @@ func Test2FARoundTrip(t *testing.T) {
 
 	// Replay: the consumed token cannot buy a second session (next-step code,
 	// so only the used-nonce guard can catch it — proves the nonce path).
-	code2, _ := totp.Code(secret, time.Now().Add(35*time.Second)) // next-step code
-	if r := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge.TOTPToken, "code": code2}); r.Status != 401 {
+	// Deterministic +1-step pick keeps it inside the ±1 window.
+	code2, _ := totp.Code(secret, time.Now().Add(time.Duration(31-time.Now().Unix()%30)*time.Second))
+	if r := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": challenge2.TOTPToken, "code": code2}); r.Status != 401 {
 		t.Fatalf("replay of consumed token = %d, want 401", r.Status)
 	}
 
-	// Forged token (signature over a foreign payload) → 401.
+	// Forged token (signature over a foreign payload) → 401, and — since C6
+	// — structurally invalid tokens are rejected BEFORE any audit insert
+	// (L1-H1's unauthenticated DB-write amplifier), so this leaves NO row.
 	forged := "v1.some-user." + fmt.Sprint(time.Now().Add(time.Hour).Unix()) + ".deadbeef.deadbeefdeadbeef"
 	if r := e.do("POST", "/api/auth/totp", map[string]string{"totp_token": forged, "code": code}); r.Status != 401 {
 		t.Fatalf("forged token = %d, want 401", r.Status)
@@ -161,19 +189,24 @@ func Test2FARoundTrip(t *testing.T) {
 		t.Fatal("requires_totp after disable")
 	}
 
-	// Audit trail exists for the whole arc, in causal order.
+	// Audit trail exists for the whole arc, in causal order. The forged
+	// token is deliberately ABSENT: structurally invalid tokens are rejected
+	// before audit (C6 / L1-H1 — attacker-keyed audit inserts were the DoS
+	// amplifier). The burned-token attempt still audits (replayed_token):
+	// it needed a genuinely minted token, so it is login-rate bounded.
 	want := []string{
 		audit.ActionLoginFail,    // wrong password probe
 		audit.ActionLoginSuccess, // session used for setup (method=password)
 		audit.Action2FASetup,
 		audit.Action2FAEnable,
 		audit.ActionLogout,
-		audit.ActionTOTPChallenge, // password OK → no cookie
-		audit.ActionTOTPVerifyFail,
+		audit.ActionTOTPChallenge,  // password OK → no cookie
+		audit.ActionTOTPVerifyFail, // bad code (burns the challenge)
+		audit.ActionTOTPVerifyFail, // correct code on the burned token
+		audit.ActionTOTPChallenge,  // re-login → fresh challenge
 		audit.ActionTOTPVerifyOK,
-		audit.ActionLoginSuccess, // method=totp via finishLogin
-		audit.ActionTOTPVerifyFail,
-		audit.ActionTOTPVerifyFail, // forged token
+		audit.ActionLoginSuccess,   // method=totp via finishLogin
+		audit.ActionTOTPVerifyFail, // replay of consumed challenge
 		audit.Action2FADisable,     // wrong password attempt
 		audit.Action2FADisable,     // committed
 		audit.ActionLoginSuccess,   // 2FA gone → plain login
@@ -227,16 +260,67 @@ func Test2FASetupGuards(t *testing.T) {
 }
 
 // Test2FAAnonymousBlocked: Require guards /api/me/2fa/*; /api/auth/totp is
-// public but rejects junk tokens.
+// public but rejects junk tokens. Junk-token 401s leave NO audit row (C6 /
+// L1-H1: structurally invalid tokens rejected before any DB write).
 func Test2FAAnonymousBlocked(t *testing.T) {
 	e := newTestEnv(t, nil)
 	assertJSONErr(t, e.do("POST", "/api/me/2fa/setup", map[string]string{"password": "x"}), 401)
 	assertJSONErr(t, e.do("POST", "/api/auth/totp", map[string]string{"totp_token": "junk", "code": "123456"}), 401)
 	assertJSONErr(t, e.do("POST", "/api/auth/totp", map[string]string{}), 400)
+	var rows int
+	if err := e.Store.DB.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("junk anonymous probes wrote %d audit rows (err %v), want 0", rows, err)
+	}
 }
 
-// TestTOTPVerifyRateLimited: the 11th fast verify on one token answers 429
-// while the first ten (bad codes) were 401s.
+// Test2FAProbeOrdering (L1-L1 regression): bodiless POSTs must not burn the
+// per-user setup bucket (400 BEFORE bucket consumption), and the password
+// check must answer BEFORE the enrollment-state 409/400 probes — a stolen
+// cookie with the wrong password may not learn whether 2FA is on.
+func Test2FAProbeOrdering(t *testing.T) {
+	e := newTestEnv(t, nil)
+	const email = "probe@example.com"
+	e.seedUser(t, email, "user", totpPW)
+	if r := e.login(email, totpPW); r.Status != 200 {
+		t.Fatalf("login: %d", r.Status)
+	}
+
+	// Six bodiless setup POSTs: every one a 400 that never touches the
+	// 5/min bucket, so the REAL setup right behind them still succeeds.
+	// Pre-fix, these six burned the whole bucket and the setup 429'd.
+	for range 6 {
+		assertJSONErr(t, e.do("POST", "/api/me/2fa/setup", nil), 400)
+	}
+	if r := e.do("POST", "/api/me/2fa/setup", map[string]string{"password": totpPW}); r.Status != 200 {
+		t.Fatalf("setup after junk probes = %d %q, want 200 (bucket must survive 400s)", r.Status, r.Body)
+	}
+	// Wrong password BEFORE enrollment state: 2FA is NOT yet enabled, and
+	// the answer is 401 (pre-fix this path reached 409/400 probes first for
+	// enrolled users — the enrollment oracle).
+	assertJSONErr(t, e.do("POST", "/api/me/2fa/disable", map[string]string{"password": "wrong-password-9"}), 401)
+
+	// Commit 2FA, then re-run the oracle: wrong password → 401 (never 409),
+	// right password → the honest 409 "already enabled".
+	var s struct {
+		Secret string `json:"secret"`
+	}
+	e.do("POST", "/api/me/2fa/setup", map[string]string{"password": totpPW}).json(t, &s)
+	code, err := totp.Code(s.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := e.do("POST", "/api/me/2fa/enable", map[string]string{"code": code}); r.Status != 200 {
+		t.Fatalf("enable = %d %q", r.Status, r.Body)
+	}
+	assertJSONErr(t, e.do("POST", "/api/me/2fa/setup", map[string]string{"password": "wrong-password-9"}), 401)
+	assertJSONErr(t, e.do("POST", "/api/me/2fa/setup", map[string]string{"password": totpPW}), 409)
+}
+
+// TestTOTPVerifyRateLimited: the 11th fast verify against one user answers
+// 429 while the first ten were 401s — under C6 the limiter is per-USERID
+// (aggregate across IPs/tokens, not per-token), and attempts 2-10 ride on
+// the burned nonce (still 401) rather than reaching the code check.
+// The per-IP pre-cap (30/min) sits above this and never enters play here.
 func TestTOTPVerifyRateLimited(t *testing.T) {
 	e := newTestEnv(t, nil)
 	const email = "rate@example.com"

@@ -10,12 +10,13 @@ package auth
 //
 // The first three ride AuthPolicy's /api/* Require branch (session needed);
 // /api/auth/totp sits on the public /api/auth/* default branch because the
-// caller has no session yet — that is exactly why it is rate-limited and
-// statelessly authenticated by the totp_token.
+// caller has no session yet. That endpoint carries the C6 throttle wall
+// (coarse per-IP pre-cap → token parse → per-USERID bucket) and burns the
+// challenge nonce on EVERY attempt, so one minted token buys exactly one
+// code guess and a sustained attack must re-buy guesses through the
+// password login limiter (5/min/IP, auth.go loginPerMin).
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -62,13 +63,12 @@ func (a *Auth) checkUserPassword(r *http.Request, u *store.User, password string
 // Local accounts only (OIDC-only → 400, per spec), rejected when 2FA is
 // already enabled (409). The fresh secret lives ONLY in the in-memory
 // pending map (single slot per user, 10-min TTL) until /2fa/enable.
+// Probe ordering (L1-L1): the body decodes BEFORE the limiter bucket (a
+// bodiless POST used to burn setup budget) and the password is checked
+// BEFORE the enrollment probe (409 must not answer before 401).
 func (a *Auth) Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.sessionUser(w, r)
 	if !ok {
-		return
-	}
-	if !a.Allow("2fa:setup:"+u.ID, totpConfigPerMin) {
-		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
 	var body struct {
@@ -78,15 +78,12 @@ func (a *Auth) Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !u.HasPassword() {
-		httpx.ErrorJSON(w, http.StatusBadRequest, "this account signs in through single sign-on; a local password is required")
+	if !a.Allow("2fa:setup:"+u.ID, totpConfigPerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
-	if enabled, err := a.totpEnabled(r.Context(), u.ID); err != nil {
-		httpx.InternalError(w, r, err)
-		return
-	} else if enabled {
-		httpx.ErrorJSON(w, http.StatusConflict, "two-factor authentication is already enabled")
+	if !u.HasPassword() {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "this account signs in through single sign-on; a local password is required")
 		return
 	}
 	okPW, err := a.checkUserPassword(r, u, body.Password)
@@ -96,6 +93,13 @@ func (a *Auth) Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if !okPW {
 		httpx.ErrorJSON(w, http.StatusUnauthorized, "password incorrect")
+		return
+	}
+	if enabled, err := a.totpEnabled(r.Context(), u.ID); err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	} else if enabled {
+		httpx.ErrorJSON(w, http.StatusConflict, "two-factor authentication is already enabled")
 		return
 	}
 	secret, err := totp.GenerateSecret()
@@ -127,15 +131,15 @@ func (a *Auth) Handle2FAEnable(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.Allow("2fa:enable:"+u.ID, totpEnablePerMin) {
-		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
-		return
-	}
 	var body struct {
 		Code string `json:"code"`
 	}
 	if err := httpx.Decode(r, &body); err != nil {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !a.Allow("2fa:enable:"+u.ID, totpEnablePerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
 	secret, ok := a.pendingTOTPSecret(u.ID)
@@ -161,14 +165,12 @@ func (a *Auth) Handle2FAEnable(w http.ResponseWriter, r *http.Request) {
 }
 
 // Handle2FADisable POST /api/me/2fa/disable {password} — password-gated
-// (an attacker with a stolen session still cannot turn 2FA off).
+// (an attacker with a stolen session still cannot turn 2FA off). Ordering
+// matches setup (L1-L1): decode before the bucket, password before the
+// enrollment-state 409.
 func (a *Auth) Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.sessionUser(w, r)
 	if !ok {
-		return
-	}
-	if !a.Allow("2fa:disable:"+u.ID, totpConfigPerMin) {
-		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
 	var body struct {
@@ -178,11 +180,8 @@ func (a *Auth) Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if enabled, err := a.totpEnabled(r.Context(), u.ID); err != nil {
-		httpx.InternalError(w, r, err)
-		return
-	} else if !enabled {
-		httpx.ErrorJSON(w, http.StatusConflict, "two-factor authentication is not enabled")
+	if !a.Allow("2fa:disable:"+u.ID, totpConfigPerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
 	okPW, err := a.checkUserPassword(r, u, body.Password)
@@ -193,6 +192,13 @@ func (a *Auth) Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	if !okPW {
 		audit.Record(r.Context(), a.Store.DB, u, audit.Action2FADisable, "failed", a.RequestIP(r))
 		httpx.ErrorJSON(w, http.StatusUnauthorized, "password incorrect")
+		return
+	}
+	if enabled, err := a.totpEnabled(r.Context(), u.ID); err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	} else if !enabled {
+		httpx.ErrorJSON(w, http.StatusConflict, "two-factor authentication is not enabled")
 		return
 	}
 	if err := a.clearTOTPSecret(r.Context(), u.ID); err != nil {
@@ -206,10 +212,38 @@ func (a *Auth) Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 
 // HandleTOTPVerify POST /api/auth/totp {totp_token, code}.
 // Public path (the caller has no session yet), so the token signature,
-// 10-min expiry, single-use nonce and the ±window + monotonic-step code
-// check all have to hold. On success the session is issued through the SAME
-// finishLogin path (cookie + login.success audit) as a password login.
+// 10-min expiry, code window and monotonic step all have to hold. On
+// success the session is issued through the SAME finishLogin path (cookie +
+// login.success audit) as a password login.
+//
+// Brute-force wall (C6 / L1-H1 + L1-M1 + L6-H1, NIST SP 800-63B §5.2.2) —
+// checks ordered cheapest-attacker-cost first:
+//
+//  1. coarse per-IP pre-cap (30/min) before ANY parse or attacker-keyed
+//     state: garbage-token floods get a 429 without minting buckets or
+//     audit rows (pre-fix: 40k req/5s, zero 429, +17.5 MB/5s);
+//  2. parse (HMAC verify) — structurally invalid tokens: 401, NO audit
+//     insert (they were the unauthenticated DB-write amplifier);
+//  3. per-USERID bucket (10/min): the aggregate wall a token spray can
+//     never widen, however many tokens or IPs the attacker holds;
+//  4. challenge-kill check: a consecutive-failure lockout has invalidated
+//     everything minted before it;
+//  5. BURN THE NONCE ON EVERY ATTEMPT, pass or fail — one minted challenge
+//     = one code guess. A wrong answer kills the token, so every further
+//     guess costs a full POST /api/auth/login, itself throttled 5/min/IP
+//     (loginPerMin, auth.go). Pre-fix a token survived its whole 10-min
+//     TTL (~110 tries); the measured one-IP budget of ~119 guesses/min
+//     collapses to at most 5/min/IP — one per password login.
+//
+// 15 consecutive bad codes on live challenges (noteTOTPFailure) invalidate
+// every outstanding challenge for the user and land an audit alert.
 func (a *Auth) HandleTOTPVerify(w http.ResponseWriter, r *http.Request) {
+	// 1. Coarse per-IP pre-cap — before body parse and before any state
+	// keyed on attacker content (L1-H1 memory-DoS guard).
+	if !a.Allow("totp:ip:"+a.RequestIP(r), totpVerifyIPPerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many verification attempts, try again later")
+		return
+	}
 	var body struct {
 		TOTPToken string `json:"totp_token"`
 		Code      string `json:"code"`
@@ -222,50 +256,54 @@ func (a *Auth) HandleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "totp_token and code are required")
 		return
 	}
-	// 10/min per IP+token: one theft victim cannot be brute-forced while a
-	// spray against other tokens keeps its own budget.
-	limKey := "totp:" + a.RequestIP(r) + ":" + shortHMACKey(body.TOTPToken)
-	if !a.Allow(limKey, totpVerifyPerMin) {
-		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many verification attempts, try again later")
-		return
-	}
-	fail := func(u *store.User, reason string) {
-		if u != nil {
-			audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPVerifyFail, reason, a.RequestIP(r))
-		} else {
-			audit.RecordIdentity(r.Context(), a.Store.DB, "", "", audit.ActionTOTPVerifyFail, reason, a.RequestIP(r))
-		}
-		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid or expired verification token")
-	}
-
-	userID, nonce, err := a.parseTOTPToken(body.TOTPToken)
+	// 2. Parse first so the limiter below can key on the TARGET USER, and so
+	// forged/expired garbage never reaches audit or any per-token state.
+	userID, nonce, expiresAt, err := a.parseTOTPToken(body.TOTPToken)
 	if err != nil {
-		fail(nil, "bad_token")
+		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid or expired verification token")
 		return
 	}
 	u, err := a.Store.Users.GetByID(r.Context(), userID)
 	if err != nil {
-		fail(nil, "unknown_user")
+		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid or expired verification token")
 		return
 	}
-	if !a.consumeTOTPCode(r.Context(), u.ID, body.Code) {
-		fail(u, "bad_code")
+	// 3. Per-victim aggregate wall, independent of source IP and token
+	// count: at most totpVerifyPerMin code checks/min can EVER reach this
+	// user's secret.
+	if !a.Allow("totp:uid:"+u.ID, totpVerifyPerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many verification attempts, try again later")
 		return
 	}
-	// Consume the token only on SUCCESS: an honest mistype may retry inside
-	// the TTL (rate-limiter bounded), but the token can never buy two
-	// sessions — the nonce goes into the used set right here.
+	fail := func(reason string) {
+		audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPVerifyFail, reason, a.RequestIP(r))
+		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid or expired verification token")
+	}
+	// 4. Dead by lockout: minted at or before a consecutive-failure trip.
+	// Not counted toward the counter (it cannot buy a guess anyway).
+	if a.totpChallengeKilled(u.ID, totpTokenIssuedAt(expiresAt)) {
+		fail("superseded")
+		return
+	}
+	// 5. One-use nonce, burned on EVERY attempt (pass or fail). A repeat on
+	// the same token is a replay of a spent challenge, not a new guess, so
+	// it does not feed the failure counter either.
 	if !a.totpMarkNonceUsed(nonce) {
-		fail(u, "replayed_token")
+		fail("replayed_token")
 		return
 	}
+	// Constant-time ±window + monotonic-step check — semantics unchanged
+	// (Lens 8 "exemplary" verdict preserved).
+	if !a.consumeTOTPCode(r.Context(), u.ID, body.Code) {
+		if a.noteTOTPFailure(u.ID) {
+			// Threshold reached: every challenge minted up to now is dead
+			// and the alert lands in the trail admins read.
+			audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPVerifyFail, "lockout", a.RequestIP(r))
+		}
+		fail("bad_code")
+		return
+	}
+	a.clearTOTPVerifyState(u.ID) // success ends any failure streak
 	audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPVerifyOK, "", a.RequestIP(r))
 	a.finishLogin(w, r, u, "totp")
-}
-
-// shortHMACKey squeezes a token into a stable rate-limit key fragment (the
-// raw token is long and must never land in a map key readable elsewhere).
-func shortHMACKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:8])
 }

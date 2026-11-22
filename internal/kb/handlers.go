@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/store"
 )
 
 // textExts is the ingest allowlist: text formats + common code/script
@@ -65,11 +66,49 @@ func collectionToDTO(c *collection, files, chunks int) collectionDTO {
 	return collectionDTO{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt, FileCount: files, ChunkCount: chunks}
 }
 
+// --- rate limits (SECREV-V2 L7-M1 / lens 8: kb spend) ---------------------
+//
+// Uploads and searches trigger PAID embeddings-provider calls, so every
+// spend-bearing kb route goes through the shared keyed auth limiter
+// (Auth.Allow — same helper as login/imggen; burst = rate/min, refill at
+// 60/r seconds). Numbers:
+//
+//   - uploadPerMin = 5/min/user: each upload already batches up to 8 files
+//     (≤5 MiB each), so 5 admits a generous interactive import burst
+//     (40 files/min) while capping scripted embedding spend at a constant
+//     fraction of what an unauthenticated flood could burn. Matches the
+//     house 5/min magnitude (loginPerMin, imggen's family).
+//   - searchPerMin = 20/min/user: one paid embed call per query; 20/min is
+//     far above interactive RAG use. Chat-turn enrichment does NOT pass
+//     through this route (it runs inside the chat send, bounded there).
+//   - createPerMin = 10/min/user: collection rows are DB-only (no provider
+//     spend); this is a human-scale cap against table bloat, kept because
+//     it is a one-line reuse of the same gate.
+const (
+	uploadPerMin = 5
+	searchPerMin = 20
+	createPerMin = 10
+)
+
+// allowSpend consumes one token from a per-user bucket and answers the
+// house 429 envelope when empty. requireUser guarantees a live Auth, so the
+// limiter is always present here.
+func (d *Deps) allowSpend(w http.ResponseWriter, u *store.User, bucket string, perMin float64, msg string) bool {
+	if d.Auth.Allow(bucket+u.ID, perMin) {
+		return true
+	}
+	httpx.ErrorJSON(w, http.StatusTooManyRequests, msg)
+	return false
+}
+
 // --- collections ---------------------------------------------------------
 
 func (d *Deps) handleCollectionCreate(w http.ResponseWriter, r *http.Request) {
 	u, ok := d.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if !d.allowSpend(w, u, "kb:create:", createPerMin, "too many collection creations, try again later") {
 		return
 	}
 	var in struct {
@@ -217,6 +256,11 @@ func (d *Deps) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Spend gate BEFORE any multipart parsing/embedding (L7-M1): every
+	// accepted file costs provider credits.
+	if !d.allowSpend(w, u, "kb:upload:", uploadPerMin, "too many kb uploads, try again later") {
+		return
+	}
 	c, err := d.getCollection(r.Context(), u.ID, r.PathValue("id"))
 	if err != nil {
 		d.fail(w, r, err)
@@ -339,6 +383,11 @@ func sanitizeName(raw string) string {
 func (d *Deps) handleSearch(w http.ResponseWriter, r *http.Request) {
 	u, ok := d.requireUser(w, r)
 	if !ok {
+		return
+	}
+	// Spend gate before the query embed + brute scan (L7-M1: embedding
+	// credits AND scan CPU per user).
+	if !d.allowSpend(w, u, "kb:search:", searchPerMin, "too many kb searches, try again later") {
 		return
 	}
 	c, err := d.getCollection(r.Context(), u.ID, r.PathValue("id"))

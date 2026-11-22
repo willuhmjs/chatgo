@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"chatgo/internal/audit"
 	"chatgo/internal/store"
@@ -201,5 +202,87 @@ func TestGETAudit(t *testing.T) {
 	}
 	if code, _ := fetch(t, fakeResolver{u: admin, ok: true}, "/api/audit?cursor=abc"); code != http.StatusBadRequest {
 		t.Errorf("bad cursor: status = %d, want 400", code)
+	}
+}
+
+// ---------- L8-M2: field-size clamps at the insert chokepoint ----------
+
+func lastRow(t *testing.T, st *store.Store) (uid, email, detail string) {
+	t.Helper()
+	err := st.DB.QueryRow(`SELECT user_id, email, detail FROM audit_log ORDER BY id DESC LIMIT 1`).
+		Scan(&uid, &email, &detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// Oversized attacker strings (4KB login-fail emails, 5KB provider-name
+// details, bloated user rows) must land clamped to the Max* caps —
+// truncated with a trailing marker, never rejected, never whole.
+func TestRecordClampsOversizedFields(t *testing.T) {
+	st := openDB(t)
+	ctx := context.Background()
+
+	audit.RecordIdentity(ctx, st.DB, "", strings.Repeat("x", 4096)+"@evil.test",
+		audit.ActionLoginFail, "invalid credentials", "1.2.3.4")
+	_, email, detail := lastRow(t, st)
+	if len(email) > audit.MaxEmailLen {
+		t.Errorf("email len = %d, want ≤ %d", len(email), audit.MaxEmailLen)
+	}
+	if !strings.HasSuffix(email, "…") {
+		t.Error("clamped email missing truncation marker")
+	}
+
+	audit.Record(ctx, st.DB, &store.User{ID: "u1", Email: "a@x.io"},
+		"provider.create", strings.Repeat("d", 5*1024), "ip")
+	_, _, detail = lastRow(t, st)
+	if len(detail) > audit.MaxDetailLen {
+		t.Errorf("detail len = %d, want ≤ %d", len(detail), audit.MaxDetailLen)
+	}
+	if !strings.HasSuffix(detail, "…") {
+		t.Error("clamped detail missing truncation marker")
+	}
+
+	// Caller/actor columns from a (bloated) user row: same cap.
+	audit.Record(ctx, st.DB, &store.User{
+		ID: strings.Repeat("u", 500), Email: strings.Repeat("e", 400) + "@x.io",
+	}, "logout", "", "ip")
+	uid, email, _ := lastRow(t, st)
+	if len(uid) > audit.MaxUserLen || len(email) > audit.MaxEmailLen {
+		t.Errorf("user row not clamped: uid %d, email %d", len(uid), len(email))
+	}
+
+	// Boundary: exactly-cap fields pass through UNTOUCHED (no marker).
+	boundary := strings.Repeat("a", audit.MaxEmailLen-len("@example.com")) + "@example.com"
+	audit.RecordIdentity(ctx, st.DB, "", boundary, "x", strings.Repeat("d", audit.MaxDetailLen), "ip")
+	_, email, detail = lastRow(t, st)
+	if email != boundary {
+		t.Errorf("exact-cap email mangled (len %d)", len(email))
+	}
+	if len(detail) != audit.MaxDetailLen || strings.HasSuffix(detail, "…") {
+		t.Error("exact-cap detail mangled")
+	}
+}
+
+// Clamping must not split UTF-8 sequences at the cut point (admin names are
+// free text — 2- and 3-byte runes must land on rune boundaries).
+func TestRecordClampIsRuneSafe(t *testing.T) {
+	st := openDB(t)
+	ctx := context.Background()
+	for _, seq := range []string{"é", "日"} { // 2- and 3-byte runes
+		big := strings.Repeat(seq, 500) // > MaxEmailLen either way
+		audit.RecordIdentity(ctx, st.DB, "", big, "x", "", "")
+		_, email, _ := lastRow(t, st)
+		if len(email) > audit.MaxEmailLen {
+			t.Errorf("%q: len = %d, want ≤ %d", seq, len(email), audit.MaxEmailLen)
+		}
+		if !utf8.ValidString(email) || !strings.HasSuffix(email, "…") {
+			t.Fatalf("%q: clamped value is invalid UTF-8 or lost its marker: %q", seq, email)
+		}
+		kept := strings.TrimSuffix(email, "…")
+		if !strings.HasPrefix(big, kept) || len(kept)%len(seq) != 0 {
+			t.Errorf("%q: prefix not whole runes: %q", seq, kept)
+		}
 	}
 }

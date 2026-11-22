@@ -51,9 +51,12 @@ type Auth struct {
 	lastTouch sync.Map
 
 	// --- 2FA state (BE-SEC, internal/auth/totp.go) -------------------------
-	// All three maps are capped/TTL-swept per docs/FEATURES-V2.md §RAM:
+	// Every map here is capped or TTL-swept per docs/FEATURES-V2.md §RAM:
 	// pending ≤ totpPendingCap entries, nonces expire with the 10-min token
-	// window (swept on use), last-step ≤ one entry per user.
+	// window (swept on use), last-step ≤ one entry per user, and the C6
+	// verify-wall maps (fail counter, kill stamp) are ≤ one entry per user
+	// with the stamp self-sweeping once no token it could invalidate
+	// remains live.
 
 	// totpSecretKey = HKDF-SHA256(SESSION_SECRET, "chatgo:totp-atrest/v1"):
 	// AES-256-GCM key sealing users.totp_secret at rest (same HKDF pattern
@@ -71,6 +74,13 @@ type Auth struct {
 
 	lastStepMu   sync.Mutex
 	totpLastStep map[string]int64 // userID → last consumed TOTP step (replay)
+
+	// C6 (L6-H1) per-user verify wall: consecutive bad-code counter and the
+	// challenge-kill stamp it arms (all tokens minted at/before the stamp
+	// are dead). Replaces the pre-fix per-(IP,token) limiter key.
+	totpStateMu     sync.Mutex
+	totpVerifyFails map[string]int   // userID → consecutive failed code checks
+	totpKilledAt    map[string]int64 // userID → unix seconds of challenge kill
 }
 
 type loginBucket struct {
@@ -227,7 +237,8 @@ func (a *Auth) janitorPass(ctx context.Context) {
 
 // sweepThrottleState evicts lastTouch entries older than limiterIdleFor so
 // the sync.Map cannot grow without bound (logout and session expiry leave
-// keys behind otherwise). Limiter buckets self-sweep inside Allow.
+// keys behind otherwise). Limiter buckets self-sweep inside Allow, and the
+// 2FA kill stamps expire with the challenge token TTL.
 func (a *Auth) sweepThrottleState(now time.Time) {
 	a.lastTouch.Range(func(k, v any) bool {
 		if t, ok := v.(time.Time); ok && now.Sub(t) > limiterIdleFor {
@@ -235,6 +246,7 @@ func (a *Auth) sweepThrottleState(now time.Time) {
 		}
 		return true
 	})
+	a.sweepTOTPKillStamps(now)
 }
 
 // ErrUnauthenticated surfaces to callers that need a sentinel for "no user".

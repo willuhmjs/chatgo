@@ -372,3 +372,52 @@ func TestSessionCookieSecureFlag(t *testing.T) {
 		})
 	}
 }
+
+// TestLoginAndRegisterRejectOversizedEmail pins the L8-M2 email wall on the
+// unauthenticated surfaces: shape is validated (validEmail, ≤254B) BEFORE
+// bcrypt / store query / audit insert, so a 4KB email answers a plain 400
+// and never reaches audit_log at all — the audit clamp stays as defense in
+// depth for other callers. Registration already 400ed via the same gate
+// inside Register; this test covers BOTH so the trace is executable:
+// login → validEmail in HandleLogin (no audit row); register → validEmail
+// in Auth.Register (400 envelope, house-style).
+func TestLoginAndRegisterRejectOversizedEmail(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Config) { cfg.Registration = "open" })
+
+	big := strings.Repeat("x", 4096) + "@example.com"
+
+	r := env.login(big, "whatever-1234")
+	assertJSONErr(t, r, http.StatusBadRequest)
+	var n int
+	if err := env.Store.DB.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("audit rows after malformed-email login = %d, want 0", n)
+	}
+
+	// Registration: same shape gate, same 400 envelope.
+	r = env.register(big, "secretpass-1", "Bot")
+	assertJSONErr(t, r, http.StatusBadRequest)
+
+	// A legitimate email inside the 254B shape cap (and the 320B audit cap)
+	// still registers: open policy → 200 + session.
+	r = env.register(strings.Repeat("a", 200)+"@example.com", "secretpass-1", "Long")
+	if r.Status != http.StatusOK {
+		t.Fatalf("213-byte email register status = %d, want 200 (body %q)", r.Status, r.Body)
+	}
+
+	// Well-formed unknown emails keep the OLD behavior: 401 + one audit row
+	// carrying the whole (small) email — no regression on the login.fail
+	// audit trail.
+	r = env.login("nobody@example.com", "whatever-1234")
+	assertJSONErr(t, r, http.StatusUnauthorized)
+	var email string
+	if err := env.Store.DB.QueryRow(
+		`SELECT email FROM audit_log WHERE action = 'login.fail' ORDER BY id DESC LIMIT 1`).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	if email != "nobody@example.com" {
+		t.Errorf("login.fail audit email = %q, want nobody@example.com", email)
+	}
+}

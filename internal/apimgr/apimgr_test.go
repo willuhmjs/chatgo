@@ -538,3 +538,90 @@ func TestUserApproveAndLastAdminGuard(t *testing.T) {
 		t.Fatalf("anonymous handleRole = %d, want 401", rec.Code)
 	}
 }
+
+// ---------- provider display-name cap (L8-M2) ----------
+
+func TestProviderNameCap(t *testing.T) {
+	d, _ := testDeps(t)
+	h := &providersH{d: d}
+	admin := mustUser(t, d.Store, "padmin@example.com", store.RoleAdmin)
+	ctx := context.Background()
+
+	body := func(m any) string {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	over := strings.Repeat("日", MaxProviderNameLen+1) // 201 multibyte runes
+	okName := strings.Repeat("日", MaxProviderNameLen) // 200 multibyte runes
+
+	// Create with an over-cap name → 400 (house-style envelope).
+	rec := httptest.NewRecorder()
+	h.create(rec, jsonReq(body(map[string]string{"name": over, "base_url": "https://cap.test/v1"})), admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-cap create status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("over-cap create body not an error envelope: %s", rec.Body)
+	}
+
+	// Exactly 200 multibyte runes → 201, stored intact, audit detail intact
+	// (600B < the 1KB audit detail cap).
+	rec = httptest.NewRecorder()
+	h.create(rec, jsonReq(body(map[string]string{"name": okName, "base_url": "https://cap.test/v1"})), admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("200-rune create status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	var created providerJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != okName {
+		t.Errorf("stored name = %q, want the 200-rune name", created.Name)
+	}
+	var detail string
+	if err := d.Store.DB.QueryRow(
+		`SELECT detail FROM audit_log WHERE action = 'provider.create' ORDER BY id DESC LIMIT 1`).
+		Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail != okName {
+		t.Errorf("audit detail = %q, want the 200-rune name whole", detail)
+	}
+
+	// Update with an over-cap name → 400 and the stored row untouched.
+	rec = httptest.NewRecorder()
+	upReq := httptest.NewRequest("PUT", "/api/providers/"+created.ID, strings.NewReader(body(map[string]string{"name": over})))
+	h.update(rec, upReq, created.ID, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-cap update status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	if p, err := d.Store.Providers.Get(ctx, created.ID); err != nil || p.Name != okName {
+		t.Errorf("name after rejected update = %q, %v", p.Name, err)
+	}
+
+	// Update to a valid shorter name → 200 + persisted.
+	rec = httptest.NewRecorder()
+	upReq = httptest.NewRequest("PUT", "/api/providers/"+created.ID, strings.NewReader(body(map[string]string{"name": "Small"})))
+	h.update(rec, upReq, created.ID, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid update status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if p, _ := d.Store.Providers.Get(ctx, created.ID); p.Name != "Small" {
+		t.Errorf("name after update = %q, want Small", p.Name)
+	}
+
+	// Patch without a name keeps it (PUT partial semantics, empty name is
+	// "absent" not "oversized").
+	rec = httptest.NewRecorder()
+	upReq = httptest.NewRequest("PUT", "/api/providers/"+created.ID, strings.NewReader(body(map[string]any{"sort": 3})))
+	h.update(rec, upReq, created.ID, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("nameless patch status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if p, _ := d.Store.Providers.Get(ctx, created.ID); p.Name != "Small" {
+		t.Errorf("name after nameless patch = %q, want Small", p.Name)
+	}
+}

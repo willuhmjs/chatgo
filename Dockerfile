@@ -6,7 +6,7 @@
 #   docker buildx imagetools inspect <image>:<tag>   # → "Digest:" line
 
 # ---- Stage 1: web assets ---------------------------------------------------
-# node:22-alpine — matches CI (setup-node node-version: 22) and package.json engines.
+# node:22-alpine — matches CI (setup-node node-version: 22).
 # digest: sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a (node:22-alpine, recorded 2026-11-22)
 FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS web
 # WORKDIR must be /src/web so vite's outDir "../internal/web/dist" resolves to

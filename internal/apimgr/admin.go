@@ -84,11 +84,14 @@ const maxSettingValue = 8 << 10
 // settingValidators is the admin allowlist: reserved global keys and their
 // value checks (nil = free text). Keys outside it are rejected (400).
 var settingValidators = map[string]func(string) string{
-	"title":         nil, // instance display name
-	"task_model":    validateTaskModel,
-	"system_prompt": nil, // global extra system prompt
-	"registration":  validateRegistration,
-	"search_url":    validateSearchURL,
+	"title":      nil, // instance display name
+	"task_model": validateTaskModel,
+	// KB embeddings escape hatch (internal/kb/embed.go picks it up as
+	// "providerID:modelID"; empty = auto-detect).
+	"kb_embed_model": validateKBEmbedModel,
+	"system_prompt":  nil, // global extra system prompt
+	"registration":   validateRegistration,
+	"search_url":     validateSearchURL,
 	// Written once the admin finishes the onboarding wizard (global mirror of
 	// the per-user setup_done me-setting).
 	"instance_setup_done": nil,
@@ -100,6 +103,22 @@ func validateTaskModel(v string) string {
 	}
 	if !strings.Contains(v, ":") {
 		return "task_model must be \"providerID:modelID\" or empty"
+	}
+	return ""
+}
+
+// validateKBEmbedModel mirrors validateTaskModel's "providerID:modelID"-or-
+// empty shape (kept as a copy on purpose — no shared helper to refactor into).
+// The colon rule matches kb.splitSpec in internal/kb/embed.go exactly: the
+// FIRST colon splits provider from model and both halves must be non-empty,
+// so ":mid" and "pid:" are rejected here instead of silently ignored by kb.
+func validateKBEmbedModel(v string) string {
+	if v == "" {
+		return ""
+	}
+	i := strings.IndexByte(v, ':')
+	if i <= 0 || i == len(v)-1 {
+		return "kb_embed_model must be \"providerID:modelID\" or empty"
 	}
 	return ""
 }

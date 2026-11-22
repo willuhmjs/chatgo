@@ -10,6 +10,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,7 +170,9 @@ func (a *Auth) OIDCLogin(w http.ResponseWriter, r *http.Request) {
 // OIDCCallback completes the flow: verify state+nonce, exchange the code
 // (with the stored PKCE verifier), verify id_token (signature via oidc
 // verifier; nonce by hand), provision or link the user per Registration,
-// then issue the session cookie and 302 to /.
+// then issue the session cookie and 302 to /. Users with 2FA enabled get no
+// cookie: they are 302'd to /login?totp=1&t=… and must pass
+// POST /api/auth/totp first (see oidcTOTPChallenge).
 func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if a.oidc == nil {
 		redirectLoginError(w, r, "oidc_disabled")
@@ -251,6 +254,22 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lens-8 M2: an IdP assertion must not bypass 2FA. Same contract as the
+	// password path (HandleLogin → totpChallenge): a user with a committed
+	// TOTP secret gets NO session cookie here — instead the same stateless
+	// totp_token is minted and handed to the SPA, which finishes the login
+	// through POST /api/auth/totp (identical finishLogin path afterwards).
+	enabled, err := a.totpEnabled(ctx, u.ID)
+	if err != nil {
+		slog.Error("auth: oidc totp state check failed", "err", err)
+		redirectLoginError(w, r, "oidc_user_failed")
+		return
+	}
+	if enabled {
+		a.oidcTOTPChallenge(w, r, u)
+		return
+	}
+
 	sess, err := a.CreateSession(ctx, u.ID, r.UserAgent(), a.RequestIP(r))
 	if err != nil {
 		slog.Error("auth: oidc session create failed", "err", err)
@@ -260,6 +279,31 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	a.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
 	audit.Record(ctx, a.Store.DB, u, audit.ActionLoginSuccess, "method=oidc", a.RequestIP(r))
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// oidcTOTPChallenge mirrors the password path's totpChallenge for the OIDC
+// callback: mint the same stateless v1 totp_token and 302 the SPA login route
+// with the challenge in the query (/login?totp=1&t=…).
+//
+// Token-in-URL risk decision (deliberate, reviewed): the 302 Location is the
+// only channel from this server-side redirect to the SPA — no session exists
+// yet, so there is nothing to hang server-side challenge state on, and a URL
+// fragment would never reach the server-observable code path at all (and the
+// SPA still parses via query elsewhere). Exposure is bounded: the token is
+// HMAC-signed over "v1.<uid>.<exp>.<nonce>", single-use (nonce is burned when
+// POST /api/auth/totp consumes it), TTL-bounded to totpTokenTTL (10 min), and
+// useless without a current authenticator code. /login is same-origin, so the
+// token never rides a cross-origin Referer, and the SPA scrub-strips the query
+// on mount (history.replaceState), so it does not persist in history.
+func (a *Auth) oidcTOTPChallenge(w http.ResponseWriter, r *http.Request, u *store.User) {
+	token, err := a.issueTOTPToken(u.ID)
+	if err != nil {
+		slog.Error("auth: oidc totp token mint failed", "err", err)
+		redirectLoginError(w, r, "oidc_user_failed")
+		return
+	}
+	audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPChallenge, "method=oidc", a.RequestIP(r))
+	http.Redirect(w, r, "/login?totp=1&t="+url.QueryEscape(token), http.StatusFound)
 }
 
 // oidcUser links an existing account by email, else auto-creates per the

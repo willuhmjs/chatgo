@@ -11,7 +11,9 @@ import (
 )
 
 // User admin surface: GET /api/users, POST /api/users/{id}/approve,
-// PUT /api/users/{id}/role. Password hashes are NEVER serialized out.
+// PUT /api/users/{id}/role, POST /api/users/{id}/reset-2fa. Password hashes
+// are NEVER serialized out — the sole exception is the one-time recovery
+// password from reset-2fa, which exists only in that response body.
 
 type usersH struct{ d *Deps }
 
@@ -20,6 +22,7 @@ func registerUsers(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/users", h.handleList)
 	mux.HandleFunc("POST /api/users/{id}/approve", h.handleApprove)
 	mux.HandleFunc("PUT /api/users/{id}/role", h.handleRole)
+	mux.HandleFunc("POST /api/users/{id}/reset-2fa", h.handleReset2FA)
 }
 
 // userJSON mirrors web/src/lib/api.ts User (no password_hash field exists —
@@ -140,6 +143,33 @@ func (h *usersH) setRole(w http.ResponseWriter, r *http.Request, id, role string
 	actor, _ := h.d.Auth.UserFrom(r.Context())
 	audit.Record(r.Context(), h.d.Store.DB, actor, "user.role", "user_id="+id+" role="+role, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, userView(u))
+}
+
+// handleReset2FA: POST /api/users/{id}/reset-2fa — admin-driven 2FA lockout
+// recovery (auth.AdminReset2FA does the work): the target's TOTP secret is
+// cleared, ALL their sessions are revoked, and a local account gets a fresh
+// one-time password returned HERE AND NOWHERE ELSE (audit detail carries
+// only user_id + method — never the password). OIDC-only accounts get no
+// password: new_password is simply absent from the response.
+func (h *usersH) handleReset2FA(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.d.Auth.AdminReset2FA(r.Context(), r.PathValue("id"), actor, h.d.Auth.RequestIP(r))
+	if err != nil {
+		userLookupFail(w, r, err) // unknown id → 404, same as approve/role
+		return
+	}
+	out := map[string]any{
+		"ok":               true,
+		"was_enabled":      res.WasEnabled,
+		"sessions_revoked": res.SessionsRevoked,
+	}
+	if res.PasswordSet {
+		out["new_password"] = res.NewPassword // shown once; never logged or stored plaintext
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 // countAdmins counts admin rows (repo has no count method; homelab-scale

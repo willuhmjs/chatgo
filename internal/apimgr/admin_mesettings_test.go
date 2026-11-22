@@ -185,3 +185,69 @@ func TestAdminSettingsInstanceSetupDone(t *testing.T) {
 		t.Fatalf("typo'd key: %d %q, want 400", rec.Code, rec.Body)
 	}
 }
+
+// kb_embed_model (L4-I1): the documented embeddings escape hatch must be
+// writable via admin PUT /api/settings. Value shape mirrors kb.splitSpec in
+// internal/kb/embed.go: "providerID:modelID" (first colon, both halves
+// non-empty) or empty to clear. Non-admins keep inheriting the 403 bucket.
+func TestAdminSettingsKBEmbedModel(t *testing.T) {
+	env := newMeSettingsEnv(t)
+	ctx := context.Background()
+
+	// Round-trip: accepted, stored raw (no key-ish masking on this key),
+	// echoed back in the admin view.
+	rec := env.do(t, http.MethodPut, "/api/settings", `{"kb_embed_model":"openai:text-embedding-3-small"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT kb_embed_model = %d, want 200 (body %q)", rec.Code, rec.Body)
+	}
+	if got := decodeMap(t, rec)["kb_embed_model"]; got != "openai:text-embedding-3-small" {
+		t.Fatalf("PUT response view = %q, want the value echoed", got)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "kb_embed_model"); err != nil || v == nil || *v != "openai:text-embedding-3-small" {
+		t.Fatalf("stored row = %v (err %v), want openai:text-embedding-3-small", v, err)
+	}
+
+	// Rejections: no colon, and the degenerate halves kb.splitSpec drops.
+	for _, bad := range []string{"garbage no colon", ":only-model", "provider-only:"} {
+		rec = env.do(t, http.MethodPut, "/api/settings", `{"kb_embed_model":"`+bad+`"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("PUT %q = %d %q, want 400", bad, rec.Code, rec.Body)
+		}
+	}
+	// The rejected writes must not have clobbered the good value.
+	if v, err := env.D.Store.Settings.Get(ctx, "kb_embed_model"); err != nil || v == nil || *v != "openai:text-embedding-3-small" {
+		t.Fatalf("rejected PUT mutated the row: %v (err %v)", v, err)
+	}
+
+	// Empty clears (200) — kb falls back to name-heuristic auto-detection.
+	rec = env.do(t, http.MethodPut, "/api/settings", `{"kb_embed_model":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT empty kb_embed_model = %d, want 200 (body %q)", rec.Code, rec.Body)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "kb_embed_model"); err != nil || v == nil || *v != "" {
+		t.Fatalf("after clear stored = %v (err %v), want empty string", v, err)
+	}
+
+	// Non-admin → 403 (same requireAdmin bucket as every other setting).
+	u := &store.User{Email: "plain@example.com", Name: "P", Role: store.RoleUser}
+	if err := env.D.Store.Users.Insert(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := env.D.Auth.CreateSession(ctx, u.ID, "test", "192.0.2.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/settings",
+		strings.NewReader(`{"kb_embed_model":"evil:model"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: sess.Token})
+	req.RemoteAddr = "192.0.2.10:4321"
+	rec = httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin PUT = %d %q, want 403", rec.Code, rec.Body)
+	}
+	if v, err := env.D.Store.Settings.Get(ctx, "kb_embed_model"); err != nil || v == nil || *v != "" {
+		t.Fatalf("non-admin PUT wrote despite 403: %v (err %v)", v, err)
+	}
+}

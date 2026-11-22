@@ -41,6 +41,15 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	return newEnvWith(t, false)
+}
+
+// newEnvWith builds the standard env; nilDepsCfg registers the handler with
+// a nil Deps.Cfg (SECREV-V2 L4-L1: a misconfigured boot must never fall
+// back to an unguarded dialer). Auth/Files keep the real config so only the
+// guarded-client path sees the nil.
+func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
+	t.Helper()
 	name := "file:mem_img_" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()) +
 		"?mode=memory&cache=shared"
 	st, err := store.Open(name, testSecret)
@@ -95,7 +104,11 @@ func newEnv(t *testing.T) *env {
 	}
 
 	mux := http.NewServeMux()
-	Register(mux, &Deps{Cfg: cfg, Store: st, Auth: a, Files: files.New(cfg, st)})
+	depsCfg := cfg
+	if nilDepsCfg {
+		depsCfg = nil
+	}
+	Register(mux, &Deps{Cfg: depsCfg, Store: st, Auth: a, Files: files.New(cfg, st)})
 	srv := httptest.NewServer(a.Require(mux)) // mirrors AuthPolicy's /api/* branch
 	t.Cleanup(srv.Close)
 	e.srv = srv
@@ -404,5 +417,62 @@ func TestValidSizeAndMime(t *testing.T) {
 	}
 	if _, err := imageMime([]byte("just some text, definitely not an image")); err == nil {
 		t.Error("text payload accepted as image")
+	}
+}
+
+// ---------- SECREV-V2 L4-L1: nil-Cfg unguarded-dialer hatch ----------
+
+// TestNilCfgRefusesUnguardedDial: Deps.Cfg == nil (misconfigured boot) must
+// NOT fall back to the old plain-net.Dialer escape hatch — that dialed the
+// provider with zero SSRF checking (pre-fix this test answered 200 with the
+// upstream happily hit). Post-fix contract: the request boundary answers a
+// clean 503 house envelope, the upstream is never contacted, and the server
+// stays alive (an unhandled panic would surface here as httptest's 500).
+func TestNilCfgRefusesUnguardedDial(t *testing.T) {
+	e := newEnvWith(t, true)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+	e.respond(200, `{"data":[{"b64_json":"`+tinyPNG+`"}]}`)
+
+	resp := e.post("/api/images/generate", `{"prompt":"a red fox"}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil-Cfg generate = %d (%q), want 503 clean refusal (no unguarded dial)",
+			resp.StatusCode, out.Error)
+	}
+	if out.Error == "" {
+		t.Error("503 must carry the house error envelope")
+	}
+
+	e.mu.Lock()
+	raw := e.reqBody
+	e.mu.Unlock()
+	if raw != "" {
+		t.Errorf("upstream was dialed despite nil Cfg: %q", raw)
+	}
+
+	// Server alive: session-scoped routes still serve afterwards.
+	lr := e.get("/api/images")
+	lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		t.Errorf("GET /api/images after refusal = %d, want 200 (server must stay alive)", lr.StatusCode)
+	}
+}
+
+// TestNoProviderConfiguredCleanError: with an enabled image provider absent
+// entirely, generate answers the guidance 400 (never 500/panic) and the
+// server keeps serving — the "no image provider configured" boundary.
+func TestNoProviderConfiguredCleanError(t *testing.T) {
+	e := newEnv(t) // fresh store: no providers seeded
+	resp := e.post("/api/images/generate", `{"prompt":"a red fox"}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("no-provider generate = %d (%q), want 400", resp.StatusCode, out.Error)
+	}
+	lr := e.get("/api/images")
+	lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		t.Errorf("server unhealthy after config-gap 400: list = %d", lr.StatusCode)
 	}
 }

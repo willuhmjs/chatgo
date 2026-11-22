@@ -557,3 +557,65 @@ func TestEmbedModelSelection(t *testing.T) {
 		t.Fatalf("all-disabled: %v, want ErrNoEmbedModel", err)
 	}
 }
+
+// ---------- spend rate limits (SECREV-V2 L7-M1) ----------
+
+// TestSpendRateLimitsPerUser: upload (5/min), search (20/min) and collection
+// create (10/min) are per-user token buckets on the shared auth limiter;
+// overflow answers the house 429 envelope WITHOUT reaching the embeddings
+// provider, and other users' buckets are untouched.
+func TestSpendRateLimitsPerUser(t *testing.T) {
+	e := newTestEnv(t)
+	idA := e.createCollection(e.tokA, "Limits") // 1 create of A's 10/min
+
+	// Upload: exactly uploadPerMin (5) admitted, the 6th is 429.
+	for i := 0; i < uploadPerMin; i++ {
+		if st, _, raw := e.upload(e.tokA, idA, [2]string{fmt.Sprintf("f%d.txt", i), "golang notes"}); st != http.StatusCreated {
+			t.Fatalf("upload %d: %d %q, want 201", i+1, st, raw)
+		}
+	}
+	batchesBefore, _ := e.Embed.snapshot()
+	st, m, raw := e.upload(e.tokA, idA, [2]string{"late.txt", "golang notes"})
+	if st != http.StatusTooManyRequests {
+		t.Fatalf("upload %d: %d %q, want 429", uploadPerMin+1, st, raw)
+	}
+	if msg, _ := m["error"].(string); msg == "" {
+		t.Fatalf("429 missing house envelope: %q", raw)
+	}
+	if batchesAfter, _ := e.Embed.snapshot(); len(batchesAfter) != len(batchesBefore) {
+		t.Fatal("429'd upload still reached the embeddings provider")
+	}
+
+	// Search: exactly searchPerMin (20) admitted, then 429.
+	for i := 0; i < searchPerMin; i++ {
+		if st, _, raw := e.json("POST", "/api/kb/"+idA+"/search", e.tokA, map[string]any{"q": "golang"}); st != http.StatusOK {
+			t.Fatalf("search %d: %d %q, want 200", i+1, st, raw)
+		}
+	}
+	st, m, raw = e.json("POST", "/api/kb/"+idA+"/search", e.tokA, map[string]any{"q": "golang"})
+	if st != http.StatusTooManyRequests {
+		t.Fatalf("search %d: %d %q, want 429", searchPerMin+1, st, raw)
+	}
+	if msg, _ := m["error"].(string); msg == "" {
+		t.Fatalf("search 429 missing house envelope: %q", raw)
+	}
+
+	// Create: A already spent 1 token, so 9 more pass and the 11th is 429.
+	for i := 0; i < createPerMin-1; i++ {
+		if st, _, raw := e.json("POST", "/api/kb", e.tokA, map[string]string{"name": fmt.Sprintf("c%d", i)}); st != http.StatusCreated {
+			t.Fatalf("create %d: %d %q, want 201", i+2, st, raw)
+		}
+	}
+	if st, _, raw := e.json("POST", "/api/kb", e.tokA, map[string]string{"name": "one-too-many"}); st != http.StatusTooManyRequests {
+		t.Fatalf("create %d: %d %q, want 429", createPerMin+1, st, raw)
+	}
+
+	// Per-user isolation: B is untouched by A's flood.
+	idB := e.createCollection(e.tokB, "B's")
+	if st, _, raw := e.upload(e.tokB, idB, [2]string{"b.txt", "pasta pasta"}); st != http.StatusCreated {
+		t.Fatalf("B upload after A's flood: %d %q, want 201", st, raw)
+	}
+	if st, _, raw := e.json("POST", "/api/kb/"+idB+"/search", e.tokB, map[string]any{"q": "pasta"}); st != http.StatusOK {
+		t.Fatalf("B search after A's flood: %d %q, want 200", st, raw)
+	}
+}

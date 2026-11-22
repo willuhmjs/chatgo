@@ -13,7 +13,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-  - host: chat2.will.net
+  - host: chat.example.com
     http:
       paths:
       - path: /
@@ -25,7 +25,7 @@ spec:
               number: 8080
   tls:
   - hosts:
-    - chat2.will.net
+    - chat.example.com
     secretName: chatgo-tls
 ---
 apiVersion: networking.k8s.io/v1
@@ -39,7 +39,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-  - host: chat2.will.net
+  - host: chat.example.com
     http:
       paths:
       - path: /api/auth
@@ -51,7 +51,7 @@ spec:
               number: 8080
   tls:
   - hosts:
-    - chat2.will.net
+    - chat.example.com
     secretName: chatgo-tls
 ---
 apiVersion: networking.k8s.io/v1
@@ -65,7 +65,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-  - host: chat2.will.net
+  - host: chat.example.com
     http:
       paths:
       # "/s/" (with slash) — Prefix "/s" would also capture /settings*
@@ -85,5 +85,5 @@ spec:
               number: 8080
   tls:
   - hosts:
-    - chat2.will.net
+    - chat.example.com
     secretName: chatgo-tls

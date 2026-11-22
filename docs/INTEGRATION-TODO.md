@@ -36,7 +36,7 @@
        reconcile with AG-2's onboarding-api.ts expectations.
 4. [ ] Gates: npx svelte-check --threshold error (0) · npm run build · go build ./... ·
        go vet ./... · go test ./... (all green).
-5. [ ] Commit polish+authgate round (author will <will@will.local> per publish plan? no —
+5. [ ] Commit polish+authgate round (author rewrite is a pre-push publish step only —
        local commit as-is; author rewrite is pre-push step only).
 6. [ ] Restart :8080 preview from BLANK DATA_DIR (/tmp/chatgo-ui fresh) → user sees
        /welcome first-run → wizard. Ensure mock provider on :9099 up (restart

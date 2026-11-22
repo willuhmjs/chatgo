@@ -23,20 +23,44 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 - **Multi-user with roles** — `admin` / `user` / `pending`, admin user
   management, approval flow for new signups.
 - **OIDC SSO** — standard code flow (+nonce); works out of the box with
-  Authelia (`OIDC_ISSUER=https://sso.will.net`), Keycloak, Authentik, etc.
+  Authelia (`OIDC_ISSUER=https://idp.example.com`), Keycloak, Authentik, etc.
   Local email/password auth (bcrypt) alongside or instead.
 - **OpenAI-compatible multi-provider** — point it at any number of
-  OpenAI-compatible backends; model list sync, per-chat model & params.
-- **SSE streaming** with token-by-token render, sources, usage, and
+  OpenAI-compatible backends; model list sync (`POST /api/providers/{id}/sync`),
+  per-chat model & params.
+- **SSE streaming** with token-by-token render, sources/citations, usage, and
   regenerate; heartbeats survive proxies.
 - **Vision** — attach png/jpg/webp/gif images, sent as data-URL image parts.
 - **Web search** — optional [SearXNG](https://docs.searxng.org/) backend;
   per-message toggle injects cited context and shows source chips.
-- **Full-text chat search** — SQLite FTS5 over all your messages.
-- **Folders & tags** for chat organization, plus pinning.
-- **Share links** — read-only public view of a chat at `/s/<token>`.
+- **Knowledge bases (RAG)** — upload text documents (md/csv/json/code…) into
+  per-user collections; chats that select a collection get top-k chunks
+  injected as fenced, `[n]`-marked context and the answer carries kb citations
+  in the same sources channel as web search (`POST /api/kb/{id}/search`).
+- **Memories** — per-user "about the user" facts, hand-written in settings or
+  extracted from a chat (`POST /api/me/memories/extract`); enabled memories
+  are injected into that user's future prompts. Extracted proposals land
+  **disabled** until you approve them.
+- **Prompt library + slash commands** — personal and admin-curated prompts,
+  inserted from the composer with `/`.
+- **Ratings & forks** — 👍/👎 (with optional comment) on any assistant
+  message; fork any chat from any message onward.
+- **Export** — a chat as `md` or `json` (`GET /api/chats/{id}/export`), or
+  your whole account as a streamed `zip` (`GET /api/me/export`: chats +
+  redacted personal settings).
+- **Full-text chat search, folders, tags & share links** — SQLite FTS5 over
+  all your messages; organize by folder/tag, pin chats; read-only public view
+  of a chat at `/s/<token>` (file attachments stripped).
 - **API tokens + OpenAI-compat proxy** — issue `ck_…` tokens and call
   `POST /v1/chat/completions` against ChatGo itself.
+- **Image generation** — `POST /api/images/generate` proxies an
+  OpenAI-compatible images endpoint; results land in your file gallery.
+- **TOTP 2FA + admin audit log** — optional per-user authenticator
+  (`/api/me/2fa/setup`, manual key + `otpauth://` URI); when enabled it is
+  required on password *and* SSO logins. Admins get an audit trail
+  (`GET /api/audit`) of logins, user/provider/settings/token changes.
+- **Colorful accents** — accent-color system (tinted bubbles, active rows,
+  chips) with a per-user picker.
 - **Command palette** (⌘K), keyboard shortcuts, compare two models
   side-by-side, artifact/image gallery, chat summarizing + context
   compaction for long threads.
@@ -61,6 +85,8 @@ docker run -d --name chatgo \
   Docker initializes fresh named volumes from it. If you bind-mount a host
   directory (`-v ./data:/data`) instead, make it writable by uid 65532 on the
   host first (`chown -R 65532:65532 ./data`).
+- The image runs happily on a `--read-only` rootfs — only `/data` needs to be
+  writable (the k8s manifests run it that way).
 - `SESSION_SECRET` is **required**: hex, **≥64 chars** (32 bytes); the app
   refuses to boot with less. Generate a fresh one with `openssl rand -hex 32`
   and keep it out of git; it keys session signing *and* at-rest encryption of
@@ -122,8 +148,8 @@ make bench   # RSS benchmark against a dummy provider (see bench/)
 ## Kubernetes
 
 Ready-made manifests for our homelab (namespace `chatgo`, Traefik ingress,
-cert-manager, Authelia OIDC) live in [`deploy/`](deploy/) — see the notes
-in `deploy/README` comments. Secrets are templated in
+cert-manager, Authelia OIDC) live in [`deploy/`](deploy/) — each YAML is
+commented inline. Secrets are templated in
 `deploy/secret.example.yaml` and are intentionally not in the kustomization.
 
 ## Memory
@@ -133,7 +159,11 @@ which runs the binary against a canned SSE mock provider).
 
 | Scenario | Go version | Platform | Idle RSS | Peak (1 streaming chat) |
 | --- | --- | --- | --- | --- |
-| *placeholder — run `make bench` on the server node* | | linux/arm64 | | |
+| Container (this repo's Dockerfile, distroless, `--read-only`) | 1.27.4 | linux/docker | **8.7 MiB** | — |
+| Host binary, v2 feature set (`make bench`) | 1.27.4 | darwin/arm64 | 17 MiB | 26 MiB |
+
+Container idle = boot + one API request, cgroup RSS. Host row measured at the
+v2 build; the release-tagged binary is re-benched each release.
 
 Linux `VmRSS` is the number that matters for k8s limits; macOS
 measurements run ~1.5–2× higher due to allocator differences — see the
@@ -143,8 +173,9 @@ caveat printed by `bench/measure.sh`.
 
 **Please read [SECURITY.md](SECURITY.md)** before filing a public issue for
 anything that looks like a vulnerability — it describes the private
-disclosure channel and the mitigations already built in (bcrypt, HMAC
-session cookies, SSRF dial-guard, CSP, AES-GCM key storage, …).
+disclosure channel and the mitigations already built in (bcrypt, hashed
+session tokens, TOTP 2FA, SSRF dial-guard, CSP, AES-GCM key storage, audit
+log, …).
 
 ## License
 

@@ -205,7 +205,7 @@ Keyboard: ⌘K palette (switch chats/models/actions), ⌘N new chat, Esc closes 
 - **FE-chat** → src/routes/ChatView.svelte + MessageList, MessageRow, Composer, Markdown (marked+DOMPurify+hljs), image input, Web Speech mic/read-aloud, ParamDrawer, ModelPicker
 - **FE-admin** → src/routes/{Login,Register,Admin*}.svelte (providers CRUD, users approve/roles, system settings) + api usage only
 - **FE-extra** → src/routes/{Compare,Gallery,Share}.svelte + CommandPalette + Toasts system (src/lib/toast.svelte.js is FE-extra-owned)
-- **OPS** → Makefile, Dockerfile (multi-stage node+go→distroless/static, nonroot), LICENSE(Apache-2.0 full text), README.md, SECURITY.md, .github/workflows/build.yml, homelab k8s manifests draft at deploy/ (ns chatgo, deploy w/ requests 64Mi limits 128Mi, PVC, ingress chat.will.net-style), bench/measure.sh
+- **OPS** → Makefile, Dockerfile (multi-stage node+go→distroless/static, nonroot), LICENSE(Apache-2.0 full text), README.md, SECURITY.md, .github/workflows/build.yml, homelab k8s manifests draft at deploy/ (ns chatgo, deploy w/ requests 64Mi limits 128Mi, PVC, ingress chat.example.com-style), bench/measure.sh
 
 ## Non-negotiables
 - 401 vs 403 vs 404: a resource not owned by caller returns 404, not 403 (no existence leak). Admin routes 403 for non-admin.

@@ -37,7 +37,7 @@ spec:
     average: 10
     burst: 20
 ---
-# HSTS: 180 days, no subdomains (chat2.will.net is a single-leaf homelab cert),
+# HSTS: 180 days, no subdomains (chat.example.com is a single-leaf homelab cert),
 # no preload list opt-in. Applied on the https routers in ingress.yaml.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware

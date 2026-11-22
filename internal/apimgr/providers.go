@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"chatgo/internal/api/httpx"
 	"chatgo/internal/audit"
@@ -17,6 +19,12 @@ import (
 // Provider admin surface: GET/POST /api/providers, PUT/DELETE /api/providers/{id},
 // POST /api/providers/{id}/sync (refresh models cache via Providers.ListModels),
 // plus authed GET /api/models for everyone.
+
+// MaxProviderNameLen caps the display name in RUNES (L8-M2): the name lands
+// verbatim in audit detail rows (provider.create/update) and in every
+// /api/providers + /api/models list payload, so a megabyte name was
+// permanent storage/UI abuse. 200 runes is generous for a real provider.
+const MaxProviderNameLen = 200
 
 type providersH struct{ d *Deps }
 
@@ -67,6 +75,9 @@ func (req *providerReq) validate(requireName bool) string {
 	if requireName && strings.TrimSpace(req.Name) == "" {
 		return "name is required"
 	}
+	if utf8.RuneCountInString(strings.TrimSpace(req.Name)) > MaxProviderNameLen {
+		return "name must be at most " + strconv.Itoa(MaxProviderNameLen) + " characters"
+	}
 	if req.BaseURL == "" && requireName {
 		return "base_url is required"
 	}
@@ -108,6 +119,12 @@ func (h *providersH) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.create(w, r, actor)
+}
+
+// create is the POST core (list/sync/del split pattern; tests drive it with
+// a seeded admin).
+func (h *providersH) create(w http.ResponseWriter, r *http.Request, actor *store.User) {
 	var req providerReq
 	if err := httpx.DecodeLoose(r, &req); err != nil {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid provider body")
@@ -146,7 +163,12 @@ func (h *providersH) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p, err := h.d.Store.Providers.Get(r.Context(), r.PathValue("id"))
+	h.update(w, r, r.PathValue("id"), actor)
+}
+
+// update is the PUT core (see create for why the split).
+func (h *providersH) update(w http.ResponseWriter, r *http.Request, id string, actor *store.User) {
+	p, err := h.d.Store.Providers.Get(r.Context(), id)
 	if err != nil {
 		providerLookupFail(w, r, err)
 		return

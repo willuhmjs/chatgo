@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"chatgo/internal/store"
 )
@@ -28,6 +29,37 @@ import (
 // deleted after each insert, so the table holds at most DefaultRetain+1 rows
 // (~ docs/FEATURES-V2.md "DELETE everything below (max_id - 10_000)").
 const DefaultRetain = 10_000
+
+// Field-size caps (L8-M2): the trim budget bounds ROW COUNT but not row SIZE,
+// so oversized caller-supplied strings (attacker emails on failed logins,
+// admin display names in detail) used to land whole. Every insert funnels
+// through RecordWithRetain, which clamps these columns as the final line of
+// defense — truncate, never error (audit must not fail the request path).
+const (
+	MaxEmailLen  = 320  // bytes; valid emails are ≤254 (RFC 5321), so this only fires on abuse
+	MaxUserLen   = 320  // user_id column: UUIDs are 36 — same cap, belt & braces
+	MaxDetailLen = 1024 // bytes
+)
+
+// truncMarker marks a clamped field. 3 bytes, valid UTF-8.
+const truncMarker = "…"
+
+// clampUTF8 truncates s to at most max bytes. Oversized input is cut on a
+// rune boundary (never splitting a UTF-8 sequence) and truncMarker is
+// appended within the budget, so len(result) ≤ max for max ≥ len(truncMarker).
+func clampUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len(truncMarker)
+	if cut < 0 {
+		cut = 0
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut-- // back off into the last whole rune
+	}
+	return s[:cut] + truncMarker
+}
 
 // recordTimeout bounds a detached insert so a wedged SQLite writer can never
 // pin the connection pool behind a finished request.
@@ -71,6 +103,8 @@ func Init(db *sql.DB) error {
 
 // Record logs one event for user u (nil = anonymous, e.g. failed login).
 // It never returns an error: failures are logged, never fatal (fire-and-safe).
+// Oversized identity/detail fields are clamped (see MaxEmailLen et al.), not
+// rejected.
 func Record(ctx context.Context, db *sql.DB, u *store.User, action, detail, ip string) {
 	var userID, email string
 	if u != nil {
@@ -87,8 +121,14 @@ func RecordIdentity(ctx context.Context, db *sql.DB, userID, email, action, deta
 }
 
 // RecordWithRetain is the parametric core (retain is the trim window; tests
-// shrink it to verify self-trimming without inserting 10k rows).
+// shrink it to verify self-trimming without inserting 10k rows). Every field
+// that could carry attacker-controlled size is rune-safely clamped here —
+// the single insert chokepoint shared by Record and RecordIdentity.
 func RecordWithRetain(ctx context.Context, db *sql.DB, userID, email, action, detail, ip string, retain int) {
+	userID = clampUTF8(userID, MaxUserLen)
+	email = clampUTF8(email, MaxEmailLen)
+	detail = clampUTF8(detail, MaxDetailLen)
+
 	// Detach from the request context: the response may already be written
 	// (or the client gone) while this insert matters. Bounded so a wedged
 	// DB can never leak the goroutine/conn beyond recordTimeout.

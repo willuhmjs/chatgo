@@ -7,3 +7,4 @@ internal/web/dist/
 *.db-*
 .DS_Store
 .env
+deploy/secret.yaml

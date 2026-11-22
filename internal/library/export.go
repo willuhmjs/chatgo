@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -72,7 +74,9 @@ func (d *Deps) handleExportChat(w http.ResponseWriter, r *http.Request) {
 //
 //	chats/<chat-id>.json   one per live chat (same shape as export?format=json)
 //	me-settings.json       caller prefs, "me.<uid>." prefix stripped,
-//	                       secret-looking keys excluded entirely
+//	                       secret-NAMED keys excluded
+//	redacted-settings.json only when keys were excluded: names + reason, so
+//	                       nothing vanishes silently (L2-I1)
 //
 // Once the zip starts streaming the status is already 200 — a mid-stream DB
 // failure truncates the response (logged, never rendered into the archive).
@@ -89,7 +93,7 @@ func (d *Deps) handleExportMe(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, err)
 		return
 	}
-	prefs, err := d.meSettings(r.Context(), u.ID)
+	prefs, redacted, err := d.meSettings(r.Context(), u.ID)
 	if err != nil {
 		d.fail(w, r, err)
 		return
@@ -132,6 +136,21 @@ func (d *Deps) handleExportMe(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, err)
 		return
 	}
+	if len(redacted) > 0 {
+		rw, err := zw.Create("redacted-settings.json")
+		if err != nil {
+			d.fail(w, r, err)
+			return
+		}
+		manifest := struct {
+			Redacted []string `json:"redacted"`
+			Reason   string   `json:"reason"`
+		}{redacted, "keys whose NAME looks secret-bearing (key/secret/token/password) are excluded from exports"}
+		if err := json.NewEncoder(rw).Encode(manifest); err != nil {
+			d.fail(w, r, err)
+			return
+		}
+	}
 	if err := zw.Close(); err != nil {
 		d.fail(w, r, err) // already streaming; logs only
 		return
@@ -144,7 +163,7 @@ func (d *Deps) handleExportMe(w http.ResponseWriter, r *http.Request) {
 // writeChatMarkdown renders a human transcript: title header, model line,
 // then `## role · RFC3339` blocks with sources under each message.
 func (d *Deps) writeChatMarkdown(w io.Writer, ctx context.Context, c *store.Chat) error {
-	if _, err := fmt.Fprintf(w, "# %s\n\n", c.Title); err != nil {
+	if _, err := fmt.Fprintf(w, "# %s\n\n", flatMDLine(c.Title)); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "- Chat: `%s`\n", c.ID); err != nil {
@@ -176,7 +195,7 @@ func (d *Deps) writeChatMarkdown(w io.Writer, ctx context.Context, c *store.Chat
 			}
 		}
 		for _, s := range toMessageJSON(m).Sources {
-			if _, err := fmt.Fprintf(w, "\nSource: [%s](%s)\n", s.Title, s.URL); err != nil {
+			if _, err := io.WriteString(w, sourceMD(s)); err != nil {
 				return err
 			}
 		}
@@ -189,7 +208,7 @@ func (d *Deps) writeChatMarkdown(w io.Writer, ctx context.Context, c *store.Chat
 // the per-chat zip entry shape); the array is assembled token by token so no
 // full copy of the chat is ever held.
 func (d *Deps) writeChatJSON(w io.Writer, ctx context.Context, c *store.Chat) error {
-	cj, err := json.Marshal(toChatJSON(c))
+	cj, err := json.Marshal(exportChatShape(c))
 	if err != nil {
 		return err
 	}
@@ -254,6 +273,95 @@ func (d *Deps) streamMessages(ctx context.Context, chatID string, fn func(*store
 
 // --- helpers ---------------------------------------------------------------
 
+// exportChatShape is the chat object embedded in EVERY export serialization
+// that carries one (?format=json document + zip member files; the md export
+// has no chat object). Identical to toChatJSON minus share_token: a share
+// token is bearer-equivalent (possession = public read of the chat) and an
+// exported file leaves the server's trust boundary, so the field is scrubbed
+// at this single choke point (L8-L2). The chat API and fork responses keep
+// the full mirrored shape — toChatJSON itself is untouched.
+func exportChatShape(c *store.Chat) *chatJSON {
+	j := toChatJSON(c)
+	j.ShareToken = nil
+	return j
+}
+
+// flatMDLine collapses every whitespace run (spaces, \r, \n, tabs) into a
+// single space and trims, so a chat title or source name containing newlines
+// cannot fabricate extra block structure (# heading, "## role · ts" turn) in
+// the md export (L3-L1). No length cap exists on titles, so none is added.
+func flatMDLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// escMD backslash-escapes the markdown punctuation that could break out of a
+// link label or turn plain exported text into markup: brackets (fake/early
+// links), backticks (code spans swallowing the label end), braces (autolinks)
+// and angle brackets (raw HTML) (L3-L2).
+func escMD(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '[', ']', '`', '{', '}', '<', '>':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// sourceMD renders one citation as a md line (L3-L2). http(s) URLs become a
+// link with an escaped label + hardened destination; anything else — the
+// chatgo-internal kb:// scheme, javascript:, a malformed URL — is an
+// unresolvable pointer inside a downloaded file, so it degrades to a
+// plain-text source name (title, else the flattened URL itself).
+func sourceMD(s sourceJSON) string {
+	name := escMD(flatMDLine(s.Title))
+	if dest, ok := mdLinkDest(s.URL); ok {
+		return "\nSource: [" + name + "](" + dest + ")\n"
+	}
+	if name == "" {
+		name = escMD(flatMDLine(s.URL))
+	}
+	if name == "" {
+		return ""
+	}
+	return "\nSource: " + name + "\n"
+}
+
+// mdLinkDest turns a raw citation URL into a CommonMark link destination:
+// newline/CR/tab/NUL bytes dropped, then only http(s) URLs accepted, wrapped
+// in <> and with the remaining structure-breaking bytes (spaces, parens,
+// angle brackets, backslash, control and non-ASCII bytes) percent-encoded —
+// ") ", "[", "<" or a newline inside a URL can no longer close the link
+// early or inject markup, yet the target round-trips percent-decode intact.
+func mdLinkDest(raw string) (string, bool) {
+	u := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r == 0 {
+			return -1
+		}
+		return r
+	}, raw)
+	u = strings.TrimSpace(u)
+	p, err := url.Parse(u)
+	if err != nil {
+		return "", false
+	}
+	if s := strings.ToLower(p.Scheme); s != "http" && s != "https" {
+		return "", false
+	}
+	var b strings.Builder
+	for i := 0; i < len(u); i++ {
+		c := u[i]
+		if c <= 0x20 || c >= 0x7f || c == '(' || c == ')' || c == '<' || c == '>' || c == '\\' {
+			fmt.Fprintf(&b, "%%%02X", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return "<" + b.String() + ">", true
+}
+
 // userChatIDs lists live chat ids for the export manifest (ids only — see
 // package comment for why content is not loaded here).
 func (d *Deps) userChatIDs(ctx context.Context, userID string) ([]string, error) {
@@ -276,27 +384,42 @@ func (d *Deps) userChatIDs(ctx context.Context, userID string) ([]string, error)
 }
 
 // meSettings collects the caller's "me.<uid>.*" rows into a bare map with the
-// prefix stripped. Keys that look secret-bearing (same signatures apimgr
-// masks) are DROPPED — an export leaves the trust boundary of the server, so
-// nothing remotely secret-shaped ships even by accident.
-func (d *Deps) meSettings(ctx context.Context, userID string) (map[string]string, error) {
+// prefix stripped, plus the stripped names of rows excluded because the KEY
+// itself looks secret-bearing.
+//
+// Redaction verdict (L2-I1): provider/API keys can NEVER enter an export.
+// The me.<uid>. namespace is writable only via PUT /api/me/settings, which
+// enforces a fixed allowlist (theme/setup_done/accent); provider keys live
+// under apimgr-owned global keys the prefix gate filters out, and dotted-key
+// spoofing into someone else's namespace is rejected. So no mask/last-4
+// machinery is warranted — a regression test pins the invariant instead.
+// The old filter additionally dropped rows whose VALUE merely contained
+// key/secret/token/password, which silently deleted benign prefs from the
+// user's own export ("mood":"all good no secrets" vanished). Values are
+// user-authored, shipped only to their author, and word matches are noise —
+// redaction is now key-signature only, and excluded keys are named in the
+// zip's redacted-settings.json manifest so nothing disappears silently.
+func (d *Deps) meSettings(ctx context.Context, userID string) (map[string]string, []string, error) {
 	all, err := d.Store.Settings.All(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := map[string]string{}
+	var redacted []string
 	prefix := meSettingPrefix + userID + "."
 	for k, v := range all {
 		rest, ok := strings.CutPrefix(k, prefix)
 		if !ok {
 			continue
 		}
-		if looksSecret(rest) || looksSecret(v) {
+		if looksSecret(rest) {
+			redacted = append(redacted, rest)
 			continue
 		}
 		out[rest] = v
 	}
-	return out, nil
+	sort.Strings(redacted)
+	return out, redacted, nil
 }
 
 func looksSecret(s string) bool {

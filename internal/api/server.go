@@ -198,9 +198,18 @@ func spaHandler(a *auth.Auth) http.HandlerFunc {
 		name := strings.TrimPrefix(p, "/")
 		if name != "" && name != "index.html" {
 			if f, err := dist.Open(name); err == nil {
+				st, serr := f.Stat()
 				f.Close()
-				fileServer.ServeHTTP(w, r)
-				return
+				// SECREV-V2 L7-L2: never hand http.FileServer a directory —
+				// without an index.html it generates a listing, and GET
+				// /assets/ leaked every bundle chunk name anonymously.
+				// Directories (and un-stattable entries) fall through to the
+				// guard below like any non-file path: 302 anonymous, shell
+				// to sessions.
+				if serr == nil && !st.IsDir() {
+					fileServer.ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 		// About to serve index.html — the app shell. The "GET /" mux pattern

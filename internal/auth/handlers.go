@@ -44,14 +44,26 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := a.RequestIP(r)
-	u, err := a.Login(r.Context(), ip, body.Email, body.Password)
+	// Shape-check the email BEFORE any store query, bcrypt burn or audit
+	// write (L8-M2): the failed-login row below carries this email whole, so
+	// an unvalidated megabyte string used to bloat audit_log on every probe.
+	// validEmail is the same gate Register and the OIDC claim path enforce
+	// (≤254B + addr-spec), so no storable account email can ever 400 here —
+	// rejecting on shape leaks nothing about existence, and such garbage
+	// never reaches the DB or the audit table at all.
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+	if !validEmail(email) {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid email address")
+		return
+	}
+	u, err := a.Login(r.Context(), ip, email, body.Password)
 	switch {
 	case errors.Is(err, ErrRateLimited):
 		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 	case errors.Is(err, ErrInvalidCredentials):
 		// Identity lands in the email column, never in detail (PII rule);
 		// unknown-user vs wrong-password are indistinguishable by design.
-		audit.RecordIdentity(r.Context(), a.Store.DB, "", strings.ToLower(strings.TrimSpace(body.Email)),
+		audit.RecordIdentity(r.Context(), a.Store.DB, "", email,
 			audit.ActionLoginFail, "invalid credentials", ip)
 		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid email or password")
 	case err != nil:

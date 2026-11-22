@@ -11,10 +11,14 @@ package auth
 //     HMAC-SHA256 over "v1.<userID>.<expiry>.<nonce>" keyed by
 //     HKDF-SHA256(SESSION_SECRET, "chatgo:totp-token/v1") — instead of a
 //     session cookie. POST /api/auth/totp validates it (signature, expiry,
-//     single-use nonce, code window, monotonic step) and only then issues
-//     the session through the exact finishLogin path of a password login.
+//     per-user throttle + kill stamp, code window, monotonic step), BURNS
+//     its nonce on every attempt (one challenge = one guess; L6-H1) and
+//     only then issues the session through the exact finishLogin path of a
+//     password login.
 //
-// RAM discipline: every map here is TTL-swept and/or bounded by user count.
+// RAM discipline: every map here is TTL-swept and/or bounded by user count
+// (fail counter and kill stamp included: ≤1 entry per user, the stamp
+// self-sweeps once its TTL window has passed).
 
 import (
 	"context"
@@ -56,7 +60,25 @@ const (
 	// Throttle rates (per minute) via the shared Auth.Allow buckets.
 	totpConfigPerMin = 5  // /2fa/setup + /2fa/disable per user
 	totpEnablePerMin = 10 // /2fa/enable per user
-	totpVerifyPerMin = 10 // /api/auth/totp per IP+token (task: 10/min)
+	// totpVerifyPerMin is the per-USERID aggregate wall on /api/auth/totp
+	// code checks (C6 / L1-M1 + L6-H1): keyed on the token's target user, so
+	// minting N tokens from N IPs can never multiply a victim's exposure —
+	// at most 10 code checks/min can ever reach one user's secret.
+	totpVerifyPerMin = 10
+	// totpVerifyIPPerMin is the coarse per-IP pre-cap on /api/auth/totp.
+	// It runs BEFORE body parse and before any state keyed on attacker
+	// content, so garbage-token floods (L1-H1's unbounded bucket + audit
+	// INSERT amplifier) hit a cheap 429 wall instead of allocating memory.
+	// 30/min sits 3× above the per-user wall: generous for a NAT of honest
+	// users, still 2 orders of magnitude below the pre-fix flood rate.
+	totpVerifyIPPerMin = 30
+	// totpFailLockout is the consecutive bad-code budget per user before
+	// EVERY outstanding challenge for that user is invalidated and an audit
+	// alert lands (NIST SP 800-63B §5.2.2 throttle posture). With the
+	// burn-nonce-per-attempt rule each guess already costs a full throttled
+	// password login (5/min/IP), so this counter is the backstop for a
+	// distributed attacker who holds the password and sprays logins.
+	totpFailLockout = 15
 )
 
 // pendingTOTP is a generated secret awaiting confirmation via /2fa/enable.
@@ -80,6 +102,8 @@ func (a *Auth) initTOTP() error {
 	a.pendingTOTP = make(map[string]pendingTOTP)
 	a.usedNonces = make(map[string]int64)
 	a.totpLastStep = make(map[string]int64)
+	a.totpVerifyFails = make(map[string]int)
+	a.totpKilledAt = make(map[string]int64)
 
 	if err := ensureTOTPColumn(a.Store.DB); err != nil {
 		return fmt.Errorf("auth: users.totp_secret column: %w", err)
@@ -275,24 +299,99 @@ func (a *Auth) totpTokenMAC(payload string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// parseTOTPToken verifies signature + expiry and returns (userID, nonce).
-func (a *Auth) parseTOTPToken(token string) (userID, nonce string, err error) {
+// parseTOTPToken verifies signature + expiry and returns (userID, nonce,
+// expiresAt). expiresAt is exported to callers because issueTOTPToken always
+// sets exp = mint + totpTokenTTL and the frozen v1 format has no iat field —
+// the verify path needs the implied mint second for the challenge-kill
+// check (totpTokenIssuedAt).
+func (a *Auth) parseTOTPToken(token string) (userID, nonce string, expiresAt int64, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 5 || parts[0] != "v1" {
-		return "", "", errBadTOTPToken
+		return "", "", 0, errBadTOTPToken
 	}
 	want := a.totpTokenMAC(strings.Join(parts[:4], "."))
 	if !hmac.Equal([]byte(want), []byte(parts[4])) {
-		return "", "", errBadTOTPToken
+		return "", "", 0, errBadTOTPToken
 	}
 	exp, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return "", "", errBadTOTPToken
+		return "", "", 0, errBadTOTPToken
 	}
 	if parts[1] == "" || parts[3] == "" {
-		return "", "", errBadTOTPToken
+		return "", "", 0, errBadTOTPToken
 	}
-	return parts[1], parts[3], nil
+	return parts[1], parts[3], exp, nil
+}
+
+// ---------- per-user brute-force wall (C6 / L6-H1) -------------------------
+
+// totpTokenIssuedAt derives a parsed token's mint second from its expiry
+// (exp = mint + totpTokenTTL by construction of issueTOTPToken).
+func totpTokenIssuedAt(expiresAt int64) int64 {
+	return expiresAt - int64(totpTokenTTL/time.Second)
+}
+
+// totpChallengeKilled reports whether every challenge token for userID
+// minted at or before issuedAt was invalidated by a consecutive-failure
+// lockout (the deny-list epoch: one kill stamp per user instead of a
+// 6th token field — the v1 5-part format and C7's token-shape expectations
+// stay frozen). Sweeps kill stamps whose TTL window has passed: at that
+// point every token they could ever invalidate has expired on its own.
+func (a *Auth) totpChallengeKilled(userID string, issuedAt int64) bool {
+	now := time.Now().Unix()
+	a.totpStateMu.Lock()
+	defer a.totpStateMu.Unlock()
+	for id, killed := range a.totpKilledAt {
+		if now > killed+int64(totpTokenTTL/time.Second) {
+			delete(a.totpKilledAt, id) // stale: nothing left it can kill
+		}
+	}
+	killed, ok := a.totpKilledAt[userID]
+	return ok && issuedAt <= killed
+}
+
+// noteTOTPFailure records one failed code check against a LIVE challenge
+// and reports whether the consecutive-failure threshold just tripped — in
+// which case it arms the kill stamp (all outstanding challenges die) and
+// restarts the counter. Restart, not saturate: an honest user is never
+// one mistype away from a second alarm, and per burn-on-attempt each
+// guess already costs a full throttled password login anyway.
+func (a *Auth) noteTOTPFailure(userID string) (lockout bool) {
+	a.totpStateMu.Lock()
+	defer a.totpStateMu.Unlock()
+	a.totpVerifyFails[userID]++
+	if a.totpVerifyFails[userID] < totpFailLockout {
+		return false
+	}
+	delete(a.totpVerifyFails, userID)
+	a.totpKilledAt[userID] = time.Now().Unix()
+	return true
+}
+
+// clearTOTPVerifyState drops a user's consecutive-failure counter and
+// challenge-kill stamp. Called on verify success and via forgetTOTPState.
+func (a *Auth) clearTOTPVerifyState(userID string) {
+	a.totpStateMu.Lock()
+	delete(a.totpVerifyFails, userID)
+	delete(a.totpKilledAt, userID)
+	a.totpStateMu.Unlock()
+}
+
+// sweepTOTPKillStamps drops kill stamps whose TTL window has passed (every
+// token they could ever invalidate has expired by then). Driven from the
+// hourly Auth janitor so quiet instances cannot hold stale entries forever;
+// the verify path also sweeps them lazily (totpChallengeKilled). The fail
+// counter has no timestamps to sweep — it is one bounded int per user and
+// dies with verify success / disable / reset via forgetTOTPState.
+func (a *Auth) sweepTOTPKillStamps(now time.Time) {
+	cutoff := now.Unix() - int64(totpTokenTTL/time.Second)
+	a.totpStateMu.Lock()
+	defer a.totpStateMu.Unlock()
+	for id, killed := range a.totpKilledAt {
+		if killed < cutoff {
+			delete(a.totpKilledAt, id)
+		}
+	}
 }
 
 // ---------- nonce replay guard (swept on use, TTL = token TTL) ----------
@@ -341,9 +440,15 @@ func (a *Auth) consumeTOTPCode(ctx context.Context, userID, code string) bool {
 	return true
 }
 
+// forgetTOTPState is THE one place that scrubs everything user-keyed a
+// user's 2FA history ever left in memory: pending-setup slot, last-step
+// replay memory, consecutive-failure counter and challenge-kill stamp.
+// Called by /2fa/enable, /2fa/disable, admin reset (admin_recovery.go) and
+// verify success (counter part).
 func (a *Auth) forgetTOTPState(userID string) {
 	a.lastStepMu.Lock()
 	delete(a.totpLastStep, userID)
 	a.lastStepMu.Unlock()
 	a.clearPendingTOTP(userID)
+	a.clearTOTPVerifyState(userID)
 }

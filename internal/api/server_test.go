@@ -180,3 +180,59 @@ func TestSPAGuardKeepsAPI404sAsJSON(t *testing.T) {
 		t.Errorf("authed GET /api/… = %d ct=%q, want 404 JSON", resp.StatusCode, ct)
 	}
 }
+
+// TestSPAGuardRejectsDirectoryRequests (SECREV-V2 L7-L2): a dist directory
+// without an index.html (assets/) used to reach http.FileServerFS and answer
+// its GENERATED LISTING anonymously (GET /assets/ → 200 <pre><a href=...>).
+// Fixed: Stat+IsDir rejects directories before the file server, so they fall
+// through to the auth guard — anonymous bounces to /login, a session gets
+// the SPA shell, and no response is ever the generated listing.
+func TestSPAGuardRejectsDirectoryRequests(t *testing.T) {
+	e := newSPATestEnv(t)
+	// Discover the embedded asset dir (builds drift; do not hardcode).
+	var dir string
+	err := fs.WalkDir(web.Dist(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && p != "." && dir == "" {
+			dir = p
+		}
+		return nil
+	})
+	if err != nil || dir == "" {
+		t.Fatalf("no embedded asset directory in web.Dist (err %v)", err)
+	}
+
+	bodyOf := func(path, cookie string) (int, string) {
+		resp := e.req(t, http.MethodGet, path, cookie)
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body of %s: %v", path, err)
+		}
+		return resp.StatusCode, string(raw)
+	}
+	cookie := e.login(t)
+
+	for _, path := range []string{"/" + dir + "/", "/" + dir, "/" + dir + "/sub/"} {
+		// Anonymous: guard fall-through (302), never 200-with-listing.
+		if code, body := bodyOf(path, ""); code != http.StatusFound {
+			t.Errorf("anonymous GET %s = %d, want 302 → /login (dir request must fall through to guard)", path, code)
+		} else if strings.Contains(body, "<pre>") {
+			t.Errorf("anonymous GET %s body carries a generated listing", path)
+		}
+		// Session: SPA shell, and provably not the generated listing.
+		code, body := bodyOf(path, cookie)
+		if code != http.StatusOK {
+			t.Errorf("authed GET %s = %d, want 200 shell", path, code)
+		}
+		if strings.Contains(body, "<pre>") {
+			t.Errorf("authed GET %s served a generated directory listing, want shell", path)
+		}
+	}
+
+	// The public single-file path still works (regression anchor).
+	if code, _ := bodyOf("/index.html", ""); code != http.StatusOK && code != http.StatusFound {
+		t.Errorf("GET /index.html anonymous = %d, want 200/302", code)
+	}
+}

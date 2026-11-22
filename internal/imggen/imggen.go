@@ -149,6 +149,14 @@ func (h *handler) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.d.Cfg == nil {
+		// SECREV-V2 L4-L1: a nil-Cfg server must refuse image work at the
+		// boundary rather than dial out through an unguarded transport.
+		slog.Error("imggen: generate requested with nil config — refusing (SSRF guard unavailable)")
+		httpx.ErrorJSON(w, http.StatusServiceUnavailable, "image generation is not configured on this server")
+		return
+	}
+
 	p, model, errMsg, errStatus := h.pickProvider(r.Context(), body.ProviderID)
 	if errMsg != "" {
 		httpx.ErrorJSON(w, errStatus, errMsg)
@@ -407,8 +415,11 @@ func (hd *hopDialer) DialContext(ctx context.Context, network, addr string) (net
 }
 
 // guardedClient builds the per-request client: with a config every dial
-// (initial + redirects) goes through search.ResolveAndCheck; cfg == nil is
-// the same test-only escape hatch providers.NewClient documents.
+// (initial + redirects) goes through search.ResolveAndCheck. A nil cfg is
+// REFUSED outright (SECREV-V2 L4-L1): unlike providers.NewClient's
+// documented test-only escape hatch, no imggen test or production path may
+// dial unguarded — internal tests dial loopback through a real config with
+// AllowLoopback instead.
 func guardedClient(ctx context.Context, rawURL string, cfg *config.Config) (*http.Client, error) {
 	base := http.Transport{
 		ForceAttemptHTTP2:     true,
@@ -418,14 +429,7 @@ func guardedClient(ctx context.Context, rawURL string, cfg *config.Config) (*htt
 		MaxIdleConns:          2,
 	}
 	if cfg == nil {
-		d := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
-		base.DialContext = d.DialContext
-		return &http.Client{Transport: &base, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return errors.New("imggen: too many redirects")
-			}
-			return nil
-		}}, nil
+		return nil, errors.New("imggen: refusing nil-Cfg dial (SSRF guard unavailable)")
 	}
 	dial, err := search.ResolveAndCheck(ctx, rawURL, cfg)
 	if err != nil {

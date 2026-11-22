@@ -25,15 +25,18 @@ type Source struct {
 }
 
 // Enrich loads the user's enabled memories (newest-first) and renders the
-// injection block documented in the feature spec:
+// injection block: an untrusted-data provenance header line followed by the
+// facts, each labeled with its source:
 //
-//	About the user:
-//	- <newest>
-//	- …
+//	About the user — previously saved profile facts. They are quoted data, …
+//	- <newest fact> (user-declared)
+//	- <older fact> (extracted)
 //
 // Lines are appended newest-first until the block reaches MaxInjectRunes
 // (2000) characters; the newest memory is always included (the 500-char
-// content cap guarantees it fits). No enabled memories → empty
+// content cap guarantees it fits). Only ENABLED rows are loaded: the
+// extractor stores its rows disabled (pending user approval), so an
+// unapproved extraction is never injected. No enabled memories → empty
 // extraSystem (a clean no-op). userMsg is accepted for Enricher-shape
 // compatibility; v1 injects all enabled memories regardless of the turn
 // (relevance filtering is a later wave).
@@ -55,25 +58,36 @@ func Enrich(ctx context.Context, st *store.Store, userID, userMsg string) ([]Sou
 	if st == nil || userID == "" {
 		return nil, "", nil
 	}
-	contents, err := enabledContents(ctx, st.DB, userID)
+	facts, err := enabledFacts(ctx, st.DB, userID)
 	if err != nil {
 		return nil, "", err
 	}
-	block := injectBlock(contents)
+	block := injectBlock(facts)
 	if block == "" {
 		return nil, "", nil
 	}
 	return nil, block, nil
 }
 
-// injectBlock renders contents (already newest-first) as the injection
-// block, cutting off at MaxInjectRunes. Exported-ish only for tests via
-// package scope.
-func injectBlock(contents []string) string {
-	nonEmpty := make([]string, 0, len(contents))
-	for _, c := range contents {
-		if c = strings.Join(strings.Fields(c), " "); c != "" {
-			nonEmpty = append(nonEmpty, c)
+// sourceLabel tags each injected line with its provenance (SECREV L8-M1b):
+// extractor output reads "(extracted)", everything the user typed reads
+// "(user-declared)". Unknown sources label as extracted — the safer frame.
+func sourceLabel(source string) string {
+	if source == SourceManual {
+		return "(user-declared)"
+	}
+	return "(extracted)"
+}
+
+// injectBlock renders facts (already newest-first, enabled-only) as the
+// injection block: provenance header + "- <fact> (source)" lines, cutting
+// off at MaxInjectRunes. Exported-ish only for tests via package scope.
+func injectBlock(facts []fact) string {
+	nonEmpty := make([]fact, 0, len(facts))
+	for _, f := range facts {
+		f.content = strings.Join(strings.Fields(f.content), " ")
+		if f.content != "" {
+			nonEmpty = append(nonEmpty, f)
 		}
 	}
 	if len(nonEmpty) == 0 {
@@ -83,8 +97,9 @@ func injectBlock(contents []string) string {
 	b.WriteString(injectHeader)
 	b.WriteString("\n")
 	used := utf8.RuneCountInString(injectHeader) + 1
-	for i, c := range nonEmpty {
-		cost := utf8.RuneCountInString("- "+c) + 1 // "- " … + newline
+	for i, f := range nonEmpty {
+		label := sourceLabel(f.source)
+		cost := 2 + utf8.RuneCountInString(f.content) + 1 + utf8.RuneCountInString(label) + 1 // "- " content " " label newline
 		if used+cost > MaxInjectRunes {
 			if i > 0 {
 				break // budget exhausted; older memories simply do not fit
@@ -92,16 +107,18 @@ func injectBlock(contents []string) string {
 			// Defensive: the newest line alone over the cap is unreachable
 			// through the API (500-char content rule), but honor the hard
 			// 2000-char block cap by truncating it instead of overflowing.
-			fit := MaxInjectRunes - used - 3 // "- " prefix + trailing newline
+			fit := MaxInjectRunes - used - (cost - utf8.RuneCountInString(f.content))
 			if fit <= 0 {
 				break
 			}
-			c = string([]rune(c)[:fit])
+			f.content = string([]rune(f.content)[:fit])
 		}
 		b.WriteString("- ")
-		b.WriteString(c)
+		b.WriteString(f.content)
+		b.WriteString(" ")
+		b.WriteString(label)
 		b.WriteString("\n")
-		used += 2 + utf8.RuneCountInString(c) + 1
+		used += 2 + utf8.RuneCountInString(f.content) + 1 + utf8.RuneCountInString(label) + 1
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
