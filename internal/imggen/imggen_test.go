@@ -37,6 +37,7 @@ type env struct {
 	reqBody     string // raw body of the last upstream request
 	body        string // canned response body
 	status      int
+	chunked     bool // flush body in pieces → chunked (no Content-Length)
 }
 
 func newEnv(t *testing.T) *env {
@@ -79,7 +80,7 @@ func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
 		raw, _ := io.ReadAll(r.Body)
 		e.mu.Lock()
 		e.reqBody = string(raw)
-		body, status := e.body, e.status
+		body, status, chunked := e.body, e.status, e.chunked
 		e.mu.Unlock()
 
 		if ct := r.Header.Get("Authorization"); ct != "Bearer test-key" {
@@ -87,6 +88,16 @@ func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
+		if chunked {
+			for i := 0; i < len(body); i += 8192 { // defeat auto Content-Length
+				end := min(i+8192, len(body))
+				_, _ = io.WriteString(w, body[i:end])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			return
+		}
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(upstream.Close)
@@ -302,6 +313,112 @@ func TestGenerateOversizedResponseRejected(t *testing.T) {
 	decodeBody(t, resp, &out)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("oversized: status = %d, want 502", resp.StatusCode)
+	}
+	// RES-2: the cap rejection must tell the user what tripped and how to
+	// fix it (smaller size / n=1), not the generic "generation failed".
+	if !strings.Contains(out.Error, "too large") || !strings.Contains(out.Error, "cap") ||
+		!strings.Contains(out.Error, "n=1") {
+		t.Errorf("oversized error should hint at cap + remedy: %q", out.Error)
+	}
+}
+
+// TestGenerateCapWithoutContentLength: the Content-Length pre-check cannot
+// see a chunked (or lying) upstream — the stream limit backstop must still
+// reject an oversized answer with the cap 502.
+func TestGenerateCapWithoutContentLength(t *testing.T) {
+	e := newEnv(t)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+
+	old := maxUpstreamResponse
+	maxUpstreamResponse = 8 << 10
+	t.Cleanup(func() { maxUpstreamResponse = old })
+
+	e.chunked = true
+	e.respond(200, `{"data":[{"b64_json":"`+strings.Repeat("A", 64<<10)+`"}]}`)
+
+	resp := e.post("/api/images/generate", `{"prompt":"streamed fat"}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(out.Error, "too large") {
+		t.Fatalf("chunked oversized: status = %d (%s), want 502 cap error", resp.StatusCode, out.Error)
+	}
+}
+
+// TestGenerateResponseCapBudget: guard on the documented RES-2 sizing —
+// 12 MiB covers four realistic 1024² PNGs (1.0–1.9 MiB each → 1.4–2.6 MiB
+// b64 → 6–10.4 MiB body + framing) while keeping one legit n=4 request's
+// transient peak (~12 b64 + ≤9 working copies + ~18 idle ≈ 40 MiB) far
+// under the 128 MiB container limit. Raising this back toward 40 MiB
+// re-opens the OOMKill.
+func TestGenerateResponseCapBudget(t *testing.T) {
+	if maxUpstreamResponse != 12<<20 {
+		t.Errorf("maxUpstreamResponse = %d bytes, want 12 MiB (see math comment)", maxUpstreamResponse)
+	}
+}
+
+// buildBody pads a generations response to exactly want bytes (note field)
+// carrying n valid tinyPNG images.
+func buildBody(t *testing.T, n, want int) string {
+	t.Helper()
+	item := len(`{"b64_json":""}`) + len(tinyPNG)
+	over := len(`{"note":"","data":[`) + (n-1)*len(`,`) + len(`]}`)
+	pad := want - over - n*item
+	if pad < 0 {
+		t.Fatalf("cannot fit %d images into %d bytes", n, want)
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"note":"`)
+	sb.WriteString(strings.Repeat("x", pad))
+	sb.WriteString(`","data":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"b64_json":"`)
+		sb.WriteString(tinyPNG)
+		sb.WriteString(`"}`)
+	}
+	sb.WriteString(`]}`)
+	if sb.Len() != want {
+		t.Fatalf("body len = %d, want %d", sb.Len(), want)
+	}
+	return sb.String()
+}
+
+// TestGenerateCapBoundary: a body of exactly maxUpstreamResponse bytes must
+// still succeed (all four images stored); one byte over gets the cap 502.
+// Also pins that a truncated/invalid body under the cap stays a parse
+// failure, not a cap claim.
+func TestGenerateCapBoundary(t *testing.T) {
+	e := newEnv(t)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+
+	old := maxUpstreamResponse
+	maxUpstreamResponse = 64 << 10
+	t.Cleanup(func() { maxUpstreamResponse = old })
+
+	e.respond(200, buildBody(t, 4, 64<<10)) // exactly at cap
+	resp := e.post("/api/images/generate", `{"prompt":"edge"}`)
+	var out genResult
+	decodeBody(t, resp, &out)
+	if resp.StatusCode != http.StatusOK || len(out.Images) != 4 {
+		t.Fatalf("at-cap: status = %d images = %d (%s), want 200/4", resp.StatusCode, len(out.Images), out.Error)
+	}
+
+	e.respond(200, buildBody(t, 4, 64<<10+1)) // one byte over
+	resp = e.post("/api/images/generate", `{"prompt":"edge+"}`)
+	var over genResult
+	decodeBody(t, resp, &over)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(over.Error, "too large") {
+		t.Fatalf("over-cap: status = %d (%s), want 502 cap error", resp.StatusCode, over.Error)
+	}
+
+	e.respond(200, `{"data":[{"b64_json":`) // invalid, far under cap
+	resp = e.post("/api/images/generate", `{"prompt":"broken"}`)
+	var bad genResult
+	decodeBody(t, resp, &bad)
+	if resp.StatusCode != http.StatusBadGateway || strings.Contains(bad.Error, "too large") {
+		t.Errorf("truncated body: status = %d (%s), want generic parse 502", resp.StatusCode, bad.Error)
 	}
 }
 

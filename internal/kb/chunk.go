@@ -1,62 +1,104 @@
 package kb
 
-// wordSpans records the byte span of every whitespace-delimited word so
-// chunks can keep the ORIGINAL text (newlines/indentation included) instead
-// of a normalized join — important for code files. UTF-8 continuation bytes
-// never collide with ASCII spaces, so byte-level scanning is safe.
+// Chunking (RES-4 RAM remediation): this used to materialize a []wordSpan
+// for EVERY word of the file — 2.62 M spans ≈ 42 MiB of live memory for a
+// 5 MiB 1-word/line worst case — plus a whole-file bytes→string copy. The
+// scan is now a single streaming pass: at most chunkWords+1 word spans (and
+// one chunk's worth of emitted bytes) are ever live (~13 KiB of spans), and
+// chunks are emitted as soon as they are provably complete.
+//
+// The output is byte-identical to the old whole-file algorithm on every
+// input: the old loop emits a full window [base, base+chunkWords) exactly
+// when word base+chunkWords exists (i.e. pending ≥ chunkWords+1), then one
+// final window [base_last, T) where base_last is the first multiple of
+// chunkWords−chunkOverlap ≥ T−chunkWords. chunkBytes reproduces exactly that
+// sequence (see the pending ≥ chunkWords+1 rule below), so the window
+// boundaries and text ranges match by construction. chunk_test.go keeps the
+// old implementation verbatim as refChunkText and proves equivalence over
+// the golden fixtures, a multi-window 1-word/line file, and randomized
+// differential fuzzing.
+//
+// (Design deviation on record: the finding suggested ~512 KiB byte windows
+// with partial-span carry. Because the upload path already holds the whole
+// body in one buffer — io.ReadAll under the 5 MiB cap, and classifyText
+// needs whole-payload UTF-8 — a single continuous scan with a bounded span
+// window is strictly simpler and seam-free: window-edge word splits are
+// identical to the whole-file scan by definition, not by carry logic.)
+
+// wordSpan records the byte span of one whitespace-delimited word so chunks
+// can keep the ORIGINAL text (newlines/indentation included) instead of a
+// normalized join — important for code files. UTF-8 continuation bytes never
+// collide with ASCII spaces, so byte-level scanning is safe.
 type wordSpan struct{ start, end int }
 
-func wordSpans(text string) []wordSpan {
-	isSpace := func(b byte) bool {
-		switch b {
-		case ' ', '\t', '\n', '\r', '\v', '\f':
-			return true
-		}
-		return false
+func isSpaceByte(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
 	}
-	var spans []wordSpan
-	for i := 0; i < len(text); {
-		for i < len(text) && isSpace(text[i]) {
-			i++
-		}
-		if i >= len(text) {
-			break
-		}
-		j := i
-		for j < len(text) && !isSpace(text[j]) {
-			j++
-		}
-		spans = append(spans, wordSpan{i, j})
-		i = j
-	}
-	return spans
+	return false
 }
 
-// chunkText splits text into ~chunkWords-word windows advancing by
+// chunkBytes splits data into ~chunkWords-word windows advancing by
 // (chunkWords − chunkOverlap) words, so consecutive chunks share ~80 words
 // of context. Empty/whitespace-only input yields no chunks. Each emitted
 // chunk is hard-capped at maxChunkBytes (a pathological file of one gigantic
-// "word" cannot blow the per-chunk memory budget). Pure function; tests pin
-// the bounds.
-func chunkText(text string) []string {
-	spans := wordSpans(text)
-	if len(spans) == 0 {
-		return nil
-	}
-	step := chunkWords - chunkOverlap
+// "word" cannot blow the per-chunk memory budget). Streaming: live memory is
+// O(chunkWords) spans + one chunk, independent of input size.
+func chunkBytes(data []byte) []string {
+	const step = chunkWords - chunkOverlap
 	var out []string
-	for start := 0; start < len(spans); start += step {
-		end := start + chunkWords
-		if end > len(spans) {
-			end = len(spans)
+
+	// Live word spans spans[head:]; spans[head] has absolute word index
+	// base. The window still being built starts at base.
+	var spans []wordSpan
+	head, base, total := 0, 0, 0
+
+	// emit words [base, base+count) as one (possibly cap-split) chunk.
+	emit := func(count int) {
+		s, e := spans[head].start, spans[head+count-1].end
+		out = append(out, capBytes(string(data[s:e]))...)
+	}
+
+	for i := 0; i < len(data); {
+		for i < len(data) && isSpaceByte(data[i]) {
+			i++
 		}
-		out = append(out, capBytes(text[spans[start].start:spans[end-1].end])...)
-		if end == len(spans) {
+		if i >= len(data) {
 			break
 		}
+		j := i
+		for j < len(data) && !isSpaceByte(data[j]) {
+			j++
+		}
+		spans = append(spans, wordSpan{i, j})
+		total++
+		i = j
+		// A full window is provably complete (and NOT the final one) once
+		// the word AFTER it exists: total−base ≥ chunkWords+1. Emit it and
+		// slide by step — the trailing chunkOverlap words stay live and
+		// open the next window, exactly like the old whole-file loop.
+		for total-base >= chunkWords+1 {
+			emit(chunkWords)
+			base += step
+			head += step
+		}
+		if head >= 2*chunkWords { // keep the slice small; spans[head:] ≤ 801
+			n := copy(spans, spans[head:])
+			spans = spans[:n]
+			head = 0
+		}
+	}
+	if total > base { // final (clamped) window: words [base, total)
+		emit(total - base)
 	}
 	return out
 }
+
+// chunkText is the string-facing form of chunkBytes, kept for tests and any
+// caller already holding a string (it copies on conversion; upload paths
+// should pass the buffer to chunkBytes directly and avoid the copy).
+func chunkText(text string) []string { return chunkBytes([]byte(text)) }
 
 // capBytes splits s into ≤max-byte pieces, cutting at a rune boundary.
 func capBytes(s string) []string {

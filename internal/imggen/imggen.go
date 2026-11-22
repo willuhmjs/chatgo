@@ -7,11 +7,13 @@
 //	POST /api/images/generate {prompt, provider_id?, size?, n?} → {images:[…]}
 //	GET  /api/images                                            → own newest 50
 //
-// RAM discipline: single 120s request context, 40 MiB upstream response cap,
-// images decoded one-at-a-time; no goroutines, no caches. Outbound dials go
-// through the SSRF guard (search.ResolveAndCheck), mirroring
-// internal/providers/client.go — the frozen Client interface has no images
-// method and internal/providers is not ours to extend.
+// RAM discipline: single 120s request context, 12 MiB upstream response cap
+// streamed straight into the JSON decoder (the raw body is never buffered
+// separately), and each b64 payload released as soon as its image is saved;
+// no goroutines, no caches. Outbound dials go through the SSRF guard
+// (search.ResolveAndCheck), mirroring internal/providers/client.go — the
+// frozen Client interface has no images method and internal/providers is not
+// ours to extend.
 package imggen
 
 import (
@@ -24,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,9 +63,19 @@ const (
 var (
 	generateTimeout  = 120 * time.Second
 	listRecentLength = 50
-	// maxUpstreamResponse caps the /v1/images/generations body (task: ~40MB);
-	// oversized answers are rejected instead of buffered. Var: tests shrink.
-	maxUpstreamResponse = 40 << 20
+	// maxUpstreamResponse caps the /v1/images/generations body. Math: real
+	// 1024×1024 PNG results are 1.0–1.9 MiB (DALL·E 3, SDXL) → 1.4–2.6 MiB
+	// b64 each (×4/3) → n=4 body ≈ 6–10.4 MiB + JSON framing, so 12 MiB
+	// stays generous for 4×1024². Oversized answers (e.g. incompressible
+	// 4 MiB PNGs → ~32 MiB body) get the clean 502 cap hint — via
+	// Content-Length pre-check or the stream limit backstop — instead of an
+	// OOMKill at the 128 MiB container limit. Measured with this cap (cold
+	// app, GOMEMLIMIT=100MiB, n=4): realistic oversized answer (honest
+	// Content-Length) rejects at ~19 MiB RSS; oversized with lying/absent
+	// CL rejects at ~61 (≤cap strings + the in-flight token buffer is the
+	// floor); a legit 11.8 MiB body peaks ~56 — vs 121 MiB at the old
+	// 40 MiB cap. Var: tests shrink.
+	maxUpstreamResponse = 12 << 20
 )
 
 // Deps wires the feature; integrator mounts after apimgr.Register:
@@ -179,7 +192,19 @@ func (h *handler) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := make([]imageOut, 0, len(dataURLs))
-	for i, b64 := range dataURLs {
+	for i := range dataURLs {
+		b64 := dataURLs[i]
+		// RAM discipline: the slice would otherwise keep ALL n base64 strings
+		// alive across the whole save loop; dropping each entry once saved
+		// means the next image's decode/multipart/thumbnail copies only
+		// overlap the payloads still to come.
+		dataURLs[i] = ""
+		if i+1 < len(dataURLs) {
+			// Deterministically bank the freed payload before the next
+			// image's decode/multipart/thumbnail churn starts growing spans
+			// (keeps the heap goal pinned at the low-live point).
+			runtime.GC()
+		}
 		meta, err := h.saveImage(ctx, u.ID, i, b64)
 		if err != nil {
 			slog.Error("imggen: store failed", "user_id", u.ID, "err", err)
@@ -263,18 +288,35 @@ func (h *handler) bestImageModelFor(ctx context.Context, providerID string) stri
 
 // upstreamError carries an upstream HTTP status with a client-safe message
 // (the upstream body is never echoed — it can carry keys/internal URLs,
-// mirroring providers.UpstreamError).
+// mirroring providers.UpstreamError). Msg is an optional override for
+// transport-level rejections (response cap hit) that have no upstream status.
 type upstreamError struct {
 	Status int
+	Msg    string
 }
 
 func (e *upstreamError) Error() string {
+	if e.Msg != "" {
+		return "imggen: " + e.Msg
+	}
 	return fmt.Sprintf("imggen: upstream returned HTTP %d", e.Status)
+}
+
+// capMessage is the client-safe text for a response that tripped
+// maxUpstreamResponse; it names the actionable knobs (size, n).
+func capMessage() string {
+	size, unit := maxUpstreamResponse>>20, "MiB"
+	if maxUpstreamResponse < 1<<20 {
+		size, unit = maxUpstreamResponse>>10, "KiB" // shrunk cap in tests
+	}
+	return fmt.Sprintf("image provider sent too large a response (over the %d %s cap) — try a smaller size or n=1", size, unit)
 }
 
 // SafeMessage maps the upstream status to an English one-liner + our 502.
 func (e *upstreamError) SafeMessage() string {
 	switch {
+	case e.Msg != "":
+		return e.Msg
 	case e.Status == 401 || e.Status == 403:
 		return fmt.Sprintf("image provider rejected the credentials (upstream HTTP %d) — check this provider's API key", e.Status)
 	case e.Status == 404:
@@ -302,6 +344,19 @@ type generationResponse struct {
 		B64JSON string `json:"b64_json"`
 		URL     string `json:"url"`
 	} `json:"data"`
+}
+
+// countingReader tallies bytes pulled through it (cap-truncation detection
+// for the streaming decode in requestImages).
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // requestImages POSTs the generation request and returns b64 payloads.
@@ -346,16 +401,27 @@ func (h *handler) requestImages(ctx context.Context, p *store.Provider, model, p
 		return nil, &upstreamError{Status: resp.StatusCode}
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxUpstreamResponse)+1))
-	if err != nil {
-		return nil, fmt.Errorf("imggen: reading upstream response: %w", err)
-	}
-	if len(raw) > maxUpstreamResponse {
-		return nil, fmt.Errorf("imggen: upstream response exceeds %d MiB cap", maxUpstreamResponse>>20)
+	// Up-front rejection when the upstream volunteers an oversized length —
+	// not a single byte of a 40 MiB answer is pulled. Lying/absent
+	// Content-Length (chunked) is covered by the byte limit on the stream
+	// below.
+	if resp.ContentLength > int64(maxUpstreamResponse) {
+		return nil, &upstreamError{Msg: capMessage()}
 	}
 
+	// Stream the capped body straight into the JSON decoder: buffering the
+	// raw bytes first and json.Unmarshal-ing a SECOND full copy of the b64
+	// strings doubled peak RSS (n=4 at cap meant ~2× the body coexisting).
+	// countingReader tells a cap-truncation failure apart from a genuine
+	// parse error.
+	limited := io.LimitReader(resp.Body, int64(maxUpstreamResponse)+1)
+	counter := &countingReader{r: limited}
 	var parsed generationResponse
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	decodeErr := json.NewDecoder(counter).Decode(&parsed)
+	if counter.n > int64(maxUpstreamResponse) {
+		return nil, &upstreamError{Msg: capMessage()}
+	}
+	if decodeErr != nil {
 		return nil, errors.New("imggen: could not parse provider image response")
 	}
 	var out []string

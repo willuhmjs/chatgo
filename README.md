@@ -165,6 +165,15 @@ which runs the binary against a canned SSE mock provider).
 Container idle = boot + one API request, cgroup RSS. Host row measured at the
 v2 build; the release-tagged binary is re-benched each release.
 
+Peak load is bounded too (macOS harness numbers, see caveat below): knowledge
+search streams vectors and only fetches the matched text — scanning a 20k-chunk
+collection peaks at ~33 MiB, four concurrent searches ~63 MiB. Worst-case 5 MiB
+document ingest streams the chunker and embeds per-batch (~47 MiB peak), and
+image generation caps upstream responses at 12 MiB (~57 MiB for a legitimate
+4-image run; oversized replies are refused before the full download). Every
+scenario fits the 128 MiB budget with headroom; container deployments should
+set `GOMEMLIMIT=100MiB` alongside the limit.
+
 Linux `VmRSS` is the number that matters for k8s limits; macOS
 measurements run ~1.5–2× higher due to allocator differences — see the
 caveat printed by `bench/measure.sh`.

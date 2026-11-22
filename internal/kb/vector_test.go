@@ -95,14 +95,6 @@ func TestPickTopK(t *testing.T) {
 	}
 }
 
-func TestScanChunksSkipsCorrupt(t *testing.T) {
-	good := encodeVec([]float32{1, 0})
-	rows := []chunkRow{
-		{chunkID: "ok", fileID: "f", content: "x", embedding: good, dim: 2},
-		{chunkID: "ragged", fileID: "f", content: "x", embedding: []byte{1, 2, 3}, dim: 2},
-	}
-	got := scanChunks(rows, []float32{1, 0}, 5)
-	if len(got) != 1 || got[0].ChunkID != "ok" {
-		t.Fatalf("scanChunks = %+v, want only the intact row", got)
-	}
-}
+// (scanChunks lives on as scanRows/scoreBlob in store.go; its behavior
+// tests — corrupt-row skipping, top-k order parity, streaming-scorer
+// bit-identity — live in store_test.go.)

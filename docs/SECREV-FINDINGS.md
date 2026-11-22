@@ -230,6 +230,50 @@ re-run bench/smoke_v2.sh, full gates, commit, SECURITY.md delta.
   ~1.5-2x vs linux) → README host row refreshed 17/26→18/20. LENS 5 CLOSED BY
   REPLACEMENT: linux numbers from PUB-1 container audit (8.7 MiB cgroup idle), state-
   eviction design verified by C6's map table. GAUNTLET COMPLETE.
+- LENS 5 REPORTED AT LAST — VERDICT FAIL vs 128Mi on PEAK (steady-state ✅: idle 18.5,
+  zero leaks, full recovery; but S4 20k-chunk search = +100MiB SINGLE req; S6 one
+  enriched chat turn = 136MiB; S5 4 concurrent searches = 424MiB; S8 imggen n=4@40MiB
+  cap = +103MiB; thumb gate 64MiB×2 slots = 128MiB theoretical; ingest live-set 32MiB/
+  file pins heap 89/100 under storm). All pure-Go-heap, reproduce 1:1 on Linux ⇒
+  deploy (128Mi limit) = OOMKill on one ordinary KB-enriched turn. DEPLOY HOLD until
+  RES fixes verified. RES-1 kb two-pass scan+byte budget+streaming vec (store/kb/enrich),
+  RES-2 imggen cap 40→12MiB + release-as-saved, RES-3 thumb 16M→4Mpx gate + extract
+  substr, RES-4 global 2-slot upload semaphore + streaming window chunker (chunk/
+  handlers; RES-1/RES-4 share kb pkg, disjoint files). Each measures pre/post RSS on
+  scratch binaries (ports 8106-8108).
+- RES-3 DONE (thumb gate: threshold 16M→4Mpx w/ budget comment; gate VERIFIED
+  pre-decode via DecodeConfig (no bug); oversize = refuse-thumb-not-upload kept.
+  ⚠️ REAL TEST HOLE fixed: old forged-IHDR tests didn't patch chunk CRC → refused for
+  checksum, pixel-bomb gate NEVER exercised; patchPNGSize now genuinely pins it.
+  Extract: substr(CAST(content AS BLOB)) 100×4KiB newest-first w/ break-at-24KiB-tail
+  → 6.4MiB worst → 400KiB; rune-safe tail trim; C2 framing asserted post-truncation;
+  filter-before-LIMIT improvement noted. files 16/16 + memory 15/15 green.)
+- RES-2 DONE (cap 40→12MiB w/ math; decoder streaming replaces read-all+unmarshal
+  (one copy gone); release-as-saved + inter-save GC (−10); BONUS Content-Length
+  pre-check → honest providers rejected at 19.3 RSS; cap error now user-facing 502
+  msg. Measured S8: 121.1→19.3 (CL path) / 61.0 (lying-CL floor, documented) / legit
+  in-cap 66.3→56.8 (residual = save.go multipart copies, OUT OF WALL → FOLLOW-UP:
+  save.go/files 3-copies-per-img trim to reach <50). -race green.)
+- RES-1 DONE (THE headline fix: two-pass streaming scan — pass1 scores via
+  binary.LittleEndian over BLOBs ZERO allocs w/ bounded-k window (never buffers
+  scanned vecs), pass2 one owner-scoped IN() for ≤k survivors; scoreBlob bit-identical
+  (golden 200 trials) + legacy full-rank parity w/ ties (caught real ≤k-window bug).
+  maxScanBytes=128MiB bounds reach not RAM (streaming made 8MiB budget unnecessary —
+  would've crushed recall to 1.4k rows). MEASURED: S4 121.5→33.2, S5 422→61.8, S6
+  enrich 126.4→34.7 + 3-9x FASTER. Byte-identical search JSON + sources pre/post.)
+- RES-4 DONE (streaming bounded-span chunker: ≤801 live spans, equivalence by
+  construction vs refChunkText oracle + 300-seed fuzz + seam torture — chunker heap
+  105.9→6.1; whole-file string copy gone. Global 2-slot uploadSlots pre-ParseMultipart
+  Form / post-user-limiter, 429 busy envelope, storm: concurrent 8→2, GC 3612→59,
+  heap 608→97, RSS 573→163. RESIDUAL → RES-5 DISPATCHED (embedTexts holds ALL vecs
+  till file insert @1536-dim ≈22MiB → bounded-queue embed→insert pipeline, :8109/9119).
+- INTEGRATOR REMEASURE CONFIRMED on COMBINED tree (my run, /tmp/res1 harness):
+  S4 33.3 · S5 63.1 · S6 +0.3 delta · idle 17.1 — all <128 w/ ≥2x headroom.
+- RES-5 DONE (per-batch embed→insert pipeline: live vecs 22MiB→400KiB; heap
+  68→20.5, RSS 96→47 measured symmetric; FK-ordering file-row-first + compensating
+  discardIngest keeps legacy all-or-nothing failure end-state (crash-window partial
+  documented); sequential depth-1 queue > concurrent (half the vecs, no goroutine).
+  ALL RES CLUSTERS 5/5. FINAL SUITE + smoke_v2 RUNNING → commit → LIFT DEPLOY HOLD.)
 - C5 DONE (README v2 + SECURITY.md post-fix delta; refused premature claims; re-link
   deps on C1/C2/C6 at final verify; RAM row placeholder).
 - C7 DONE (oidc.go 2FA gate reusing issueTOTPToken — no wrapper needed; Login.svelte

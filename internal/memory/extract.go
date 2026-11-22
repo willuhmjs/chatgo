@@ -165,46 +165,79 @@ func splitTaskModel(spec string) (providerID, modelID string, ok bool) {
 	return spec[:i], spec[i+1:], true
 }
 
+// extractRowMaxBytes caps the content each transcript row may carry. Rows are
+// truncated in SQL (substr over the raw bytes), so the whole transcript read
+// materializes at most extractMaxMessages × this = 100 × 4 KiB = 400 KiB —
+// instead of 100 whole messages (100 × 64 KiB = 6.4 MiB content, plus
+// sources_json and every other column) just to keep the 24 KiB tail. Facts
+// live in the first sentences of each turn, so a 4 KiB per-row head keeps
+// extraction quality while bounding the worst case at the query.
+const extractRowMaxBytes = 4 << 10
+
 // buildTranscript renders the chat's latest extractMaxMessages user/assistant
 // turns as "Role: content" lines, keeping the newest tail that fits within
 // extractTranscriptMaxBytes (the latest turn is always kept). Errored turns
-// carry no real content and are skipped.
+// carry no real content and are skipped. Rows stream newest-first straight
+// from SQL — role/error filtering and per-row content truncation happen at
+// the database, never as whole-row materialization — and the byte budget is
+// applied while streaming, so at most the kept tail (~24 KiB + one row) is
+// ever assembled in memory.
 func buildTranscript(ctx context.Context, st *store.Store, chatID string) string {
-	msgs, err := st.Messages.List(ctx, chatID, extractMaxMessages, "")
+	rows, err := st.DB.QueryContext(ctx,
+		`SELECT role, substr(CAST(content AS BLOB), ?1, ?2) FROM messages
+		  WHERE chat_id = ?3 AND error IS NULL AND role IN ('user', 'assistant')
+		  ORDER BY rowid DESC LIMIT ?4`,
+		1, extractRowMaxBytes, chatID, extractMaxMessages)
 	if err != nil {
 		slog.Warn("memory: load transcript failed", "chat_id", chatID, "err", err)
 		return ""
 	}
-	type turn struct{ line string }
-	var turns []turn
-	for _, m := range msgs {
-		role := ""
-		switch m.Role {
-		case "user":
-			role = "User"
-		case "assistant":
-			role = "Assistant"
+	defer rows.Close()
+	kept := []string{} // newest-first; restored to chronological order below
+	used := 0
+	for rows.Next() {
+		var role, content string
+		if err := rows.Scan(&role, &content); err != nil {
+			slog.Warn("memory: read transcript row failed", "chat_id", chatID, "err", err)
+			return ""
 		}
-		if role == "" || m.Error != nil || strings.TrimSpace(m.Content) == "" {
+		content = strings.TrimSpace(trimPartialRune(content))
+		if content == "" {
 			continue
 		}
-		turns = append(turns, turn{role + ": " + strings.TrimSpace(m.Content)})
-	}
-	kept := make([]string, 0, len(turns))
-	used := 0
-	for i := len(turns) - 1; i >= 0; i-- {
-		cost := len(turns[i].line) + 1
-		if len(kept) > 0 && used+cost > extractTranscriptMaxBytes {
+		if role == "user" {
+			role = "User"
+		} else {
+			role = "Assistant"
+		}
+		line := role + ": " + content
+		if len(kept) > 0 && used+len(line)+1 > extractTranscriptMaxBytes {
 			break
 		}
-		used += cost
-		kept = append(kept, turns[i].line)
+		used += len(line) + 1
+		kept = append(kept, line)
 	}
-	// kept is newest-first; restore chronological order.
+	if err := rows.Err(); err != nil {
+		slog.Warn("memory: stream transcript failed", "chat_id", chatID, "err", err)
+		return ""
+	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 	return strings.Join(kept, "\n")
+}
+
+// trimPartialRune drops a trailing incomplete UTF-8 sequence left by substr's
+// byte-level truncation (a multi-byte rune cut in half at the row's cap) so
+// truncated turns stay valid text inside the untrusted-marker frame.
+func trimPartialRune(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size != 1 {
+			return s
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // storeFacts parses the model's answer into fact lines and stores each one

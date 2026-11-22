@@ -10,8 +10,9 @@
 //
 // RAM discipline: zero startup goroutines, zero caches. All work happens on
 // request paths. Ingest streams through io.LimitReader (5 MiB/file); a chat
-// enrichment or search loads only the selected collections' chunk rows,
-// scans, and releases. Embeddings go upstream in batches of ≤64 texts.
+// enrichment or search runs a TWO-PASS scan — pass 1 streams only the
+// embedding BLOBs into a top-k window, pass 2 loads content text for the
+// k survivors. Embeddings go upstream in batches of ≤64 texts.
 package kb
 
 import (
@@ -58,9 +59,22 @@ const (
 	// enrichTimeout bounds one enricher run (embed call + scan).
 	enrichTimeout = 30 * time.Second
 
-	// maxScanChunks defensively caps how many chunk rows one scan loads
-	// (personal scale; anything beyond is ignored, newest files first).
+	// maxScanChunks caps how many chunk rows one scan reads (personal
+	// scale; anything beyond is ignored, oldest files first). Rows stream
+	// through the score window, so this cap bounds scan work — retained
+	// RAM no longer scales with it (pass 1 keeps only the k candidates).
 	maxScanChunks = 20000
+
+	// maxScanBytes caps the cumulative embedding BLOB bytes one scan
+	// touches, beside the row cap: a misbehaving embeddings provider that
+	// stored pathologically wide vectors cannot make a single scan reach
+	// unbounded data. Sized so the row cap binds FIRST at realistic
+	// vector sizes — 20k rows × 1536-dim float32 (OpenAI small, the
+	// widest common embedding) = 117.2 MiB < 128 MiB. Rows past either
+	// cap are ignored silently — the SAME semantics the row cap always
+	// had: top-k over a truncated scan is weaker, never wrong; no
+	// partial-results flag because that would reshape the search API.
+	maxScanBytes int64 = 128 << 20
 
 	// maxCollectionsPerChat caps kb_collection_ids honored from a chat's
 	// params_json (prompt-injection/RAM surface control).

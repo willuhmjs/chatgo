@@ -4,7 +4,7 @@ package files
 //   - 512px longest-edge .thumb jpeg for png/jpeg via golang.org/x/image
 //     (other formats — and undecodable images — skip the thumb silently)
 //   - decode is dimension-gated: image.DecodeConfig runs FIRST and images
-//     declaring >16M pixels are refused before any pixel allocation
+//     declaring >4M pixels are refused before any pixel allocation
 //     (pixel-bomb guard — a <1MB PNG can expand to GiBs of RGBA)
 //   - thumbnail generation is ASYNC behind a 2-slot semaphore so upload
 //     requests never block and never hold decode memory on the hot path;
@@ -33,13 +33,15 @@ const (
 	thumbMaxEdge = 512
 	// maxThumbPixels is the hard decode ceiling for thumbnail work: an image
 	// whose header declares more pixels is rejected before image.Decode.
-	maxThumbPixels = 16 << 20
+	// Budget: 4M px × 4 B/px RGBA = 16 MiB per decode; with both thumbSem
+	// slots busy that is 32 MiB of theoretical peak decode memory.
+	maxThumbPixels = 4 << 20
 	// maxNameLen caps sanitized display names.
 	maxNameLen = 200
 )
 
 var (
-	// thumbSem bounds concurrent thumbnail decodes (≤2 × ≤16M-px RGBA).
+	// thumbSem bounds concurrent thumbnail decodes (≤2 × ≤4M-px RGBA = 32 MiB).
 	thumbSem = make(chan struct{}, 2)
 	// thumbWG lets tests drain in-flight thumbnail workers.
 	thumbWG sync.WaitGroup

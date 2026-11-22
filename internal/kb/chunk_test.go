@@ -2,6 +2,7 @@ package kb
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,166 @@ func TestChunkTextByteCap(t *testing.T) {
 	}
 	if strings.Join(got, "") != huge {
 		t.Fatal("split lost content")
+	}
+}
+
+// ---------- RES-4 streaming-chunker equivalence guards -------------------
+//
+// refChunkText is the pre-RES-4 whole-file-span algorithm kept VERBATIM (the
+// removed wordSpans + window loop) as the golden reference: chunkBytes must
+// produce byte-identical output on every input, per the boundary argument in
+// chunk.go. These tests are the proof shipped with the fix.
+
+func refWordSpans(text string) []refWordSpan {
+	isSpace := func(b byte) bool {
+		switch b {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			return true
+		}
+		return false
+	}
+	var spans []refWordSpan
+	for i := 0; i < len(text); {
+		for i < len(text) && isSpace(text[i]) {
+			i++
+		}
+		if i >= len(text) {
+			break
+		}
+		j := i
+		for j < len(text) && !isSpace(text[j]) {
+			j++
+		}
+		spans = append(spans, refWordSpan{i, j})
+		i = j
+	}
+	return spans
+}
+
+type refWordSpan struct{ start, end int }
+
+func refChunkText(text string) []string {
+	spans := refWordSpans(text)
+	if len(spans) == 0 {
+		return nil
+	}
+	step := chunkWords - chunkOverlap
+	var out []string
+	for start := 0; start < len(spans); start += step {
+		end := start + chunkWords
+		if end > len(spans) {
+			end = len(spans)
+		}
+		out = append(out, capBytes(text[spans[start].start:spans[end-1].end])...)
+		if end == len(spans) {
+			break
+		}
+	}
+	return out
+}
+
+// mres4Corpus is a broad fixture set: the golden shapes above plus seams
+// that land exactly on window edges (multiples of step=720 and chunkWords=800
+// words), multi-byte content, giant words, BOM, and pure whitespace.
+func mres4Corpus() []string {
+	corpus := []string{
+		"", " ", "   \n\t\r\n ",
+		"one", "line one\nline two\n\nline four",
+		words(100), words(719), words(720), words(721), words(799),
+		words(800), words(801), words(1439), words(1440), words(1441),
+		words(1520), words(1521), words(1600), words(1601), words(5000),
+		strings.Join(strings.Fields(words(2000)), "\n"),
+		strings.Join(strings.Fields(words(2000)), "\r\n"),
+		strings.Join(strings.Fields(words(2000)), strings.Repeat(" ", 40)),
+		"\ufeffbom start\nsecond line",
+		"Grünstraße — über 日本語テキスト mixed ✓ words " + words(1000),
+		strings.Repeat("é", maxChunkBytes),                     // giant single word
+		strings.Repeat("é", maxChunkBytes*2+7) + " tail",       // two giant words
+		strings.Repeat("x", 5000) + strings.Repeat(" ", 10000), // one word + whitespace tail
+		strings.Repeat(" \n\t", 5000) + "late word",            // whitespace head
+		words(2000) + "\n\n\n" + words(900),                    // mixed seam
+		strings.Repeat("a", 30*1024) + " bbb " + strings.Repeat("é", 40*1024) + " c",
+		words(800) + "  ", " " + words(801),
+	}
+	// 1 word per line, 1-char words: forces every window seam mid-newline-
+	// run on a multi-window scale (≈ 4 full span-table compactions).
+	onePerLine := strings.Join(strings.Fields(words(6000)), "\n")
+	corpus = append(corpus, onePerLine)
+	return corpus
+}
+
+func TestChunkStreamingByteIdentity(t *testing.T) {
+	for i, in := range mres4Corpus() {
+		want := refChunkText(in)
+		got := chunkBytes([]byte(in))
+		if len(got) != len(want) {
+			t.Fatalf("corpus[%d] (%d bytes): %d chunks, want %d", i, len(in), len(got), len(want))
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("corpus[%d] chunk %d differs\n got: %q\nwant: %q", i, j,
+					got[j][:min(len(got[j]), 80)], want[j][:min(len(want[j]), 80)])
+			}
+		}
+	}
+}
+
+// TestChunkStreamingFuzzEquivalence randomized-differential fuzzes the
+// streaming chunker against the whole-file reference (word-length seam
+// torture: 1–3-byte words, random whitespace runs, multi-byte tails).
+func TestChunkStreamingFuzzEquivalence(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261122))
+	piece := []string{"a", "bb", "ccc", "dd", "é", "日", "ok!", "x"}
+	for iter := 0; iter < 300; iter++ {
+		var sb strings.Builder
+		n := rng.Intn(2600)
+		for i := 0; i < n; i++ {
+			sb.WriteString(piece[rng.Intn(len(piece))])
+			switch rng.Intn(6) {
+			case 0:
+				sb.WriteString("\n")
+			case 1:
+				sb.WriteString(strings.Repeat(" ", 1+rng.Intn(3)))
+			case 2:
+				sb.WriteString("\t \r\n")
+			}
+		}
+		in := sb.String()
+		want := refChunkText(in)
+		got := chunkBytes([]byte(in))
+		if len(got) != len(want) {
+			t.Fatalf("iter %d (%d words, %d bytes): %d chunks, want %d", iter, n, len(in), len(got), len(want))
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("iter %d chunk %d differs (input %d bytes)", iter, j, len(in))
+			}
+		}
+	}
+}
+
+// TestChunkStreamingMultiWindowWordPerLine is the RES-4 worst-case fixture:
+// 2 MiB of 1-char words, one per line (the max-chunk-count shape that drove
+// the old 42 MiB span table). Byte identity against the reference, every
+// chunk within the byte cap, and full content coverage are asserted.
+func TestChunkStreamingMultiWindowWordPerLine(t *testing.T) {
+	line := "w\n"
+	in := strings.Repeat(line, (2<<20)/len(line))
+	want := refChunkText(in)
+	got := chunkBytes([]byte(in))
+	if len(got) != len(want) {
+		t.Fatalf("%d chunks, want %d", len(got), len(want))
+	}
+	if len(got) < 1000 { // multi-window on ~1.1M words ⇒ ~1500 chunks
+		t.Fatalf("fixture too small to span many windows: %d chunks", len(got))
+	}
+	for j := range want {
+		if got[j] != want[j] {
+			t.Fatalf("chunk %d differs", j)
+		}
+		if len(got[j]) > maxChunkBytes {
+			t.Fatalf("chunk %d over byte cap", j)
+		}
 	}
 }
 

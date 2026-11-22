@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"chatgo/internal/store"
 )
@@ -319,6 +320,39 @@ func TestExtractorPromptFraming(t *testing.T) {
 	}
 	if wrapped == wrapTranscript(tr) {
 		t.Fatal("marker id must be random per call (transcript cannot forge the close)")
+	}
+}
+
+// TestBuildTranscriptTruncatesRows pins the transcript read bound: every row
+// is truncated to extractRowMaxBytes in SQL (worst case 100 × 4 KiB instead of
+// 100 whole 64 KiB messages), truncation must not split a multi-byte rune, and
+// the truncated turns must still sit inside wrapTranscript's untrusted
+// BEGIN/END frame.
+func TestBuildTranscriptTruncatesRows(t *testing.T) {
+	e := newEnv(t)
+	uid, _ := e.user("alice@example.com", store.RoleUser)
+	chatID := e.chat(uid)
+	e.msg(chatID, "user", strings.Repeat("あ", extractRowMaxBytes/3+4000))
+	e.msg(chatID, "assistant", "short reply")
+
+	tr := buildTranscript(context.Background(), e.store, chatID)
+	lines := strings.Split(tr, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 chronological turns, got:\n%q", tr)
+	}
+	body := strings.TrimPrefix(lines[0], "User: ")
+	if len(body) >= extractRowMaxBytes {
+		t.Fatalf("row not truncated at SQL: %d bytes", len(body))
+	}
+	if !utf8.ValidString(tr) {
+		t.Fatal("truncation split a multi-byte rune")
+	}
+	wrapped := wrapTranscript(tr)
+	iBegin := strings.Index(wrapped, transcriptBeginMarker)
+	iBody := strings.Index(wrapped, body)
+	iEnd := strings.Index(wrapped, transcriptEndMarker)
+	if iBegin < 0 || iEnd < 0 || iBegin > iBody || iBody > iEnd {
+		t.Fatalf("truncated turns escaped the untrusted frame:\n%s", wrapped)
 	}
 }
 

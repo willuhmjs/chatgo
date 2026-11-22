@@ -101,6 +101,34 @@ func (d *Deps) allowSpend(w http.ResponseWriter, u *store.User, bucket string, p
 	return false
 }
 
+// --- global ingest gate (RES-4 RAM finding) ------------------------------
+//
+// One 5 MiB upload has a per-REQUEST live working set of ~35 MiB in the
+// worst case (1 word/line maximizes the chunk count: body buffer + bounded
+// chunker spans + emitted chunk strings + in-flight embedding vectors).
+// Per-user limits cannot cap that: the lens storm's 4×(8×5 MiB) uploads came
+// from few users and still pinned the GC heap at 89/100 MiB of GOMEMLIMIT.
+// The math is per-request, so the gate is GLOBAL: 2 concurrent ingest slots
+// × ~35 MiB fits alongside the post-RES-1/2 steady state. When both slots
+// are busy the request is rejected NON-BLOCKING (no server-side queueing:
+// a queue would pin the request body exactly like the ingest does) with a
+// house 429 envelope inviting a retry.
+//
+// This is deliberately distinct from the per-user 5/min spend limiter (C9b,
+// allowSpend above) and placed AFTER it, so scripted floods keep hitting the
+// O(1) bucket check before ever touching a slot. Acquiring BEFORE
+// ParseMultipartForm also bounds multipart temp spill and embedding batch
+// churn to two requests' worth.
+//
+// RES-5 note: ingest now pipelines embed→insert one batch at a time, so the
+// per-request live set is materially below the ~35 MiB worst case above
+// (vectors stay one ≤64-text batch deep). The slot count stays 2 — the bound
+// is now conservative headroom, not a sizing bet; re-tightening it is a
+// separate measurement call.
+const maxConcurrentUploads = 2
+
+var uploadSlots = make(chan struct{}, maxConcurrentUploads)
+
 // --- collections ---------------------------------------------------------
 
 func (d *Deps) handleCollectionCreate(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +289,16 @@ func (d *Deps) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if !d.allowSpend(w, u, "kb:upload:", uploadPerMin, "too many kb uploads, try again later") {
 		return
 	}
+	// Global ingest gate (RES-4, see maxConcurrentUploads above): cheap
+	// per-user rejections first, then one non-blocking slot grab before any
+	// multipart work. Released when the request completes.
+	select {
+	case uploadSlots <- struct{}{}:
+		defer func() { <-uploadSlots }()
+	default:
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "server busy ingesting, retry")
+		return
+	}
 	c, err := d.getCollection(r.Context(), u.ID, r.PathValue("id"))
 	if err != nil {
 		d.fail(w, r, err)
@@ -295,6 +333,9 @@ func (d *Deps) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, map[string]any{"items": created})
 }
 
+// utf8BOM is the byte-level form of the \ufeff marker stripped before chunking.
+var utf8BOM = []byte("\xef\xbb\xbf")
+
 // ingestUpload validates + chunks + embeds + persists one uploaded file.
 func (d *Deps) ingestUpload(ctx context.Context, collectionID string, fh *multipart.FileHeader) (*kbFile, error) {
 	name := sanitizeName(fh.Filename)
@@ -322,21 +363,26 @@ func (d *Deps) ingestUpload(ctx context.Context, collectionID string, fh *multip
 	if err != nil {
 		return nil, err
 	}
-	text := strings.TrimPrefix(string(data), "\ufeff")
-	chunks := chunkText(text)
+	// Chunk straight off the byte buffer (RES-4: no whole-file bytes→string
+	// copy). A leading UTF-8 BOM is trimmed before chunking, exactly like the
+	// old string-based path; the stored byte count intentionally still
+	// includes it.
+	chunks := chunkBytes(bytes.TrimPrefix(data, utf8BOM))
+	fileBytes := int64(len(data))
+	data = nil // RES-5: the upload buffer's job is done — release 5 MiB before embedding
 
-	var vectors [][]float32
+	var target *embedTarget
 	if len(chunks) > 0 {
-		target, err := d.pickEmbedModel(ctx)
-		if err != nil {
-			return nil, err
-		}
-		vectors, err = d.embedTexts(ctx, target, chunks)
+		var err error
+		target, err = d.pickEmbedModel(ctx)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return d.insertFileChunks(ctx, collectionID, name, mime, int64(len(data)), chunks, vectors)
+	// RES-5: embed→insert one batch at a time (vectors stay one batch deep;
+	// per-file atomicity is restored by rollback-on-failure — see the
+	// insertFileChunksStream doc).
+	return d.insertFileChunksStream(ctx, target, collectionID, name, mime, fileBytes, chunks)
 }
 
 // classifyText rejects binary payloads (415) and returns a display mime.

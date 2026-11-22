@@ -6,8 +6,11 @@ package kb
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -173,35 +176,162 @@ func (d *Deps) getFile(ctx context.Context, collectionID, fileID string) (*kbFil
 	return f, nil
 }
 
-// insertFileChunks atomically records one ingested file plus all of its
-// embedded chunks. Vectors must already correspond 1:1 to chunks.
-func (d *Deps) insertFileChunks(ctx context.Context, collectionID, name, mime string, textBytes int64,
-	chunks []string, vectors [][]float32) (*kbFile, error) {
-	if len(chunks) != len(vectors) {
-		return nil, fmt.Errorf("kb: %d chunks but %d vectors", len(chunks), len(vectors))
+// insertFileChunksStream is the RES-5 ingest pipeline: it embeds chunks one
+// embedBatchMax batch at a time and commits each batch's rows IMMEDIATELY,
+// so the file's vectors never accumulate — live embedding memory is a single
+// batch (64 × 1536 × 4B ≈ 400 KiB at realistic dims) instead of every vector
+// for the file (~22 MiB for a 5 MiB 1-word/line upload). Consumed chunk
+// strings are blanked as their rows commit (release-after-use on the text
+// side too).
+//
+// Pipeline shape: strictly sequential embed→insert per batch — a bounded
+// staging queue at depth 1, the tightest bound the ≤2-batch queue design
+// allows. A concurrent embedder feeding a ≤2-deep queue would double live
+// vectors to overlap embed latency with DB commits; commits here are
+// millisecond-scale against 25 ms–second embed round-trips, so the overlap
+// would buy <10% wall time while violating this package's zero-goroutine
+// RAM discipline.
+//
+// Atomicity (per file, vs the old single-tx write): FK enforcement is ON
+// (store DSN pragma), so chunks cannot be staged parentless and revealed by
+// a final file-row insert, and ONE tx held open across all embed HTTP calls
+// would pin the SQLite writer for the whole ingest — both rejected.
+// Instead the file row commits inside the FIRST batch's tx (which satisfies
+// kb_chunks' FK) and every later batch is its own tx; any request-visible
+// failure (embed error, ragged dimensions, DB error, ctx cancel) runs
+// discardIngest, so the END STATE of every failure is byte-identical to the
+// old all-or-nothing write: zero rows for the file. Batch-0 failures need no
+// compensation at all — nothing ever committed, so the file was never
+// visible. Two windows remain inherently traded for the memory bound:
+// (a) a concurrent reader can observe a partially ingested file during the
+// (seconds-long) ingest window, and (b) a PROCESS CRASH mid-ingest leaves a
+// partial file where the old code left nothing. Both stay fully valid rows
+// (FK intact, ordinals contiguous); the retry path is the documented one —
+// delete the file and re-upload it (same as today's multi-file partial
+// success semantics).
+//
+// target may be nil iff len(chunks)==0 (empty files never reach the
+// provider). The dim-consistency invariant embedTexts enforced across
+// batches is enforced here too.
+func (d *Deps) insertFileChunksStream(ctx context.Context, target *embedTarget, collectionID, name, mime string,
+	textBytes int64, chunks []string) (*kbFile, error) {
+	if len(chunks) > 0 && target == nil {
+		return nil, errors.New("kb: embed target required for non-empty ingest")
 	}
-	tx, err := d.Store.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback() //nolint:errcheck // best-effort after commit
-
 	f := &kbFile{ID: uuid.NewString(), CollectionID: collectionID, Name: name, Mime: mime,
 		Bytes: textBytes, CreatedAt: nowUnix(), ChunkCount: len(chunks)}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO kb_files (id, collection_id, name, mime, bytes, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-		f.ID, f.CollectionID, f.Name, f.Mime, f.Bytes, f.CreatedAt); err != nil {
-		return nil, err
-	}
-	for i, content := range chunks {
-		blob := encodeVec(vectors[i])
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO kb_chunks (id, file_id, ordinal, content, embedding, dim) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-			uuid.NewString(), f.ID, i, content, blob, len(vectors[i])); err != nil {
+
+	dim := 0
+	committed := false
+	for start := 0; start < len(chunks); start += embedBatchMax {
+		end := min(start+embedBatchMax, len(chunks))
+		vecs, err := d.embedBatch(ctx, target, chunks[start:end])
+		if err != nil {
+			d.discardIngest(ctx, f.ID, committed)
 			return nil, err
 		}
+		if dim == 0 {
+			dim = len(vecs[0])
+		}
+		for _, v := range vecs {
+			if len(v) != dim {
+				d.discardIngest(ctx, f.ID, committed)
+				return nil, fmt.Errorf("%w: inconsistent embedding dimensions", ErrEmbedUpstream)
+			}
+		}
+		if err := d.insertChunkBatch(ctx, f, start, chunks[start:end], vecs); err != nil {
+			d.discardIngest(ctx, f.ID, committed)
+			return nil, err
+		}
+		committed = true
+		// Release after use: the batch's vectors die at its commit and its
+		// chunk strings are never read again (the caller's slice headers stay
+		// reachable, so blank the strings to actually free the bytes).
+		clear(vecs)
+		for i := start; i < end; i++ {
+			chunks[i] = ""
+		}
 	}
-	return f, tx.Commit()
+	if !committed {
+		// Empty file: the legacy single-tx file-row write, nothing to stream.
+		tx, err := d.Store.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback() //nolint:errcheck // best-effort after commit
+		if err := insertFileRow(ctx, tx, f); err != nil {
+			return nil, err
+		}
+		return f, tx.Commit()
+	}
+	return f, nil
+}
+
+// insertChunkBatch commits one embed batch's chunk rows; the FIRST batch's tx
+// also carries the file row (FK parent). Ordinals stay file-contiguous:
+// batch starting at index `start` writes ordinals start..start+len-1, exactly
+// the numbering the old whole-file loop produced.
+func (d *Deps) insertChunkBatch(ctx context.Context, f *kbFile, start int, texts []string, vecs [][]float32) error {
+	tx, err := d.Store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort after commit
+	if start == 0 {
+		if err := insertFileRow(ctx, tx, f); err != nil {
+			return err
+		}
+	}
+	for i, content := range texts {
+		blob := encodeVec(vecs[i])
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO kb_chunks (id, file_id, ordinal, content, embedding, dim) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+			uuid.NewString(), f.ID, start+i, content, blob, len(vecs[i])); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// insertFileRow writes the kb_files row inside an open tx.
+func insertFileRow(ctx context.Context, tx *sql.Tx, f *kbFile) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO kb_files (id, collection_id, name, mime, bytes, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+		f.ID, f.CollectionID, f.Name, f.Mime, f.Bytes, f.CreatedAt)
+	return err
+}
+
+// discardIngest is the compensating delete restoring per-file all-or-nothing
+// after a mid-ingest failure: it removes every row insertFileChunksStream may
+// have committed for fileID. committed=false means the file was never
+// visible (batch 0 failed) and there is nothing to undo. It must run even
+// when ctx is already dead (canceled/timed-out requests are the common
+// failure cause), hence WithoutCancel + its own deadline; a failed rollback
+// leaves only a stale partial file a reader can see, logged for hygiene.
+func (d *Deps) discardIngest(ctx context.Context, fileID string, committed bool) {
+	if !committed {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	tx, err := d.Store.DB.BeginTx(cctx, nil)
+	if err != nil {
+		slog.Warn("kb: ingest rollback failed (could not open tx)", "file_id", fileID, "err", err)
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort after commit
+	// Chunks first: foreign_keys is ON.
+	if _, err := tx.ExecContext(cctx, `DELETE FROM kb_chunks WHERE file_id = ?1`, fileID); err != nil {
+		slog.Warn("kb: ingest rollback failed (chunks)", "file_id", fileID, "err", err)
+		return
+	}
+	if _, err := tx.ExecContext(cctx, `DELETE FROM kb_files WHERE id = ?1`, fileID); err != nil {
+		slog.Warn("kb: ingest rollback failed (file row)", "file_id", fileID, "err", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Warn("kb: ingest rollback failed (commit)", "file_id", fileID, "err", err)
+	}
 }
 
 // deleteFile removes one file's chunks and row (ownership checked by caller).
@@ -265,32 +395,40 @@ func (d *Deps) ownedCollectionIDs(ctx context.Context, userID string, ids []stri
 	return out, rows.Err()
 }
 
-// chunkRow is one loaded chunk row pending the cosine scan.
-type chunkRow struct {
+// scanRow is one pass-1 chunk row: everything the cosine scan needs.
+// It deliberately carries NO content text — the KB RAM finding was that
+// the old pass loaded content for EVERY scanned row (20k rows ≈ 100 MiB
+// per search, riding every enriched chat turn). Content is re-fetched in
+// pass 2 for the surviving k rows only (attachContents).
+type scanRow struct {
 	chunkID, fileID, fileName string
 	ordinal                   int
-	content                   string
 	embedding                 []byte
-	dim                       int
 }
 
-// loadChunks loads the embeddings of the given (already ownership-filtered)
-// collections, capped at maxScanChunks rows (RAM discipline: load only what
-// the selected collections hold, scan, release).
-func (d *Deps) loadChunks(ctx context.Context, userID string, collectionIDs []string) ([]chunkRow, error) {
-	if len(collectionIDs) == 0 {
+// scanCollections is pass 1 of the two-pass search: it streams the
+// (already ownership-filtered) collections' embeddings — never their
+// content — and folds each row straight into the running top-k set, so
+// live memory is O(k + one row), not O(rows). The scan stops at maxRows
+// rows or maxBytes of cumulative embedding BLOBs, whichever comes first;
+// rows past either cap are ignored — the same documented semantics the
+// original maxScanChunks row cap always had. Caps are parameters so
+// tests can drive them; production callers pass the kb.go constants.
+func (d *Deps) scanCollections(ctx context.Context, userID string, collectionIDs []string,
+	qvec []float32, k, maxRows int, maxBytes int64) ([]chunkHit, error) {
+	if len(collectionIDs) == 0 || k <= 0 {
 		return nil, nil
 	}
-	args := make([]any, 0, len(collectionIDs)+1)
+	args := make([]any, 0, len(collectionIDs)+2)
 	args = append(args, userID)
 	ph := make([]string, 0, len(collectionIDs))
 	for _, id := range collectionIDs {
 		args = append(args, id)
 		ph = append(ph, fmt.Sprintf("?%d", len(args)))
 	}
-	args = append(args, maxScanChunks)
+	args = append(args, maxRows)
 	rows, err := d.Store.DB.QueryContext(ctx,
-		`SELECT ch.id, ch.file_id, f.name, ch.ordinal, ch.content, ch.embedding, ch.dim
+		`SELECT ch.id, ch.file_id, f.name, ch.ordinal, ch.embedding
 		 FROM kb_chunks ch
 		 JOIN kb_files f ON f.id = ch.file_id
 		 JOIN kb_collections c ON c.id = f.collection_id
@@ -300,40 +438,135 @@ func (d *Deps) loadChunks(ctx context.Context, userID string, collectionIDs []st
 		return nil, err
 	}
 	defer rows.Close()
-	var out []chunkRow
+	var cands []chunkHit
+	var scanned int64
 	for rows.Next() {
-		var r chunkRow
-		if err := rows.Scan(&r.chunkID, &r.fileID, &r.fileName, &r.ordinal, &r.content, &r.embedding, &r.dim); err != nil {
+		var r scanRow
+		if err := rows.Scan(&r.chunkID, &r.fileID, &r.fileName, &r.ordinal, &r.embedding); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// scanChunks brute-force scores rows against the query vector and returns
-// the top-k hits. Rows whose blob fails to decode or whose dim disagrees
-// with the blob are skipped (corrupt data must never fail a whole search).
-func scanChunks(rows []chunkRow, qvec []float32, k int) []chunkHit {
-	hits := make([]chunkHit, 0, len(rows))
-	for _, r := range rows {
-		v, err := decodeVec(r.embedding)
-		if err != nil || len(v) == 0 {
-			continue
+		if scanned+int64(len(r.embedding)) > maxBytes {
+			break // byte budget spent; the remaining rows are ignored (see maxScanBytes)
 		}
-		hits = append(hits, chunkHit{
-			ChunkID:  r.chunkID,
-			FileID:   r.fileID,
-			FileName: r.fileName,
-			Ordinal:  r.ordinal,
-			Content:  r.content,
-			Score:    cosine(qvec, v),
-		})
+		scanned += int64(len(r.embedding))
+		cands = addScored(cands, r, qvec, k)
 	}
-	return pickTopK(hits, k)
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return pickTopK(cands, k), nil // final stable rank (window may never have overflowed)
 }
 
-// searchChunks embeds q and brute-scans the selected collections' chunks.
+// scanRows scores rows that are already in memory (pure helper; the
+// SQL-streamed scanCollections funnels through the same addScored core, so
+// this and the live path cannot drift apart). Content stays empty.
+func scanRows(rows []scanRow, qvec []float32, k int) []chunkHit {
+	var cands []chunkHit
+	for _, r := range rows {
+		cands = addScored(cands, r, qvec, k)
+	}
+	return pickTopK(cands, k)
+}
+
+// addScored folds one row into the running top-k. Corrupt rows (empty or
+// ragged BLOB) are skipped and a BLOB whose length disagrees with qvec
+// scores 0 — both exactly as the original scanChunks behaved. Re-running
+// pickTopK over the k+1 window keeps the same selection AND stable tie
+// order as ranking all rows at once: stable sort preserves the tie order
+// established so far, and a newer row always sorts in behind the equals
+// that came before it. Callers apply one final pickTopK for the case
+// where the window never overflowed.
+func addScored(cands []chunkHit, r scanRow, qvec []float32, k int) []chunkHit {
+	score, ok := scoreBlob(qvec, r.embedding)
+	if !ok {
+		return cands
+	}
+	cands = append(cands, chunkHit{
+		ChunkID:  r.chunkID,
+		FileID:   r.fileID,
+		FileName: r.fileName,
+		Ordinal:  r.ordinal,
+		Score:    score,
+	})
+	if len(cands) > k {
+		cands = pickTopK(cands, k)
+	}
+	return cands
+}
+
+// scoreBlob cosines qvec against a little-endian float32 BLOB directly on
+// its bytes — no decodeVec, so zero per-row float32 allocations (the old
+// decode churned one slice per row per search on pure GC waste). The
+// arithmetic is bit-identical to cosine(qvec, decodeVec(blob)): same
+// float32→float64 widening, same accumulation order (golden-pinned by
+// TestScoreBlobBitIdenticalToDecode). ok=false ⇒ corrupt BLOB (ragged or
+// empty). A decodable BLOB whose length disagrees with qvec scores 0,
+// matching cosine's length-mismatch contract.
+func scoreBlob(qvec []float32, blob []byte) (float64, bool) {
+	if len(blob) == 0 || len(blob)%4 != 0 {
+		return 0, false
+	}
+	var dot, na, nb float64
+	if n := len(blob) / 4; n == len(qvec) {
+		for i := range qvec {
+			x := float64(qvec[i])
+			y := float64(math.Float32frombits(binary.LittleEndian.Uint32(blob[i*4:])))
+			dot += x * y
+			na += x * x
+			nb += y * y
+		}
+	}
+	if na == 0 || nb == 0 {
+		return 0, true
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb)), true
+}
+
+// attachContents is pass 2 of the two-pass search: ONE indexed query
+// pulls the content text for the final k hit rows only (k ≤ searchMaxK).
+// The user join re-checks ownership defensively even though the ids came
+// out of pass 1. A row deleted between the passes keeps empty Content
+// (stale but harmless; the hit's ids/scores stay truthful).
+func (d *Deps) attachContents(ctx context.Context, userID string, hits []chunkHit) error {
+	if len(hits) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(hits)+1)
+	args = append(args, userID)
+	ph := make([]string, 0, len(hits))
+	for _, h := range hits {
+		args = append(args, h.ChunkID)
+		ph = append(ph, fmt.Sprintf("?%d", len(args)))
+	}
+	rows, err := d.Store.DB.QueryContext(ctx,
+		`SELECT ch.id, ch.content FROM kb_chunks ch
+		 JOIN kb_files f ON f.id = ch.file_id
+		 JOIN kb_collections c ON c.id = f.collection_id
+		 WHERE c.user_id = ?1 AND ch.id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	content := make(map[string]string, len(hits))
+	for rows.Next() {
+		var id, text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return err
+		}
+		content[id] = text
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range hits {
+		hits[i].Content = content[hits[i].ChunkID]
+	}
+	return nil
+}
+
+// searchChunks embeds q and runs the two-pass scan: pass 1 streams the
+// selected collections' embeddings into a top-k window, pass 2 loads
+// content for the survivors. See scanCollections for the caps.
 func (d *Deps) searchChunks(ctx context.Context, userID string, collectionIDs []string, q string, k int) ([]chunkHit, error) {
 	target, err := d.pickEmbedModel(ctx)
 	if err != nil {
@@ -343,9 +576,12 @@ func (d *Deps) searchChunks(ctx context.Context, userID string, collectionIDs []
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.loadChunks(ctx, userID, collectionIDs)
+	hits, err := d.scanCollections(ctx, userID, collectionIDs, qvecs[0], k, maxScanChunks, maxScanBytes)
 	if err != nil {
 		return nil, err
 	}
-	return scanChunks(rows, qvecs[0], k), nil
+	if err := d.attachContents(ctx, userID, hits); err != nil {
+		return nil, err
+	}
+	return hits, nil
 }
