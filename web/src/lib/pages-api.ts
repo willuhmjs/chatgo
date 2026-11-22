@@ -152,7 +152,7 @@ export async function searchKb(collectionId: string, q: string, topK = 5): Promi
     `/api/kb/${encodeURIComponent(collectionId)}/search`,
     { q, top_k: topK },
   );
-  return listOf<Raw>(data, 'results', 'hits', 'chunks', 'data').map((h) => ({
+  return listOf<Raw>(data, 'results', 'hits', 'chunks', 'items', 'data').map((h) => ({
     file_name: firstStr(h.file_name, h.filename, h.file, h.name),
     content: firstStr(h.content, h.chunk, h.text),
     score: firstNum(h.score, h.similarity, h._score),
