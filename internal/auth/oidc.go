@@ -10,16 +10,22 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/crypto/hkdf"
 	"golang.org/x/oauth2"
 
 	"chatgo/internal/config"
 	"chatgo/internal/store"
 )
+
+// oidcStateKeyInfo domain-separates the state-cookie HMAC key from every
+// other use of SESSION_SECRET (HKDF-SHA256, empty salt).
+const oidcStateKeyInfo = "chatgo:oidc-state/v1"
 
 // oidcFlow holds code-flow material for the single configured SSO provider.
 // BE-auth owns the flow (state+nonce cookie, exchange, claims mapping).
@@ -28,15 +34,24 @@ type oidcFlow struct {
 	secret []byte
 	oauth2 *oauth2.Config
 
+	// stateKey = HKDF-SHA256(secret, nil, oidcStateKeyInfo); never the raw
+	// secret, so this HMAC cannot be replayed against other secret users.
+	stateKey []byte
+
 	mu    sync.Mutex
 	prov  *oidc.Provider
 	verif *oidc.IDTokenVerifier
 }
 
-func newOIDCFlow(cfg *config.Config, secret []byte) *oidcFlow {
+func newOIDCFlow(cfg *config.Config, secret []byte) (*oidcFlow, error) {
+	stateKey := make([]byte, 32)
+	if _, err := hkdf.New(sha256.New, secret, nil, []byte(oidcStateKeyInfo)).Read(stateKey); err != nil {
+		return nil, fmt.Errorf("auth: derive oidc state key: %w", err)
+	}
 	return &oidcFlow{
-		cfg:    cfg,
-		secret: secret,
+		cfg:      cfg,
+		secret:   secret,
+		stateKey: stateKey,
 		oauth2: &oauth2.Config{
 			ClientID:     cfg.OIDC.ClientID,
 			ClientSecret: cfg.OIDC.ClientSecret,
@@ -44,16 +59,19 @@ func newOIDCFlow(cfg *config.Config, secret []byte) *oidcFlow {
 			// RedirectURL is computed per request (config may omit PUBLIC_URL).
 			Scopes: []string{"openid", "email", "profile"},
 		},
-	}
+	}, nil
 }
 
-// stateCookie carries state+nonce between login and callback, keyed with an
-// HMAC of SESSION_SECRET so callbacks cannot be forged or replayed cross-flow.
+// stateCookie carries state+nonce+PKCE verifier between login and callback,
+// keyed with a derived HMAC of SESSION_SECRET so callbacks cannot be forged
+// or replayed cross-flow. The embedded issue timestamp is enforced
+// server-side (a browser could keep the cookie past its Max-Age).
 const (
-	stateCookieName    = "chatgo_oidc_state"
-	stateCookiePath    = "/api/auth/oidc"
-	stateCookieMaxAge  = 600 * time.Second
-	oidcStateCookieMax = 3 // parts: state.nonce.hmac
+	stateCookieName   = "chatgo_oidc_state"
+	stateCookiePath   = "/api/auth/oidc"
+	stateCookieMaxAge = 600 * time.Second
+	// parts: state.nonce.pkce.iat.hmacHex
+	oidcStateCookieMax = 5
 )
 
 // oidcClaims is the id_token claim subset we consume. email_verified uses the
@@ -106,7 +124,9 @@ func (f *oidcFlow) redirectURL(r *http.Request) string {
 }
 
 // OIDCLogin starts the authorization-code flow: GET /api/auth/oidc/login →302.
-// Failures redirect to /login?error=… — never a token in the URL.
+// PKCE (S256) protects the code even if the browser leaks it; the verifier
+// rides along in the HMAC'd state cookie. Failures redirect to /login?error=…
+// — never a token in the URL.
 func (a *Auth) OIDCLogin(w http.ResponseWriter, r *http.Request) {
 	if a.oidc == nil {
 		redirectLoginError(w, r, "oidc_disabled")
@@ -130,16 +150,25 @@ func (a *Auth) OIDCLogin(w http.ResponseWriter, r *http.Request) {
 		redirectLoginError(w, r, "oidc_unavailable")
 		return
 	}
-	f.setStateCookie(w, state, nonce)
+	// base64url(32B): 43 chars, inside PKCE's 43-128 char unreserved set.
+	verifier, err := NewToken()
+	if err != nil {
+		slog.Error("auth: oidc pkce gen failed", "err", err)
+		redirectLoginError(w, r, "oidc_unavailable")
+		return
+	}
+	f.setStateCookie(w, r, state, nonce, verifier)
 	url := f.configFor(r).AuthCodeURL(state,
 		oauth2.SetAuthURLParam("nonce", nonce),
+		oauth2.S256ChallengeOption(verifier),
 	)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// OIDCCallback completes the flow: verify state+nonce, exchange the code,
-// verify id_token (signature via oidc verifier; nonce by hand), provision or
-// link the user per Registration, then issue the session cookie and 302 to /.
+// OIDCCallback completes the flow: verify state+nonce, exchange the code
+// (with the stored PKCE verifier), verify id_token (signature via oidc
+// verifier; nonce by hand), provision or link the user per Registration,
+// then issue the session cookie and 302 to /.
 func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if a.oidc == nil {
 		redirectLoginError(w, r, "oidc_disabled")
@@ -158,20 +187,24 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		redirectLoginError(w, r, "oidc_state_expired")
 		return
 	}
-	wantState, nonce, ok := f.parseStateCookie(c.Value)
-	f.clearStateCookie(w)
-	if !ok || !hmac.Equal([]byte(wantState), []byte(state)) {
+	wantState, nonce, verifier, ok := f.parseStateCookie(c.Value)
+	f.clearStateCookie(w, r)
+	if !ok {
+		redirectLoginError(w, r, "oidc_state_expired")
+		return
+	}
+	if !hmac.Equal([]byte(wantState), []byte(state)) {
 		redirectLoginError(w, r, "oidc_state_mismatch")
 		return
 	}
 
-	_, verifier, err := f.providerFor(ctx)
+	_, verifierSet, err := f.providerFor(ctx)
 	if err != nil {
 		slog.Error("auth: oidc discovery failed at callback", "err", err)
 		redirectLoginError(w, r, "oidc_unavailable")
 		return
 	}
-	tok, err := f.configFor(r).Exchange(ctx, code)
+	tok, err := f.configFor(r).Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		slog.Warn("auth: oidc code exchange failed", "err", err)
 		redirectLoginError(w, r, "oidc_exchange_failed")
@@ -182,7 +215,7 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		redirectLoginError(w, r, "oidc_no_id_token")
 		return
 	}
-	idTok, err := verifier.Verify(ctx, rawID) // signature, iss, aud, expiry
+	idTok, err := verifierSet.Verify(ctx, rawID) // signature, iss, aud, expiry
 	if err != nil {
 		slog.Warn("auth: oidc id_token verification failed", "err", err)
 		redirectLoginError(w, r, "oidc_id_token_invalid")
@@ -199,7 +232,9 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := strings.ToLower(strings.TrimSpace(claims.Email))
-	if email == "" || !claims.EmailVerified {
+	if email == "" || !validEmail(email) || !claims.EmailVerified {
+		// validEmail also guards the name fallback below (IndexByte must
+		// find '@') and keeps junk subjects out of the users table.
 		oidcDeniedPage(w, "Your identity provider did not assert a verified email address, which this instance requires.")
 		return
 	}
@@ -215,13 +250,13 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := a.CreateSession(ctx, u.ID, r.UserAgent(), RequestIP(r))
+	sess, err := a.CreateSession(ctx, u.ID, r.UserAgent(), a.RequestIP(r))
 	if err != nil {
 		slog.Error("auth: oidc session create failed", "err", err)
 		redirectLoginError(w, r, "oidc_user_failed")
 		return
 	}
-	a.SetSessionCookie(w, sess.Token, time.Unix(sess.ExpiresAt, 0))
+	a.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -245,25 +280,33 @@ func (a *Auth) oidcUser(ctx context.Context, email string, claims oidcClaims) (*
 	default:
 		return nil, ErrRegistrationClosed
 	}
+	// ADMIN_EMAIL provisions its owner as admin deterministically (mirrors
+	// local.go); no first-wins race either way.
+	if a.Cfg.AdminEmail != "" && email == a.Cfg.AdminEmail {
+		role = store.RoleAdmin
+	}
 
 	name := claims.Name
 	if name == "" {
 		name = claims.PreferredUser
 	}
 	if name == "" {
-		name = email[:strings.IndexByte(email, '@')]
+		if at := strings.IndexByte(email, '@'); at > 0 {
+			name = email[:at]
+		} else {
+			name = email
+		}
 	}
 	if r := []rune(name); len(r) > 100 {
 		name = string(r[:100])
 	}
 
-	// Bootstrap: first-ever OIDC login becomes admin (mirrors local.go).
-	if n, err := a.Store.Users.Count(ctx); err == nil && n == 0 {
-		role = store.RoleAdmin
-	}
-
 	u = &store.User{Email: email, Name: name, Role: role, AvatarURL: claims.Picture}
-	if err := a.Store.Users.Insert(ctx, u); err != nil {
+	if err := a.insertUserBootstrap(ctx, u); err != nil {
+		if errors.Is(err, errEmailTaken) {
+			// Lost a registration race for the same address: link the winner.
+			return a.Store.Users.GetByEmail(ctx, email)
+		}
 		return nil, err
 	}
 	return u, nil
@@ -271,19 +314,19 @@ func (a *Auth) oidcUser(ctx context.Context, email string, claims oidcClaims) (*
 
 // --- state cookie -----------------------------------------------------------
 
-func (f *oidcFlow) setStateCookie(w http.ResponseWriter, state, nonce string) {
+func (f *oidcFlow) setStateCookie(w http.ResponseWriter, r *http.Request, state, nonce, pkce string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
-		Value:    f.stateCookieValue(state, nonce),
+		Value:    f.stateCookieValue(state, nonce, pkce, time.Now().Unix()),
 		Path:     stateCookiePath,
 		MaxAge:   int(stateCookieMaxAge / time.Second),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   f.cfg.SessionCookieSecure(),
+		Secure:   cookieSecure(f.cfg, r),
 	})
 }
 
-func (f *oidcFlow) clearStateCookie(w http.ResponseWriter) {
+func (f *oidcFlow) clearStateCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
 		Value:    "",
@@ -291,32 +334,39 @@ func (f *oidcFlow) clearStateCookie(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   f.cfg.SessionCookieSecure(),
+		Secure:   cookieSecure(f.cfg, r),
 	})
 }
 
-// stateCookieValue: tokens are base64url (never contain "."), so the plain
-// 3-part value state.nonce.hmacHex is unambiguous to split.
-func (f *oidcFlow) stateCookieValue(state, nonce string) string {
-	return state + "." + nonce + "." + f.stateHMAC(state, nonce)
+// stateCookieValue: tokens are base64url / decimal (never contain "."), so
+// the plain 5-part value state.nonce.pkce.iat.hmacHex is unambiguous to split.
+func (f *oidcFlow) stateCookieValue(state, nonce, pkce string, iat int64) string {
+	payload := state + "." + nonce + "." + pkce + "." + strconv.FormatInt(iat, 10)
+	return payload + "." + f.stateHMAC(payload)
 }
 
-func (f *oidcFlow) parseStateCookie(v string) (state, nonce string, ok bool) {
+func (f *oidcFlow) parseStateCookie(v string) (state, nonce, pkce string, ok bool) {
 	parts := strings.Split(v, ".")
 	if len(parts) != oidcStateCookieMax {
-		return "", "", false
+		return "", "", "", false
 	}
-	if !hmac.Equal([]byte(parts[2]), []byte(f.stateHMAC(parts[0], parts[1]))) {
-		return "", "", false
+	payload := strings.Join(parts[:len(parts)-1], ".")
+	if !hmac.Equal([]byte(parts[len(parts)-1]), []byte(f.stateHMAC(payload))) {
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	iat, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil || iat <= 0 {
+		return "", "", "", false
+	}
+	if age := time.Since(time.Unix(iat, 0)); age > stateCookieMaxAge || age < -stateCookieMaxAge {
+		return "", "", "", false // browser Max-Age is advisory; enforce server-side
+	}
+	return parts[0], parts[1], parts[2], true
 }
 
-func (f *oidcFlow) stateHMAC(state, nonce string) string {
-	mac := hmac.New(sha256.New, f.secret)
-	mac.Write([]byte(state))
-	mac.Write([]byte("."))
-	mac.Write([]byte(nonce))
+func (f *oidcFlow) stateHMAC(payload string) string {
+	mac := hmac.New(sha256.New, f.stateKey)
+	mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -328,7 +378,7 @@ func redirectLoginError(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/login?error="+code, http.StatusFound)
 }
 
-// oidcDeniedPage answers 403 with a static page (email missing/unverified).
+// oidcDeniedPage answers 403 with a static page (email missing/invalid/unverified).
 func oidcDeniedPage(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)

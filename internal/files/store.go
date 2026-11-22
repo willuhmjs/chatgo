@@ -80,9 +80,19 @@ type Service struct {
 	Store *store.Store
 }
 
-// New builds the files service.
+// New builds the files service. Boot sweep: <uuid>.part temp files can only
+// exist if a previous process died mid-upload (no row ever references them),
+// so they are deleted as garbage up front.
 func New(cfg *config.Config, st *store.Store) *Service {
-	return &Service{Cfg: cfg, Store: st}
+	s := &Service{Cfg: cfg, Store: st}
+	if cfg != nil {
+		if parts, err := filepath.Glob(filepath.Join(cfg.DataDir, filesSubdir, "*.part")); err == nil {
+			for _, p := range parts {
+				os.Remove(p)
+			}
+		}
+	}
+	return s
 }
 
 // Save validates (≤20MB, allowed mimes), writes and records a file row.
@@ -122,7 +132,7 @@ func (s *Service) Save(ctx context.Context, userID string, chatID *string, fh *m
 	}
 
 	dir := filepath.Join(s.Cfg.DataDir, filesSubdir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("files: mkdir %s: %w", dir, err)
 	}
 	id := uuid.NewString()
@@ -156,9 +166,10 @@ func (s *Service) Save(ctx context.Context, userID string, chatID *string, fh *m
 		return nil, fmt.Errorf("files: record %s: %w", id, err)
 	}
 
-	// Best-effort 512px thumbnail for png/jpeg (contract §files).
+	// Best-effort 512px thumbnail for png/jpeg (contract §files), generated
+	// asynchronously so the upload response never pays the decode cost.
 	if mime == "image/png" || mime == "image/jpeg" {
-		writeThumb(final, thumbPathFor(final))
+		queueThumb(final, thumbPathFor(final))
 	}
 
 	return &Meta{
@@ -174,7 +185,7 @@ func (s *Service) Save(ctx context.Context, userID string, chatID *string, fh *m
 // writeCapped writes head+rest to path (.part style: caller renames),
 // enforcing MaxUploadSize even if fh.Size lied. Returns bytes written.
 func writeCapped(path string, head []byte, rest io.Reader) (int64, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("files: create temp: %w", err)
 	}
@@ -311,10 +322,15 @@ func (s *Service) resolvePath(f *store.File) (string, error) {
 
 // DataURL renders the original bytes as data:<mime>;base64,… for vision
 // payloads (providers.ChatMessage.Images). Images only, ≤8MB originals.
-func (s *Service) DataURL(ctx context.Context, fileID string) (string, error) {
+// SECURITY: userID must own the file — foreign ids fail exactly like unknown
+// ones so callers cannot exfiltrate other users' images by guessing ids.
+func (s *Service) DataURL(ctx context.Context, userID, fileID string) (string, error) {
 	f, err := s.Store.Files.Get(ctx, fileID)
 	if err != nil {
 		return "", err
+	}
+	if f.UserID != userID {
+		return "", fmt.Errorf("files: file %s not owned by caller", fileID)
 	}
 	if !strings.HasPrefix(f.Mime, "image/") {
 		return "", fmt.Errorf("files: %s is %s, not an image", fileID, f.Mime)

@@ -41,8 +41,9 @@ func (s *Service) startTitle(ctx context.Context, chat *store.Chat, firstExchang
 	}
 	res := make(chan string, 1)
 	start := time.Now()
-	tctx := fireCtx(ctx)
+	tctx, cancel := fireCtx(ctx)
 	go func() {
+		defer cancel() // the worker goroutine owns the detached context
 		defer close(res)
 		if title := s.generateTitle(tctx, userMsg.Content); title != "" {
 			res <- title

@@ -21,7 +21,7 @@ const (
 
 // touchInterval is the minimum spacing between last_active_at / last_seen_at
 // writes per user/session (contract §auth: throttled ≥60s).
-const touchInterval = 60
+const touchInterval = 60 * time.Second
 
 // resolve maps the request's session cookie to (user, session). Any invalid,
 // expired or unknown token yields (nil, nil) — anonymous, not an error.
@@ -127,30 +127,71 @@ func (a *Auth) touch(userID, sessionToken string) {
 }
 
 func (a *Auth) throttle(key string, fn func(now int64) error) {
-	now := time.Now().Unix()
+	now := time.Now()
 	if v, ok := a.lastTouch.Load(key); ok {
-		if last, isInt := v.(int64); isInt && now-last < touchInterval {
+		if last, isTime := v.(time.Time); isTime && now.Sub(last) < touchInterval {
 			return
 		}
 	}
 	a.lastTouch.Store(key, now)
-	_ = fn(now)
+	_ = fn(now.Unix())
 }
 
-// RequestIP extracts the caller IP for rate limiting and session records. It
-// prefers the first X-Forwarded-For hop (the app is expected behind a proxy;
-// see SECURITY.md), falling back to the transport peer address.
-func RequestIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first, _, _ := strings.Cut(xff, ","); strings.TrimSpace(first) != "" {
-			return strings.TrimSpace(first)
-		}
+// RequestIP extracts the caller IP for rate limiting and session records.
+//
+// A client must never get to pick its own throttle key, so forwarded headers
+// are consulted only when cfg.TrustedProxies says who may set them:
+// X-Forwarded-For is walked RIGHT to LEFT, hops inside a trusted CIDR are
+// skipped and the first untrusted hop wins — an edge proxy (e.g. Traefik)
+// appends the real peer, so the rightmost untrusted entry is the attacker's
+// own address at worst, never a forged leftmost hop. With no TrustedProxies
+// configured, every forwarded header is ignored and the transport peer
+// address is used.
+func (a *Auth) RequestIP(r *http.Request) string {
+	remote := remoteHost(r)
+	xff := r.Header.Get("X-Forwarded-For")
+	xri := r.Header.Get("X-Real-IP")
+	if xff == "" && xri == "" {
+		return remote
 	}
+	if len(a.trustedNets) == 0 {
+		return remote // nobody is trusted → forwarded headers are noise
+	}
+	if xff != "" {
+		hops := strings.Split(xff, ",")
+		for i := len(hops) - 1; i >= 0; i-- {
+			hop := strings.TrimSpace(hops[i])
+			if hop == "" {
+				continue
+			}
+			if ip := net.ParseIP(hop); ip == nil || !ipInNets(ip, a.trustedNets) {
+				return hop // first untrusted (or unparseable) hop from the right
+			}
+		}
+		return remote // every hop trusted → closest known address we have
+	}
+	hop := strings.TrimSpace(xri)
+	if ip := net.ParseIP(hop); ip == nil || !ipInNets(ip, a.trustedNets) {
+		return hop
+	}
+	return remote
+}
+
+func remoteHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func ipInNets(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeAuthError mirrors internal/api's error envelope; kept local because

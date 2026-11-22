@@ -8,6 +8,7 @@
   import * as api from '$lib/api';
   import { onMount } from 'svelte';
   import { renderMarkdown } from '$lib/extra/md';
+  import { safeHref } from '$lib/safe-url';
   import '$lib/extra/markdown.css';
   import { Sparkles } from 'lucide-svelte';
 
@@ -89,7 +90,7 @@
                 <ul class="mt-1 list-disc pl-5">
                   {#each m.sources as s (s.url)}
                     <li>
-                      <a href={s.url} target="_blank" rel="noopener noreferrer" class="underline"
+                      <a href={safeHref(s.url)} target="_blank" rel="noopener noreferrer" class="underline"
                         >{s.title || s.url}</a
                       >
                     </li>
@@ -107,11 +108,10 @@
   </main>
 
   <footer class="chrome shrink-0 px-6 pb-5 pt-2 text-center">
-    <a
-      href="#"
-      class="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs text-[var(--muted)] transition-colors hover:text-[var(--text)]"
+    <span
+      class="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs text-[var(--muted)]"
       style="background:var(--panel); border-color:var(--border)"
-      >made with <span style="color:var(--accent)" class="font-medium">ChatGo</span></a
+      >made with <span style="color:var(--accent)" class="font-medium">ChatGo</span></span
     >
   </footer>
 </div>

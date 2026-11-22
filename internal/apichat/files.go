@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -37,9 +38,13 @@ type fileDTO struct {
 func fileToDTO(f *store.File) fileDTO {
 	return fileDTO{
 		ID: f.ID, Name: f.Name, Mime: f.Mime, Size: f.Size, Kind: f.Kind,
-		URL: fmt.Sprintf("/files/%s/%s", f.ID, f.Name), CreatedAt: f.CreatedAt,
+		URL: "/files/" + f.ID + "/" + url.PathEscape(f.Name), CreatedAt: f.CreatedAt,
 	}
 }
+
+// uploadMaxMemory is what ParseMultipartForm keeps in RAM; the multipart part
+// itself spills to a temp file on disk (keeps one upload from pinning ~20MB).
+const uploadMaxMemory int64 = 1 << 20
 
 // handleFileUpload accepts one multipart "file" field (≤20MB, sniffed-mime
 // allowlist enforced by files.Service).
@@ -48,7 +53,11 @@ func (d *Deps) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseMultipartForm(files.MaxUploadSize); err != nil {
+	// CapJSONBody deliberately skips multipart, so cap the wire body here:
+	// 20MB file + 1MB slack for multipart framing/boundaries. Without this a
+	// client can stream an unbounded body that Parse would read.
+	r.Body = http.MaxBytesReader(w, r.Body, files.MaxUploadSize+(1<<20))
+	if err := r.ParseMultipartForm(uploadMaxMemory); err != nil {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "upload too large or malformed multipart body")
 		return
 	}
@@ -62,6 +71,10 @@ func (d *Deps) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	var chatID *string
 	if c := r.FormValue("chat_id"); c != "" {
+		if _, err := d.ownChat(r.Context(), u.ID, c); err != nil {
+			d.fail(w, r, err) // foreign/unknown chat → 404, no existence leak
+			return
+		}
 		chatID = &c
 	}
 	kind := store.FileKindArtifact

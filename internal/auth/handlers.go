@@ -36,7 +36,7 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	u, err := a.Login(r.Context(), RequestIP(r), body.Email, body.Password)
+	u, err := a.Login(r.Context(), a.RequestIP(r), body.Email, body.Password)
 	switch {
 	case errors.Is(err, ErrRateLimited):
 		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many login attempts, try again later")
@@ -62,14 +62,16 @@ func (a *Auth) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	u, err := a.Register(r.Context(), body.Email, body.Password, body.Name)
+	u, err := a.Register(r.Context(), a.RequestIP(r), body.Email, body.Password, body.Name)
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):
 		httpx.ErrorJSON(w, http.StatusForbidden, "registration is closed")
+	case errors.Is(err, ErrRateLimited):
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many registration attempts, try again later")
 	case errors.Is(err, ErrEmailExists):
 		httpx.ErrorJSON(w, http.StatusConflict, "an account with that email already exists")
 	case errors.Is(err, ErrWeakPassword):
-		httpx.ErrorJSON(w, http.StatusBadRequest, "password must be 8-72 characters")
+		httpx.ErrorJSON(w, http.StatusBadRequest, "password must be 8-72 bytes")
 	case errors.Is(err, ErrInvalidEmail):
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid email address")
 	case err != nil:
@@ -90,7 +92,7 @@ func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.ClearSessionCookie(w)
+	a.ClearSessionCookie(w, r)
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -120,11 +122,11 @@ func (a *Auth) HandleMe(w http.ResponseWriter, r *http.Request) {
 
 // finishLogin issues a session, sets the cookie and returns the user.
 func (a *Auth) finishLogin(w http.ResponseWriter, r *http.Request, u *store.User) {
-	sess, err := a.CreateSession(r.Context(), u.ID, r.UserAgent(), RequestIP(r))
+	sess, err := a.CreateSession(r.Context(), u.ID, r.UserAgent(), a.RequestIP(r))
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	a.SetSessionCookie(w, sess.Token, time.Unix(sess.ExpiresAt, 0))
+	a.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
 	httpx.JSON(w, http.StatusOK, viewUser(u))
 }

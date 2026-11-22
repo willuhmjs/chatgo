@@ -34,6 +34,7 @@ type fakeOIDC struct {
 	email         string
 	emailVerified bool
 	code          string
+	codeVerifier  string // captured from the token exchange (PKCE)
 }
 
 const (
@@ -71,6 +72,18 @@ func (f *fakeOIDC) setEmailVerified(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.emailVerified = v
+}
+
+func (f *fakeOIDC) setEmail(e string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.email = e
+}
+
+func (f *fakeOIDC) capturedVerifier() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.codeVerifier
 }
 
 func (f *fakeOIDC) snapshot() (string, string, bool, string) {
@@ -117,12 +130,18 @@ func (f *fakeOIDC) token(w http.ResponseWriter, r *http.Request) {
 	if _, s, ok := r.BasicAuth(); ok {
 		secret = s
 	}
+	// PKCE is mandatory against this fake: an exchange without a verifier is
+	// rejected exactly like a real RFC 7636 AS configured for S256.
+	verifier := r.FormValue("code_verifier")
 	if r.FormValue("grant_type") != "authorization_code" || r.FormValue("code") != wantCode ||
-		r.FormValue("client_id") != oidcClientID || secret != oidcClientSecret {
+		r.FormValue("client_id") != oidcClientID || secret != oidcClientSecret || verifier == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		writeJSON(w, map[string]string{"error": "invalid_grant"})
 		return
 	}
+	f.mu.Lock()
+	f.codeVerifier = verifier
+	f.mu.Unlock()
 	idTok, err := f.idToken(map[string]any{
 		"iss":            f.issuer(),
 		"aud":            []string{oidcClientID},
@@ -186,9 +205,9 @@ func newOIDCEnv(t *testing.T, fake *fakeOIDC, registration string) *testEnv {
 	})
 }
 
-// oidcStart hits GET /api/auth/oidc/login and returns (state, nonce) from the
-// 302 Location.
-func oidcStart(t *testing.T, env *testEnv, fake *fakeOIDC) (state, nonce string) {
+// oidcStart hits GET /api/auth/oidc/login and returns (state, nonce,
+// codeChallenge) from the 302 Location.
+func oidcStart(t *testing.T, env *testEnv, fake *fakeOIDC) (state, nonce, challenge string) {
 	t.Helper()
 	r := env.get("/api/auth/oidc/login")
 	if r.Status != http.StatusFound {
@@ -207,14 +226,18 @@ func oidcStart(t *testing.T, env *testEnv, fake *fakeOIDC) (state, nonce string)
 	if sc := loc.Query().Get("scope"); !strings.Contains(sc, "openid") {
 		t.Errorf("scope = %q", sc)
 	}
-	state, nonce = loc.Query().Get("state"), loc.Query().Get("nonce")
+	state, nonce, challenge = loc.Query().Get("state"), loc.Query().Get("nonce"), loc.Query().Get("code_challenge")
 	if state == "" || nonce == "" {
 		t.Fatalf("missing state/nonce in %q", r.Location)
+	}
+	// PKCE: S256 challenge must ride on the authorize request.
+	if challenge == "" || loc.Query().Get("code_challenge_method") != "S256" {
+		t.Errorf("missing PKCE challenge in %q (method %q)", r.Location, loc.Query().Get("code_challenge_method"))
 	}
 	if !strings.Contains(strings.Join(r.Header.Values("Set-Cookie"), "\n"), "chatgo_oidc_state") {
 		t.Errorf("state cookie not set: %v", r.Header.Values("Set-Cookie"))
 	}
-	return state, nonce
+	return state, nonce, challenge
 }
 
 func oidcCallback(env *testEnv, code, state string) *response {
@@ -228,7 +251,7 @@ func TestOIDCHappyPath(t *testing.T) {
 	env := newOIDCEnv(t, fake, "open")
 	env.seedFirstUser(t) // keep the provisioned user out of the first-user-admin bootstrap
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 
 	cb := oidcCallback(env, "good-code", state)
@@ -265,7 +288,7 @@ func TestOIDCAutoLinkExistingEmail(t *testing.T) {
 	env := newOIDCEnv(t, fake, "open")
 	env.seedUser(t, oidcUserEmail, store.RoleAdmin, "") // OIDC-only admin
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 	cb := oidcCallback(env, "good-code", state)
 	if cb.Status != http.StatusFound || cb.Location != "/" {
@@ -288,7 +311,7 @@ func TestOIDCPendingPerApprovePolicy(t *testing.T) {
 	env := newOIDCEnv(t, fake, "approve")
 	env.seedFirstUser(t)
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 	cb := oidcCallback(env, "good-code", state)
 	if cb.Status != http.StatusFound || cb.Location != "/" {
@@ -309,7 +332,7 @@ func TestOIDCRegistrationClosedRejectsUnknownEmail(t *testing.T) {
 	fake := newFakeOIDC(t)
 	env := newOIDCEnv(t, fake, "closed")
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 	cb := oidcCallback(env, "good-code", state)
 	if cb.Status != http.StatusFound || !strings.HasPrefix(cb.Location, "/login?error=") {
@@ -324,7 +347,7 @@ func TestOIDCStateMismatch(t *testing.T) {
 	fake := newFakeOIDC(t)
 	env := newOIDCEnv(t, fake, "open")
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 
 	cb := oidcCallback(env, "good-code", "x"+state) // tampered state
@@ -340,7 +363,7 @@ func TestOIDCNonceMismatch(t *testing.T) {
 	fake := newFakeOIDC(t)
 	env := newOIDCEnv(t, fake, "open")
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	_ = nonce
 	fake.setNonce("attacker-nonce") // id_token carries a nonce the flow never asked for
 
@@ -357,7 +380,7 @@ func TestOIDCUnverifiedEmailDenied403(t *testing.T) {
 	fake := newFakeOIDC(t)
 	env := newOIDCEnv(t, fake, "open")
 
-	state, nonce := oidcStart(t, env, fake)
+	state, nonce, _ := oidcStart(t, env, fake)
 	fake.setNonce(nonce)
 	fake.setEmailVerified(false)
 
@@ -370,5 +393,74 @@ func TestOIDCUnverifiedEmailDenied403(t *testing.T) {
 	}
 	if _, err := env.Store.Users.GetByEmail(context.Background(), oidcUserEmail); err != store.ErrNotFound {
 		t.Errorf("unverified email created a user (err %v)", err)
+	}
+}
+
+// TestOIDCPKCE pins the full code-challenge/verifier round-trip: the S256
+// challenge on /authorize must match the verifier carried through the state
+// cookie into the token exchange (the fake AS rejects exchanges without one).
+func TestOIDCPKCE(t *testing.T) {
+	fake := newFakeOIDC(t)
+	env := newOIDCEnv(t, fake, "open")
+	env.seedFirstUser(t)
+
+	state, nonce, challenge := oidcStart(t, env, fake)
+	fake.setNonce(nonce)
+
+	cb := oidcCallback(env, "good-code", state)
+	if cb.Status != http.StatusFound || cb.Location != "/" {
+		t.Fatalf("callback = %d %q (fake rejects exchanges without code_verifier)", cb.Status, cb.Location)
+	}
+
+	verifier := fake.capturedVerifier()
+	if verifier == "" {
+		t.Fatal("token exchange carried no code_verifier")
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	if got := base64.RawURLEncoding.EncodeToString(sum[:]); got != challenge {
+		t.Errorf("code_challenge = %q, want S256(verifier) = %q", challenge, got)
+	}
+}
+
+// A provider asserting a garbage "email" (no '@') must not panic the name
+// fallback nor create a user — 403, same as unverified.
+func TestOIDCInvalidEmailDenied403(t *testing.T) {
+	fake := newFakeOIDC(t)
+	env := newOIDCEnv(t, fake, "open")
+
+	state, nonce, _ := oidcStart(t, env, fake)
+	fake.setNonce(nonce)
+	fake.setEmail("not-an-email") // verified, but no '@' → used to panic
+
+	cb := oidcCallback(env, "good-code", state)
+	if cb.Status != http.StatusForbidden {
+		t.Fatalf("callback = %d, want 403 (body %q)", cb.Status, cb.Body)
+	}
+	if _, err := env.Store.Users.GetByEmail(context.Background(), "not-an-email"); err != store.ErrNotFound {
+		t.Errorf("invalid email created a user (err %v)", err)
+	}
+}
+
+// ADMIN_EMAIL is provisioned as admin on the OIDC path too, deterministically
+// even though other users already exist and the policy is "approve".
+func TestOIDCAdminEmailPromotion(t *testing.T) {
+	fake := newFakeOIDC(t)
+	env := newOIDCEnv(t, fake, "approve")
+	env.seedFirstUser(t) // existing non-admin: first-user bootstrap is NOT why this passes
+	env.Cfg.AdminEmail = oidcUserEmail
+
+	state, nonce, _ := oidcStart(t, env, fake)
+	fake.setNonce(nonce)
+	cb := oidcCallback(env, "good-code", state)
+	if cb.Status != http.StatusFound || cb.Location != "/" {
+		t.Fatalf("callback = %d %q", cb.Status, cb.Location)
+	}
+
+	u, err := env.Store.Users.GetByEmail(context.Background(), oidcUserEmail)
+	if err != nil {
+		t.Fatalf("admin email user missing: %v", err)
+	}
+	if u.Role != store.RoleAdmin {
+		t.Errorf("ADMIN_EMAIL user role = %q, want admin", u.Role)
 	}
 }

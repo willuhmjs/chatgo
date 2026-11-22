@@ -98,3 +98,44 @@ func TestAPI_ShareLifecycle(t *testing.T) {
 		t.Errorf("share on deleted chat: %d", rec.Code)
 	}
 }
+
+// The PUBLIC share payload must not hand anonymous readers file ids/names
+// embedded as image markdown; owner views keep the reference intact.
+func TestAPI_SharePublicStripsFileRefs(t *testing.T) {
+	s := apiTestStore(t)
+	d := &Deps{Store: s}
+	alice := apiTestUser(t, s, "shref@x.io")
+	c := apiTestChat(t, s, alice, "refs chat")
+
+	const fid = "6f9c1c2a-1111-2222-3333-444455556666"
+	content := "look ![pic.png](/files/" + fid + "/pic.png) done"
+	if err := s.Messages.Append(t.Context(), &store.Message{ChatID: c.ID, Role: "user",
+		Content: content}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := apiServe(t, d, alice, "POST", "/api/chats/"+c.ID+"/share", nil)
+	tok := decodeJSON[map[string]string](t, rec)["token"]
+
+	rec = apiServe(t, d, nil, "GET", "/api/share/"+tok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public get: %d", rec.Code)
+	}
+	raw := rec.Body.String()
+	if strings.Contains(raw, "/files/") || strings.Contains(raw, fid) {
+		t.Errorf("public share leaks file refs: %s", raw)
+	}
+	if !strings.Contains(raw, "[attachment]") {
+		t.Errorf("public share missing placeholder: %s", raw)
+	}
+	payload := decodeJSON[sharePayload](t, rec)
+	if len(payload.Messages) != 1 || payload.Messages[0].Content != "look [attachment] done" {
+		t.Errorf("stripped content wrong: %+v", payload.Messages)
+	}
+
+	// Owner view is untouched.
+	rec = apiServe(t, d, alice, "GET", "/api/chats/"+c.ID+"/messages", nil)
+	if !strings.Contains(rec.Body.String(), "/files/"+fid+"/pic.png") {
+		t.Errorf("owner view was stripped: %s", rec.Body.String())
+	}
+}

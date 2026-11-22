@@ -1,5 +1,8 @@
 name: CI
 
+# All third-party actions are pinned to full commit SHAs (supply-chain).
+# Tags recorded in comments; bump by resolving the new tag yourself:
+#   git ls-remote --tags --refs https://github.com/<org>/<action>
 on:
   push:
     branches: [main]
@@ -17,15 +20,17 @@ jobs:
   lint-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           # go.mod pins 1.27.x; toolchain directive resolves the exact patch.
           go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v4
+      # node-version: 22 — must match the Dockerfile web stage (node:22-alpine)
+      # so lockfile resolution/tests run against the same major we ship.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -33,7 +38,7 @@ jobs:
 
       - name: Install web deps (for svelte-check in lint/test)
         working-directory: web
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Lint
         run: make lint
@@ -44,6 +49,67 @@ jobs:
       # No svelte-check artifact upload job: `make lint`/`make test` run
       # svelte-check --threshold error inline and fail the build directly.
 
+  security:
+    name: security (govulncheck / gosec / npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck (Go deps against the official vuln DB)
+        # Blocking: reachability-based, no false positives in practice.
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: gosec (Go static security analysis)
+        # Installed ad-hoc instead of via an action to avoid pinning a
+        # community action. Threshold `high` is blocking: the current baseline
+        # is 0 high findings (12 medium findings are triaged-as-designed —
+        # dynamic cookie Secure flags, admin-controlled upload paths, bench
+        # mock server — revisit tightening to `medium` after they're nosed).
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -quiet -severity-threshold=high ./...
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm audit (web deps, high+ blocking)
+        working-directory: web
+        # --ignore-scripts so the audit job never runs dependency lifecycle
+        # scripts; npm audit resolves the tree from package-lock.json alone.
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+
+  # PR-only: prove the multi-stage image actually builds on every PR
+  # (the push job below never runs for pull_request events). No registry
+  # auth, no push.
+  docker-pr:
+    name: docker (build check, PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+
+      - name: Build (no push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        with:
+          context: .
+          push: false
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   docker:
     name: docker (ghcr)
     needs: lint-test
@@ -52,15 +118,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # id-token: write → keyless Sigstore identity for build attestations
+      # (provenance/SBOM below); only this push job gets OIDC minting.
+      id-token: write
     env:
       REGISTRY: ghcr.io
       IMAGE: ${{ github.repository_owner }}/chatgo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Compute image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           tags: |
@@ -69,16 +138,16 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           push: true
@@ -88,6 +157,10 @@ jobs:
             VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # SLSA provenance + SBOM attestations attached to the manifest list;
+          # verify with: docker buildx imagetools inspect <image> --format "{{ json .Provenance }}"
+          provenance: true
+          sbom: true
           # GHCR push auth is the job-scoped GITHUB_TOKEN above — no extra
           # secrets required. If you later mirror elsewhere, gate those
           # secrets with an environment protection rule.

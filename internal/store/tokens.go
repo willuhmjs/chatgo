@@ -13,8 +13,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// HashToken returns hex sha256(token) — the value stored in
-// api_tokens.key_hash and the lookup key for HashLookup.
+// HashToken returns hex sha256(token). Used for api_tokens.key_hash and for
+// the sessions.token column at rest (see sessions.go); it is the lookup key
+// for HashLookup.
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])

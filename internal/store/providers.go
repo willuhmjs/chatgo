@@ -32,7 +32,11 @@ func (r *ProvidersRepo) Insert(ctx context.Context, p *Provider) error {
 	return err
 }
 
-// Get fetches a provider with its APIKey decrypted in memory.
+// Get fetches a provider with its APIKey decrypted in memory. A row whose
+// sealed key cannot be decrypted is returned with APIKey == "" and
+// KeyUnreadable == true (no error), so a rotated SESSION_SECRET never bricks
+// the admin UI; chat callers that need the key treat the flag like "no key
+// configured" and send the upstream request unauthenticated.
 func (r *ProvidersRepo) Get(ctx context.Context, id string) (*Provider, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+providerCols+` FROM providers WHERE id = ?1`, id)
 	p, _, err := r.scanWithKey(row)
@@ -42,7 +46,8 @@ func (r *ProvidersRepo) Get(ctx context.Context, id string) (*Provider, error) {
 	return p, err
 }
 
-// List returns providers ordered by (sort, name); APIKeys decrypted.
+// List returns providers ordered by (sort, name); APIKeys decrypted, except
+// unreadable blobs (see Get). A single undecryptable row never fails the list.
 func (r *ProvidersRepo) List(ctx context.Context) ([]*Provider, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers ORDER BY sort ASC, name ASC`)
 	if err != nil {
@@ -82,6 +87,10 @@ func (r *ProvidersRepo) Delete(ctx context.Context, id string) error {
 }
 
 // scanWithKey reads a provider row and decrypts its api key into APIKey.
+// A failed decryption (auth-tag mismatch = SESSION_SECRET changed, or a
+// corrupted blob) does NOT fail the row: it comes back with APIKey == "" and
+// KeyUnreadable == true so admin List/Update/Delete keep working and the
+// broken row can be repaired or removed.
 func (r *ProvidersRepo) scanWithKey(row rowScanner) (*Provider, []byte, error) {
 	p := &Provider{}
 	var enc []byte
@@ -94,7 +103,9 @@ func (r *ProvidersRepo) scanWithKey(row rowScanner) (*Provider, []byte, error) {
 	if len(enc) > 0 {
 		plain, err := storeKey(r.key).decrypt(enc)
 		if err != nil {
-			return nil, enc, err
+			p.APIKey = ""
+			p.KeyUnreadable = true
+			return p, enc, nil
 		}
 		p.APIKey = plain
 	}

@@ -77,6 +77,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Hourly hygiene: purge expired sessions and stale throttle state;
+	// cancelling ctx (signal received) stops the janitor gracefully.
+	go authn.RunJanitor(ctx)
+
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("chatgo listening", "addr", cfg.Addr(), "version", cfg.Version)

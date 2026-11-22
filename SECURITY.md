@@ -23,10 +23,13 @@ that *is* a bug, report it privately.
 
 - **Password storage** — bcrypt, cost 12. Password hashes are never
   returned by any API or written to logs.
-- **Sessions** — opaque 32-byte random tokens, stored server-side in
-  SQLite (hashed), delivered as a `chatgo_session` cookie that is
-  `HttpOnly`, `SameSite=Lax`, and `Secure` whenever `PUBLIC_URL` is
-  https. Session tokens are HMAC-signed with `SESSION_SECRET`.
+- **Sessions** — 32-byte `crypto/rand` opaque tokens delivered as a
+  `chatgo_session` cookie that is `HttpOnly`, `SameSite=Lax`, and `Secure`
+  whenever the app is served over https (auto via `PUBLIC_URL`, or forced
+  with `SECURE_COOKIE`). The server stores only the **SHA-256 hash** of the
+  token in SQLite: a stolen database does not yield usable sessions. (The
+  short-lived OIDC state cookie *is* HMAC-signed with `SESSION_SECRET`;
+  session tokens themselves are plain random values, hashed at rest.)
 - **OIDC** — full Authorization Code flow with `state` **and** `nonce`
   (validated against a short-lived cookie / ID-token claim), discovery via
   TLS. No implicit flow, no token in URL fragments.
@@ -56,6 +59,26 @@ that *is* a bug, report it privately.
 
 ## Scope notes / known limitations (v1)
 
+These are design boundaries, not bugs — weigh them before deploying:
+
+- **OIDC account linking is email-keyed.** An SSO login is matched to an
+  existing local account by verified email, so it trusts the IdP's email
+  hygiene: if your IdP lets users self-register or self-verify addresses,
+  whoever controls that mailbox controls the account. Binding by stable
+  `sub` instead of email is planned; until then run a trusted IdP (Authelia
+  with an admin-managed user db) or `REGISTRATION=closed`.
+- **No password reset, by design.** For local accounts there is no reset
+  flow — identity lifecycle belongs to your SSO. An admin can reset a
+  local password from the admin UI; with SSO-only, nothing to reset.
+- **No per-user model ACL.** Once a user is approved they can use *every*
+  enabled provider/model. Provider API keys stay hidden, but budget/ability
+  is all-or-nothing per instance. Run separate instances if you need tiers.
+- **Share links are bearer-equivalent.** `/s/<token>` carries no session
+  and no expiry by default — anyone with the URL can read the chat. Tokens
+  are redacted from server logs, and shared views **strip file
+  attachments** (images/files are not served over the public share
+  endpoints), but text + images already inlined in messages are visible.
+  Revoke by deleting the link.
 - Single-node SQLite deployment: no horizontal-scaling session store; a
   compromised `SESSION_SECRET` equals full compromise (sessions *and*
   stored provider keys). Treat it like a TLS private key.
@@ -68,9 +91,18 @@ that *is* a bug, report it privately.
 
 ## Hardening checklist for operators
 
-- Run behind TLS (k8s manifests use Traefik + https-redirect middleware).
+- Run behind TLS (k8s manifests use Traefik + https-redirect + HSTS
+  middlewares, plus edge rate limits on `/api/auth` and share endpoints —
+  see `deploy/middleware.yaml`).
 - Set a unique `SESSION_SECRET` (`openssl rand -hex 32`) per deployment.
-- Prefer `REGISTRATION=approve` or `closed` unless you want the world in.
+- If behind a reverse proxy, set `TRUSTED_PROXIES` to *only* the proxy's
+  CIDR — otherwise login rate limits and client-IP logging can be spoofed
+  via `X-Forwarded-For`.
+- Prefer `REGISTRATION=approve` or `closed` unless you want the world in;
+  prefer SSO over local passwords.
 - Set `PUBLIC_URL` so cookies get the `Secure` flag.
-- Leave `TRUSTED_URL_NETS` empty unless you truly host providers in RFC1918.
-- Respect the k8s memory limit (128 Mi) — it is also a DoS blast-radius cap.
+- Leave `TRUSTED_URL_NETS` empty unless you truly host providers in RFC1918;
+  set `ALLOW_LOOPBACK=false` unless you run SearXNG on the same host
+  (the k8s manifests ship it `false`).
+- Respect the k8s memory limit (128 Mi) and `GOMEMLIMIT=100MiB` — they are
+  also a DoS blast-radius cap.

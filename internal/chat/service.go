@@ -9,6 +9,8 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"chatgo/internal/config"
@@ -25,6 +27,34 @@ import (
 var (
 	ErrChatNotFound    = errors.New("chat: chat not found")
 	ErrMessageNotFound = errors.New("chat: message not found")
+)
+
+// DoS guards for in-flight turns (contract §Chat service). Vars so tests can
+// shrink them; production keeps the values below.
+var (
+	// maxConcurrentPerUser caps simultaneous streaming turns one user may
+	// have in flight; over-limit sends are rejected with
+	// errMsgTooManyConcurrent.
+	maxConcurrentPerUser = 3
+	// maxConcurrentGlobal caps simultaneous turns across the whole process
+	// (each turn holds a DB writer, an upstream conn and stream buffers).
+	maxConcurrentGlobal = 32
+)
+
+// Client-visible terminal error strings (SSE `error` payloads).
+const (
+	// errMsgTooManyConcurrent is surfaced to the client as an SSE `error`
+	// event (429-style: the stream starts and terminates immediately).
+	errMsgTooManyConcurrent = "too many concurrent requests"
+	// errMsgProviderDisabled surfaces when the chat's provider row has been
+	// disabled by an admin after the chat was created.
+	errMsgProviderDisabled = "model provider disabled"
+
+	// turnUpstreamTimeout bounds the whole upstream phase (connect + full
+	// stream) of one turn so a stalled provider cannot pin a turn slot,
+	// goroutine and connection forever on top of the client-side watchdogs
+	// in internal/providers.
+	turnUpstreamTimeout = 10 * time.Minute
 )
 
 // Event is an api-side SSE event (see contract §SSE protocol). Type is one of
@@ -97,11 +127,57 @@ type Service struct {
 	Store  *store.Store
 	Prov   providers.Client
 	Search *search.Service
+
+	// In-flight turn accounting for the DoS caps above: activeTotal is an
+	// atomic global tally, activeUsers is guarded by turnsMu.
+	turnsMu     sync.Mutex
+	activeUsers map[string]int
+	activeTotal atomic.Int64
 }
 
 // New builds the chat service.
 func New(cfg *config.Config, st *store.Store, prov providers.Client, srch *search.Service) *Service {
-	return &Service{Cfg: cfg, Store: st, Prov: prov, Search: srch}
+	return &Service{Cfg: cfg, Store: st, Prov: prov, Search: srch, activeUsers: map[string]int{}}
+}
+
+// acquireTurn reserves one in-flight turn slot for userID under the per-user
+// and global caps. On rejection nothing is held; on success the caller must
+// call the returned release func exactly once when the turn ends.
+func (s *Service) acquireTurn(userID string) (release func(), ok bool) {
+	// The global tally doubles as a transient reservation: a request that
+	// loses either race un-does its increment before any turn starts, so
+	// neither cap can be over-admitted — a brief over-count only ever causes
+	// an extra rejection, never more concurrency than allowed.
+	if s.activeTotal.Add(1) > int64(maxConcurrentGlobal) {
+		s.activeTotal.Add(-1)
+		return nil, false
+	}
+	s.turnsMu.Lock()
+	if s.activeUsers == nil { // tolerate a hand-built Service (tests/fakes)
+		s.activeUsers = map[string]int{}
+	}
+	if s.activeUsers[userID] >= maxConcurrentPerUser {
+		s.turnsMu.Unlock()
+		s.activeTotal.Add(-1)
+		return nil, false
+	}
+	s.activeUsers[userID]++
+	s.turnsMu.Unlock()
+
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			s.turnsMu.Lock()
+			if n := s.activeUsers[userID] - 1; n > 0 {
+				s.activeUsers[userID] = n
+			} else {
+				delete(s.activeUsers, userID)
+			}
+			s.turnsMu.Unlock()
+			s.activeTotal.Add(-1)
+		})
+	}
+	return release, true
 }
 
 // Send persists the user message, streams the assistant reply and returns a
@@ -111,7 +187,9 @@ func New(cfg *config.Config, st *store.Store, prov providers.Client, srch *searc
 // Pre-stream problems that must map to an HTTP status (chat not visible to
 // this user, bad regenerate anchor) are returned synchronously so the caller
 // can answer 404 before committing to an SSE stream; everything after that
-// arrives as an `error` Event.
+// arrives as an `error` Event — including the concurrency-cap rejection
+// below, which is surfaced as an SSE error event (429-style) carrying
+// errMsgTooManyConcurrent and terminating the stream immediately.
 //
 // CONTRACT-DEVIATION: SendOpts.Images carries data: URLs, but the
 // message_images table references file ids and no store repo method exists
@@ -123,9 +201,20 @@ func (s *Service) Send(ctx context.Context, userID, chatID string, userMsg provi
 		return nil, err
 	}
 
+	// DoS cap — checked BEFORE any mutation (a rejected regenerate must not
+	// delete the tail).
+	release, ok := s.acquireTurn(userID)
+	if !ok {
+		out := make(chan Event, 1)
+		out <- Event{Type: EventError, Data: ErrorData{Message: errMsgTooManyConcurrent}}
+		close(out)
+		return out, nil
+	}
+
 	// Regenerate: drop the tail BEFORE building the prompt; no new user row.
 	if opts.From != "" {
 		if err := s.Store.Messages.DeleteFrom(ctx, chatID, opts.From); err != nil {
+			release()
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, ErrMessageNotFound
 			}
@@ -134,7 +223,7 @@ func (s *Service) Send(ctx context.Context, userID, chatID string, userMsg provi
 	}
 
 	out := make(chan Event, 64)
-	go s.run(ctx, out, chat, userMsg, opts)
+	go s.run(ctx, out, chat, userMsg, opts, release)
 	return out, nil
 }
 
@@ -155,9 +244,11 @@ func (s *Service) loadChat(ctx context.Context, userID, chatID string) (*store.C
 }
 
 // run is the streaming goroutine: persist → meta → title/search → upstream →
-// persist assistant → done|error.
-func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, userMsg providers.ChatMessage, opts SendOpts) {
+// persist assistant → done|error. release returns the turn slot acquired by
+// Send and must be non-nil.
+func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, userMsg providers.ChatMessage, opts SendOpts, release func()) {
 	defer close(out)
+	defer release() // runs BEFORE close(out) (LIFO): a waiting next send sees the slot free
 	chatID := chat.ID
 	assistantID := uuid.NewString()
 
@@ -202,31 +293,34 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	contextLen := s.modelContextLen(ctx, chat)
 	msgs, compacted := assemblePrompt(system, summary, history, contextLen, userMsgID, opts.Images)
 
-	// Summarize fires async; it must never block the stream.
+	// Summarize fires async; it must never block the stream. maybeSummarize
+	// detaches its worker context itself (see fireCtx).
 	//nolint:contextcheck // fire-and-forget by design (contract §Chat service)
-	s.maybeSummarize(fireCtx(ctx), chatID, total, history, summary, compacted)
+	s.maybeSummarize(ctx, chatID, total, history, summary, compacted)
 
 	// 5. Web search → `sources` event + SearchCtx for the upstream call.
 	var sourcesJSON, searchCtx string
-	if opts.Search && s.Search != nil && s.Search.Enabled {
-		results, err := s.Search.Search(ctx, userMsg.Content, searchMaxResults)
-		if err != nil {
-			// Degrade gracefully: empty sources, no SearchCtx, keep streaming.
-			slog.Warn("chat: web search failed", "chat_id", chatID, "error", err)
-			results = nil
-		}
-		items := make([]SourceItem, 0, len(results))
-		for _, r := range results {
-			items = append(items, SourceItem{Title: r.Title, URL: r.URL})
-		}
-		if len(items) > 0 {
-			if b, err := json.Marshal(items); err == nil {
-				sourcesJSON = string(b)
+	if opts.Search && s.Search != nil {
+		results, ran, err := s.searchWeb(ctx, userMsg.Content)
+		if ran {
+			if err != nil {
+				// Degrade gracefully: empty sources, no SearchCtx, keep streaming.
+				slog.Warn("chat: web search failed", "chat_id", chatID, "error", err)
+				results = nil
 			}
-			searchCtx = search.ComposeContext(results)
-		}
-		if !emit(ctx, out, EventSources, SourcesData{Items: items}) {
-			return
+			items := make([]SourceItem, 0, len(results))
+			for _, r := range results {
+				items = append(items, SourceItem{Title: r.Title, URL: r.URL})
+			}
+			if len(items) > 0 {
+				if b, err := json.Marshal(items); err == nil {
+					sourcesJSON = string(b)
+				}
+				searchCtx = search.ComposeContext(results)
+			}
+			if !emit(ctx, out, EventSources, SourcesData{Items: items}) {
+				return
+			}
 		}
 	}
 
@@ -244,19 +338,34 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 			//nolint:contextcheck // fire-and-forget by design
 			go func() {
 				if res, ok := <-titleCh; ok && res != "" {
-					s.applyTitle(fireCtx(ctx), chatID, res)
+					tctx, cancel := fireCtx(ctx)
+					defer cancel()
+					s.applyTitle(tctx, chatID, res)
 				}
 			}()
 		}
 	}
 
-	// 7. Upstream call.
+	// 7. Upstream call. The provider row's enable flag is authoritative here
+	// (admins disable providers to stop all traffic immediately, even into
+	// pre-existing chats).
 	provRow, err := s.Store.Providers.Get(ctx, chat.ProviderID)
 	if err != nil {
 		s.fail(ctx, out, "chat: provider not configured for this chat", err)
 		return
 	}
-	chunks, err := s.Prov.StreamChat(ctx, providerFromRow(provRow), providers.StreamOpts{
+	if !provRow.Enabled {
+		slog.Warn("chat: provider disabled; refusing turn", "chat_id", chatID, "provider_id", chat.ProviderID)
+		emit(ctx, out, EventError, ErrorData{Message: errMsgProviderDisabled})
+		return
+	}
+
+	// Whole-turn deadline over the upstream phase (connect + stream): the
+	// providers-client watchdogs catch silent connections, this caps slow
+	// but not silent upstreams too.
+	uctx, cancelUpstream := context.WithTimeout(ctx, turnUpstreamTimeout)
+	defer cancelUpstream()
+	chunks, err := s.Prov.StreamChat(uctx, providerFromRow(provRow), providers.StreamOpts{
 		ProviderID: chat.ProviderID,
 		ModelID:    chat.ModelID,
 		Messages:   msgs,
@@ -278,8 +387,12 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 streamLoop:
 	for {
 		select {
-		case <-ctx.Done():
-			streamErr = "stream canceled"
+		case <-uctx.Done():
+			if ctx.Err() != nil {
+				streamErr = "stream canceled"
+			} else {
+				streamErr = "stream timed out"
+			}
 			break streamLoop
 		case c, ok := <-chunks:
 			if !ok {
@@ -307,7 +420,10 @@ streamLoop:
 	}
 
 	// 9. Persist the assistant message even if the client went away.
-	pctx := fireCtx(ctx)
+	// run IS the worker goroutine here, so owning cancel via defer is safe:
+	// it fires when run returns (right after the terminal event).
+	pctx, cancelPersist := fireCtx(ctx)
+	defer cancelPersist()
 	am := &store.Message{
 		ID:          assistantID,
 		ChatID:      chatID,
@@ -360,14 +476,46 @@ func emit(ctx context.Context, out chan<- Event, typ string, data any) bool {
 
 // fireCtx detaches from request cancellation (client disconnects must not
 // abort persistence/summaries) and bounds the work with its own deadline.
-func fireCtx(ctx context.Context) context.Context {
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backgroundTaskTimeout)
-	// cancel runs when the derived work returns or the deadline hits.
-	go func() {
-		<-pctx.Done()
-		cancel()
-	}()
-	return pctx
+// The CALLING worker goroutine owns the returned cancel and must defer it —
+// deliberately no internal `<-ctx.Done(); cancel()` watcher goroutine: those
+// each lived for the full 60s deadline per fire-and-forget task (goroutine
+// retention under load).
+func fireCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), backgroundTaskTimeout)
+}
+
+// settingSearchURL is the admin settings key the admin UI writes and
+// apimgr/admin.go reports as search_enabled.
+const settingSearchURL = "search_url"
+
+// searchWeb runs the turn's web search, resolving the SearXNG target in the
+// order the rest of the app already implies: cfg SEARXNG_URL (service
+// enabled) wins; when it is unset, the admin-configured "search_url" setting
+// is dialed via the same guarded machinery (per-request base override on
+// search.Service). ran=false means no target is configured at all, and the
+// caller then emits no `sources` event.
+func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Result, ran bool, err error) {
+	if s.Search.Enabled {
+		results, err := s.Search.Search(ctx, q, searchMaxResults)
+		return results, true, err
+	}
+	if s.Cfg != nil && strings.TrimSpace(s.Cfg.SearXNGURL) != "" {
+		return nil, false, nil // env set but service disabled — nothing to dial
+	}
+	v, err := s.Store.Settings.Get(ctx, settingSearchURL)
+	if err != nil {
+		slog.Warn("chat: read search_url setting failed", "error", err)
+		return nil, false, nil
+	}
+	target := ""
+	if v != nil {
+		target = strings.TrimSpace(*v)
+	}
+	if target == "" {
+		return nil, false, nil
+	}
+	results, err = s.Search.SearchURL(ctx, target, q, searchMaxResults)
+	return results, true, err
 }
 
 // chatParams decodes chats.params_json into upstream passthrough params.

@@ -265,17 +265,27 @@ func TestStreamChatRequestShapeVisionParamsAndPassthrough(t *testing.T) {
 	}
 
 	if len(got.Messages) != 3 {
-		t.Fatalf("messages = %d, want system + user + search-system", len(got.Messages))
+		t.Fatalf("messages = %d, want system + search-user + vision-user", len(got.Messages))
 	}
 	// msg0: system plain string
 	var s0 string
 	if err := json.Unmarshal(got.Messages[0].Content, &s0); err != nil || got.Messages[0].Role != "system" || s0 != "be nice" {
 		t.Errorf("system message not plain string: %s", got.Messages[0].Content)
 	}
-	// msg1: vision parts array
+	// SearchCtx is a USER turn (untrusted data must not carry system
+	// authority) inserted BEFORE the trailing live user message.
+	var sSearch string
+	search := got.Messages[1]
+	if err := json.Unmarshal(search.Content, &sSearch); search.Role != "user" || err != nil || sSearch != "SEARCH RESULTS HERE" {
+		t.Errorf("search user msg = %+v", search)
+	}
+	// msg2: live user turn stays last; vision parts array
 	var parts []map[string]any
-	if err := json.Unmarshal(got.Messages[1].Content, &parts); err != nil {
-		t.Fatalf("vision content not an array: %v (%s)", err, got.Messages[1].Content)
+	if err := json.Unmarshal(got.Messages[2].Content, &parts); err != nil {
+		t.Fatalf("vision content not an array: %v (%s)", err, got.Messages[2].Content)
+	}
+	if got.Messages[2].Role != "user" {
+		t.Errorf("live user turn not last: %+v", got.Messages[2])
 	}
 	if len(parts) != 3 {
 		t.Fatalf("parts = %d, want text + 2 images", len(parts))
@@ -289,12 +299,6 @@ func TestStreamChatRequestShapeVisionParamsAndPassthrough(t *testing.T) {
 		if p["type"] != "image_url" || iu["url"] != want {
 			t.Errorf("part%d = %v, want image_url %s", i+1, p, want)
 		}
-	}
-	// SearchCtx appended as trailing system message
-	var sLast string
-	last := got.Messages[2]
-	if err := json.Unmarshal(last.Content, &sLast); last.Role != "system" || err != nil || sLast != "SEARCH RESULTS HERE" {
-		t.Errorf("search system msg = %+v", last)
 	}
 }
 
@@ -374,6 +378,114 @@ func TestUpstreamErrorMessages(t *testing.T) {
 		if e.Status != st || e.Msg == "" {
 			t.Errorf("status %d → %+v", st, e)
 		}
+	}
+}
+
+// withStreamWatchdog shrinks the liveness watchdogs for one test.
+func withStreamWatchdog(t *testing.T, first, idle, tick time.Duration) {
+	t.Helper()
+	pf, pi, pt := streamFirstTokenTimeout, streamIdleTimeout, streamWatchdogInterval
+	streamFirstTokenTimeout, streamIdleTimeout, streamWatchdogInterval = first, idle, tick
+	t.Cleanup(func() {
+		streamFirstTokenTimeout, streamIdleTimeout, streamWatchdogInterval = pf, pi, pt
+	})
+}
+
+func TestStreamChatFirstTokenWatchdogKillsSilentStream(t *testing.T) {
+	// Headers arrive, then absolute silence: indistinguishable from a dead
+	// connection → the watchdog must close the stream.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	withStreamWatchdog(t, 150*time.Millisecond, time.Minute, 20*time.Millisecond)
+	start := time.Now()
+	chunks := collect(t, mustStream(t, srv.URL, StreamOpts{ModelID: "m"}))
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %d, want 0", len(chunks))
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("first-token watchdog took %v", d)
+	}
+}
+
+func TestStreamChatIdleWatchdogKillsStalledStream(t *testing.T) {
+	// One chunk, then silence longer than the idle cap → stream ends.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	withStreamWatchdog(t, time.Minute, 150*time.Millisecond, 20*time.Millisecond)
+	chunks := collect(t, mustStream(t, srv.URL, StreamOpts{ModelID: "m"}))
+	if len(chunks) != 1 || chunks[0].Content != "hi" {
+		t.Fatalf("chunks = %+v, want [hi]", chunks)
+	}
+}
+
+func TestStreamChatKeepalivesResetIdleWatchdog(t *testing.T) {
+	// SSE comment pings are bytes too: a chatty-but-heartbeating upstream must
+	// NOT be killed by the idle watchdog (it would also die to the
+	// first-token cap if bytes did not count as liveness).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for i := 0; i < 12; i++ {
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			fl.Flush()
+			select {
+			case <-time.After(30 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late\"}}]}\n\n"+
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	withStreamWatchdog(t, 80*time.Millisecond, 80*time.Millisecond, 20*time.Millisecond)
+	chunks := collect(t, mustStream(t, srv.URL, StreamOpts{ModelID: "m"}))
+	var text, finish string
+	for _, c := range chunks {
+		text += c.Content
+		if c.FinishReason != "" {
+			finish = c.FinishReason
+		}
+	}
+	if text != "late" || finish != "stop" {
+		t.Fatalf("chunks = %+v, want late…stop", chunks)
+	}
+}
+
+func TestResponseHeaderTimeoutBoundsSlowUpstream(t *testing.T) {
+	old := responseHeaderTimeout
+	responseHeaderTimeout = 100 * time.Millisecond
+	defer func() { responseHeaderTimeout = old }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(3 * time.Second):
+			fmt.Fprint(w, `{"data":[]}`)
+		case <-r.Context().Done(): // client hung up; stop the handler
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := testClient().ListModels(ctx, srv.URL, "k"); err == nil {
+		t.Fatal("want header-timeout error against silent upstream")
 	}
 }
 

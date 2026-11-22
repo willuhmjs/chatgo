@@ -7,10 +7,8 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 > (Go + Svelte 5), not a fork; it shares the general "self-hosted chat UI"
 > idea only. Licensed under Apache-2.0 (see [LICENSE](LICENSE)).
 
-<!-- TODO(screenshot): capture once UI is final; files live in docs/ -->
-![Chat view](docs/screenshot-chat.png)
-![Admin providers](docs/screenshot-admin.png)
-![Command palette](docs/screenshot-palette.png)
+<!-- TODO(screenshot): capture once UI is final; files live in docs/
+     (docs/screenshot-chat.png / screenshot-admin.png / screenshot-palette.png — not committed yet) -->
 
 ## Features
 
@@ -38,6 +36,9 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 
 ## Quickstart (Docker)
 
+> Replace `OWNER` below with your GHCR org/username — CI publishes to
+> `ghcr.io/<repo-owner>/chatgo` (or build locally: `make docker` → `chatgo:local`).
+
 ```sh
 docker run -d --name chatgo \
   -p 8080:8080 \
@@ -47,13 +48,19 @@ docker run -d --name chatgo \
   ghcr.io/OWNER/chatgo:latest
 ```
 
-- The `/data` volume holds the SQLite DB and uploads — back it up.
-- `SESSION_SECRET` is **required** and keys both session signing and
-  at-rest encryption of provider API keys. Generate a fresh one
-  (`openssl rand -hex 32`) and keep it out of git; rotating it invalidates
-  sessions *and* makes stored provider keys unreadable.
+- The `/data` volume holds the SQLite DB and uploads — back it up. Prefer a
+  **named volume** (as above): the image ships `/data` owned by uid 65532 and
+  Docker initializes fresh named volumes from it. If you bind-mount a host
+  directory (`-v ./data:/data`) instead, make it writable by uid 65532 on the
+  host first (`chown -R 65532:65532 ./data`).
+- `SESSION_SECRET` is **required**: hex, **≥64 chars** (32 bytes); the app
+  refuses to boot with less. Generate a fresh one with `openssl rand -hex 32`
+  and keep it out of git; it keys session signing *and* at-rest encryption of
+  provider API keys, so rotating it invalidates sessions **and** makes stored
+  provider keys unreadable.
 - First registered user should be given the admin role (subsequent
-  signups land as `pending` under the default `REGISTRATION=approve`).
+  signups land as `pending` under the default `REGISTRATION=approve`), or set
+  `ADMIN_EMAIL` to pin admin to a specific account.
 
 Then open <http://localhost:8080>.
 
@@ -69,16 +76,19 @@ copy at [docs/CONFIG.md](docs/CONFIG.md)):
 | `PUBLIC_URL` | *(none)* | Externally reachable URL; enables Secure cookies + OIDC redirect base |
 | `DATA_DIR` | `./data` | Database + files root |
 | `DATABASE_PATH` | `$DATA_DIR/chatgo.db` | SQLite path (`:memory:` supported for tests) |
-| `SESSION_SECRET` | **required** | Hex secret (≥32 hex chars). Session signing + AES-256-GCM key for provider API keys. `openssl rand -hex 32` |
+| `SESSION_SECRET` | **required** | Hex secret (**≥64** hex chars = 32 bytes). Session signing + AES-256-GCM key for provider API keys. `openssl rand -hex 32` |
 | `OIDC_ISSUER` | *(none)* | OIDC discovery URL; unset = SSO disabled |
 | `OIDC_CLIENT_ID` | *(none)* | OIDC client id |
 | `OIDC_CLIENT_SECRET` | *(none)* | OIDC client secret |
 | `OIDC_DISPLAY_NAME` | `SSO` | Login-button label |
 | `REGISTRATION` | `approve` | `open` \| `approve` \| `closed` |
+| `ADMIN_EMAIL` | *(none)* | Accounts with this email are created/promoted as **admin** (deterministic bootstrap instead of first-signup-wins) |
+| `SECURE_COOKIE` | *(auto)* | `true`/`false` forces the session cookie `Secure` flag; unset = auto (Secure when `PUBLIC_URL` is https or the trusted proxy sends `X-Forwarded-Proto: https`) |
+| `TRUSTED_PROXIES` | *(none)* | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For`/`-Proto` may be believed (client IP for rate limits/logs). Set only when behind a proxy, e.g. `127.0.0.1/32` (host-network Traefik) or `10.42.0.0/16` (k3s pod CIDR) |
 | `TASK_MODEL` | *(none)* | `providerID:modelID` for chat titles/summaries |
 | `SEARXNG_URL` | *(none)* | SearXNG base URL; unset = web-search toggle hidden |
 | `TRUSTED_URL_NETS` | *(none)* | Comma-separated CIDRs allowed for provider/SearXNG URLs beyond the public internet |
-| `ALLOW_LOOPBACK` | `true` | Allow loopback for in-cluster SearXNG/providers |
+| `ALLOW_LOOPBACK` | `true` | Allow loopback for in-cluster SearXNG/providers (the k8s manifests in `deploy/` set `false`) |
 | `VERSION` | `dev` | Reported by `/healthz` (overridden at build via `-ldflags -X main.version=`) |
 
 ## Building from source

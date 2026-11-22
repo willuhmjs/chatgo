@@ -4,10 +4,31 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+
+	"golang.org/x/crypto/hkdf"
 )
+
+// providerKeyInfo domain-separates the provider API-key at-rest key inside
+// HKDF so it cannot collide with any other key derived from SESSION_SECRET.
+var providerKeyInfo = []byte("chatgo:providers-atrest/v1")
+
+// deriveKey derives the AES-256-GCM key that seals provider API keys at rest:
+// HKDF-SHA256(secret, salt=nil, info="chatgo:providers-atrest/v1").
+// Pre-1.0: blobs sealed under the old raw SHA-256 derivation no longer
+// decrypt; those rows surface with Provider.KeyUnreadable instead of failing
+// List/Get (see providers.go scanWithKey).
+func deriveKey(secret []byte) ([]byte, error) {
+	key := make([]byte, 32)
+	r := hkdf.New(sha256.New, secret, nil, providerKeyInfo)
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, fmt.Errorf("store: derive at-rest key: %w", err)
+	}
+	return key, nil
+}
 
 // encrypt seals plaintext with AES-256-GCM using the store's derived key.
 // Output layout: nonce(12) || ciphertext||tag.

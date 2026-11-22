@@ -108,7 +108,13 @@ md.use({
 
 // ---------- DOMPurify (strict) ----------
 
-const PURIFY_CFG: Parameters<typeof DOMPurify.sanitize>[1] = {
+/**
+ * Strict DOMPurify config — exported so FE-extra surfaces (lib/extra/md.ts)
+ * sanitize with the same policy as the chat renderer instead of DOMPurify
+ * defaults. FORBID_TAGS already covers svg/math/template/form/style plus the
+ * usual vectors.
+ */
+export const PURIFY_CFG: Parameters<typeof DOMPurify.sanitize>[1] = {
   USE_PROFILES: { html: true },
   ALLOW_DATA_ATTR: false,
   // class stays allowed (contract: "allow classes"); strip vectors + layout hijacks

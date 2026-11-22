@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -34,7 +35,8 @@ type fakeClient struct {
 	completeCalls  int
 	completeDelay  time.Duration
 	streamDelay    time.Duration
-	completePrompt []string // concatenated prompts, in call order
+	hold           <-chan struct{} // when non-nil, streams stall until it closes
+	completePrompt []string        // concatenated prompts, in call order
 }
 
 func (f *fakeClient) ListModels(context.Context, string, string) ([]providers.Model, error) {
@@ -45,6 +47,7 @@ func (f *fakeClient) StreamChat(ctx context.Context, p providers.Provider, opts 
 	f.mu.Lock()
 	f.streamCalls++
 	f.lastOpts = opts
+	hold := f.hold
 	f.mu.Unlock()
 	if f.streamErr != nil {
 		return nil, f.streamErr
@@ -52,6 +55,13 @@ func (f *fakeClient) StreamChat(ctx context.Context, p providers.Provider, opts 
 	out := make(chan providers.Chunk)
 	go func() {
 		defer close(out)
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				return
+			}
+		}
 		for _, c := range f.chunks {
 			if f.streamDelay > 0 {
 				select {
@@ -372,17 +382,19 @@ func TestCompactionSmallContext(t *testing.T) {
 }
 
 func TestSearchEventOrder(t *testing.T) {
-	// SearXNG stand-in; the scaffold's search stub fails without touching it,
-	// either way the ordering contract must hold: meta → sources → tokens → done.
+	// SearXNG stand-in on loopback; the service is built through search.New
+	// with AllowLoopback so the real SSRF-guarded transport is exercised.
+	// Ordering contract must hold: meta → sources → tokens → done.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"results":[{"title":"Go lang","url":"https://go.example","content":"snippet"}]}`)
+		fmt.Fprint(w, `{"results":[{"title":"Go lang","url":"https://go.example","content":"snippet"},`+
+			`{"title":"evil","url":"javascript:alert(1)","content":"x"}]}`)
 	}))
 	defer srv.Close()
 
 	fc := &fakeClient{chunks: append(sayChunks("a"), stopChunk(1, 1))}
 	svc, _, chatID := newEnv(t, fc, 4096, "")
-	svc.Search = &search.Service{BaseURL: srv.URL, HC: srv.Client(), Enabled: true}
+	svc.Search = search.New(&config.Config{SearXNGURL: srv.URL, AllowLoopback: true})
 
 	evs := collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "weather"}, SendOpts{Search: true}))
 
@@ -398,8 +410,18 @@ func TestSearchEventOrder(t *testing.T) {
 	if !(0 < sources[0] && sources[0] < tokens[0] && tokens[len(tokens)-1] < done[0]) {
 		t.Fatalf("event order violated: meta < sources < tokens < done (%v)", typesOf(evs))
 	}
-	if _, ok := evs[sources[0]].Data.(SourcesData); !ok {
+	sd, ok := evs[sources[0]].Data.(SourcesData)
+	if !ok {
 		t.Fatalf("sources payload = %T", evs[sources[0]].Data)
+	}
+	if len(sd.Items) != 1 || sd.Items[0].URL != "https://go.example" {
+		t.Fatalf("sources items = %+v, want only the http(s) hit", sd.Items)
+	}
+	// The upstream turn must carry the untrusted-data framing (it is sent as
+	// a USER turn by providers.buildMessages, never a system message).
+	opts, _, _, _ := fc.snapshot()
+	if !strings.Contains(opts.SearchCtx, "UNTRUSTED") || !strings.Contains(opts.SearchCtx, "https://go.example") {
+		t.Fatalf("SearchCtx lacks untrusted-data framing: %q", opts.SearchCtx)
 	}
 }
 
@@ -603,4 +625,217 @@ func mustSend(t *testing.T, svc *Service, userID, chatID string, um providers.Ch
 		t.Fatalf("Send: %v", err)
 	}
 	return ch
+}
+
+// ---------- concurrency caps ----------
+
+func wantRejected(t *testing.T, ch <-chan Event) {
+	t.Helper()
+	evs := collect(t, ch)
+	if len(evs) != 1 || evs[0].Type != EventError {
+		t.Fatalf("over-limit send = %v, want single error event", typesOf(evs))
+	}
+	if msg := evs[0].Data.(ErrorData).Message; msg != "too many concurrent requests" {
+		t.Fatalf("rejection message = %q", msg)
+	}
+}
+
+func TestSendPerUserConcurrencyCap(t *testing.T) {
+	hold := make(chan struct{})
+	fc := &fakeClient{
+		chunks: append(sayChunks("x"), stopChunk(1, 1)),
+		hold:   hold,
+	}
+	svc, _, chatID := newEnv(t, fc, 4096, "")
+
+	var inflight []<-chan Event
+	for i := 0; i < maxConcurrentPerUser; i++ {
+		inflight = append(inflight, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "go"}, SendOpts{}))
+	}
+	waitFor(t, func() bool {
+		_, calls, _, _ := fc.snapshot()
+		return calls >= maxConcurrentPerUser
+	})
+
+	// The (N+1)-th concurrent send from the same user is refused as an SSE
+	// error event without ever touching the upstream.
+	wantRejected(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "one too many"}, SendOpts{}))
+	_, calls, _, _ := fc.snapshot()
+	if calls != maxConcurrentPerUser {
+		t.Fatalf("rejected send reached upstream: %d stream calls", calls)
+	}
+
+	close(hold) // let the turns finish…
+	for _, ch := range inflight {
+		collect(t, ch)
+	}
+	// …and the slot frees up: the next send completes normally.
+	evs := collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "now?"}, SendOpts{}))
+	if last := typesOf(evs)[len(evs)-1]; last != EventDone {
+		t.Fatalf("post-cap send ended with %s (%v)", last, typesOf(evs))
+	}
+}
+
+func TestSendGlobalConcurrencyCap(t *testing.T) {
+	oldP, oldG := maxConcurrentPerUser, maxConcurrentGlobal
+	maxConcurrentPerUser, maxConcurrentGlobal = 2, 2
+	defer func() { maxConcurrentPerUser, maxConcurrentGlobal = oldP, oldG }()
+
+	hold := make(chan struct{})
+	fc := &fakeClient{chunks: append(sayChunks("x"), stopChunk(1, 1)), hold: hold}
+	svc, st, c1 := newEnv(t, fc, 4096, "")
+	if err := st.Chats.Create(context.Background(),
+		&store.Chat{ID: "c2", UserID: "u2", ProviderID: "p1", ModelID: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two users, one turn each: under both caps, both run.
+	ch1 := mustSend(t, svc, "u1", c1, providers.ChatMessage{Content: "a"}, SendOpts{})
+	ch2 := mustSend(t, svc, "u2", "c2", providers.ChatMessage{Content: "b"}, SendOpts{})
+	waitFor(t, func() bool {
+		_, calls, _, _ := fc.snapshot()
+		return calls >= 2
+	})
+
+	// Global cap reached — a turn from a user with per-user headroom still
+	// gets rejected (429-style).
+	wantRejected(t, mustSend(t, svc, "u1", c1, providers.ChatMessage{Content: "c"}, SendOpts{}))
+
+	close(hold)
+	collect(t, ch1)
+	collect(t, ch2)
+}
+
+// ---------- provider enable flag ----------
+
+func TestSendRejectsDisabledProvider(t *testing.T) {
+	fc := &fakeClient{chunks: append(sayChunks("x"), stopChunk(1, 1))}
+	svc, st, chatID := newEnv(t, fc, 4096, "")
+
+	row, err := st.Providers.Get(context.Background(), "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Enabled = false
+	if err := st.Providers.Update(context.Background(), row); err != nil {
+		t.Fatal(err)
+	}
+
+	evs := collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "hi"}, SendOpts{}))
+	types := typesOf(evs)
+	if types[0] != EventMeta || types[len(types)-1] != EventError {
+		t.Fatalf("events = %v, want meta…error", types)
+	}
+	if msg := evs[len(evs)-1].Data.(ErrorData).Message; msg != "model provider disabled" {
+		t.Fatalf("error message = %q, want %q", msg, "model provider disabled")
+	}
+	if _, calls, _, _ := fc.snapshot(); calls != 0 {
+		t.Fatalf("disabled provider reached upstream (%d calls)", calls)
+	}
+	// Same error-flow as other pre-upstream failures: user turn persists.
+	msgs, _ := st.Messages.List(context.Background(), chatID, 500, "")
+	if len(msgs) != 1 || msgs[0].Role != "user" {
+		t.Fatalf("messages = %+v, want only the user turn", msgs)
+	}
+}
+
+// ---------- search_url setting fallback ----------
+
+func TestSearchURLSettingUsedWhenCfgEmpty(t *testing.T) {
+	queries := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries <- r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"results":[{"title":"Doc","url":"https://doc.example","content":"s"}]}`)
+	}))
+	defer srv.Close()
+
+	fc := &fakeClient{chunks: append(sayChunks("ok"), stopChunk(1, 1))}
+	svc, st, chatID := newEnv(t, fc, 4096, "")
+	// cfg.SearXNGURL == "" → service disabled; guard config (AllowLoopback)
+	// exists so the setting-provided URL can still be dialled.
+	svc.Search = search.New(&config.Config{AllowLoopback: true})
+	if svc.Search.Enabled {
+		t.Fatal("service should be disabled with SEARXNG_URL unset")
+	}
+
+	// No setting configured: search toggle degrades with NO sources event.
+	evs := collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "q?"}, SendOpts{Search: true}))
+	if n := len(idxOfType(evs, EventSources)); n != 0 {
+		t.Fatalf("sources events without any target = %d (%v)", n, typesOf(evs))
+	}
+	select {
+	case q := <-queries:
+		t.Fatalf("search ran against %q with no target configured", q)
+	default:
+	}
+
+	// Admin writes search_url → the very next send must dial it.
+	if err := st.Settings.Set(context.Background(), "search_url", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	evs = collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "weather"}, SendOpts{Search: true}))
+	sources := idxOfType(evs, EventSources)
+	if len(sources) != 1 {
+		t.Fatalf("sources events = %d, want 1 (%v)", len(sources), typesOf(evs))
+	}
+	items := evs[sources[0]].Data.(SourcesData).Items
+	if len(items) != 1 || items[0].URL != "https://doc.example" {
+		t.Fatalf("sources items = %+v", items)
+	}
+	select {
+	case q := <-queries:
+		if q != "weather" {
+			t.Fatalf("setting-provided search got q=%q, want %q", q, "weather")
+		}
+	default:
+		t.Fatal("search_url setting was never dialled")
+	}
+	opts, _, _, _ := fc.snapshot()
+	if !strings.Contains(opts.SearchCtx, "UNTRUSTED") {
+		t.Fatalf("SearchCtx lacks untrusted framing: %q", opts.SearchCtx)
+	}
+}
+
+// ---------- fireCtx goroutine retention ----------
+
+func TestFireCtxSpawnsNoWatcherGoroutines(t *testing.T) {
+	// The old fireCtx spawned a `<-ctx.Done(); cancel()` watcher per call
+	// that lived the full 60s deadline (callers cannot cancel by design).
+	// fireCtx must now be pure: detach + deadline, cancel handed to the
+	// worker goroutine.
+	time.Sleep(50 * time.Millisecond) // let earlier tests' workers drain
+	base := runtime.NumGoroutine()
+	var cancels []context.CancelFunc
+	for range 200 {
+		_, cancel := fireCtx(context.Background())
+		cancels = append(cancels, cancel) // deliberately not cancelled below
+	}
+	if n := runtime.NumGoroutine(); n > base+5 {
+		t.Fatalf("fireCtx retained %d extra goroutines (watcher leak)", n-base)
+	}
+	for _, c := range cancels {
+		c()
+	}
+}
+
+func TestTurnWorkersReleaseGoroutines(t *testing.T) {
+	// End-to-end: turns with title + summarize + persist workers must not
+	// leave goroutines behind once the stream completes.
+	fc := &fakeClient{chunks: append(sayChunks("ok"), stopChunk(1, 1))}
+	svc, st, chatID := newEnv(t, fc, 300, "p1:m1") // tiny ctx → compaction → summarize
+	long := strings.Repeat("z", 300)
+	seed(t, st, chatID,
+		[2]string{"user", long + " 0"}, [2]string{"assistant", long + " 1"},
+		[2]string{"user", long + " 2"}, [2]string{"assistant", long + " 3"})
+
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+	for i := 0; i < 10; i++ {
+		collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: fmt.Sprintf("q %d", i)}, SendOpts{}))
+	}
+	time.Sleep(100 * time.Millisecond) // let async summarize/title workers exit
+	if n := runtime.NumGoroutine(); n > base+8 {
+		t.Fatalf("goroutine count grew by %d across 10 turns (retention leak?)", n-base)
+	}
 }

@@ -42,6 +42,9 @@ type Config struct {
 
 	TrustedURLNets []string // CIDRs allowed for provider/SearXNG URLs beyond public internet
 	AllowLoopback  bool     // for in-cluster SearXNG; default true
+	TrustedProxies []string // reverse-proxy CIDRs whose X-Forwarded-For may be believed
+	AdminEmail     string   // optional: accounts with this email are created as admin (bootstrap without first-wins race)
+	SecureCookie   string   // SECURE_COOKIE: "true"=always Secure, "false"=never, ""=auto (PUBLIC_URL https or X-Forwarded-Proto https)
 
 	Version string
 }
@@ -68,6 +71,9 @@ func Load() (*Config, error) {
 		SearXNGURL:     strings.TrimRight(os.Getenv("SEARXNG_URL"), "/"),
 		TrustedURLNets: splitList(os.Getenv("TRUSTED_URL_NETS")),
 		AllowLoopback:  getenvBool("ALLOW_LOOPBACK", true),
+		TrustedProxies: splitList(os.Getenv("TRUSTED_PROXIES")),
+		AdminEmail:     strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))),
+		SecureCookie:   strings.ToLower(strings.TrimSpace(os.Getenv("SECURE_COOKIE"))),
 		Version:        getenv("VERSION", "dev"),
 	}
 
@@ -83,8 +89,8 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: SESSION_SECRET must be hex: %w", err)
 	}
-	if len(raw) < 16 {
-		return nil, errors.New("config: SESSION_SECRET must decode to at least 16 bytes (32 hex chars)")
+	if len(raw) < 32 {
+		return nil, errors.New("config: SESSION_SECRET must decode to at least 32 bytes (64 hex chars)")
 	}
 	cfg.SessionSecret = secret
 
@@ -98,6 +104,16 @@ func Load() (*Config, error) {
 		if _, _, err := net.ParseCIDR(c); err != nil {
 			return nil, fmt.Errorf("config: TRUSTED_URL_NETS contains invalid CIDR %q: %w", c, err)
 		}
+	}
+	for _, c := range cfg.TrustedProxies {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			return nil, fmt.Errorf("config: TRUSTED_PROXIES contains invalid CIDR %q: %w", c, err)
+		}
+	}
+	switch cfg.SecureCookie {
+	case "", "true", "false":
+	default:
+		return nil, fmt.Errorf("config: SECURE_COOKIE must be true|false when set, got %q", cfg.SecureCookie)
 	}
 
 	return cfg, nil

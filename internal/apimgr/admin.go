@@ -252,6 +252,16 @@ func (h *adminH) handleMePassword(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Per-session 5/min gate: an authenticated attacker must not grind the
+	// current-password check for hash oracles or CPU.
+	gateKey := "mepass:" + u.ID
+	if s, sok := h.d.Auth.SessionFrom(r.Context()); sok {
+		gateKey = "mepass:" + s.Token
+	}
+	if !h.d.Auth.Allow(gateKey, auth.PasswordChangePerMin) {
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many password change attempts, try again later")
+		return
+	}
 	if u.PasswordHash == nil || *u.PasswordHash == "" {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "this account signs in through single sign-on")
 		return
@@ -264,15 +274,27 @@ func (h *adminH) handleMePassword(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !auth.VerifyPassword(*u.PasswordHash, body.CurrentPassword) {
+	// Cheap checks before any bcrypt runs (bytes, not characters: bcrypt
+	// truncates at 72 BYTES).
+	if len(body.NewPassword) < auth.MinPasswordLen || len(body.NewPassword) > auth.MaxPasswordLen {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "new password must be 8-72 bytes")
+		return
+	}
+	release, err := h.d.Auth.AcquireBcrypt(r.Context())
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	currentOK := auth.VerifyPassword(*u.PasswordHash, body.CurrentPassword)
+	var hash string
+	if currentOK {
+		hash, err = auth.HashPassword(body.NewPassword)
+	}
+	release()
+	if !currentOK {
 		httpx.ErrorJSON(w, http.StatusUnauthorized, "current password incorrect")
 		return
 	}
-	if len(body.NewPassword) < 8 || len(body.NewPassword) > 72 {
-		httpx.ErrorJSON(w, http.StatusBadRequest, "new password must be 8-72 characters")
-		return
-	}
-	hash, err := auth.HashPassword(body.NewPassword)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -285,12 +307,12 @@ func (h *adminH) handleMePassword(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	sess, err := h.d.Auth.CreateSession(r.Context(), u.ID, r.UserAgent(), auth.RequestIP(r))
+	sess, err := h.d.Auth.CreateSession(r.Context(), u.ID, r.UserAgent(), h.d.Auth.RequestIP(r))
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	h.d.Auth.SetSessionCookie(w, sess.Token, time.Unix(sess.ExpiresAt, 0))
+	h.d.Auth.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

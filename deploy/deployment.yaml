@@ -1,5 +1,9 @@
 # ChatGo single binary: static Go + embedded SPA, distroless nonroot.
 # Memory target < 128Mi (see README); limit doubles as the DoS blast-radius cap.
+#
+# GOMEMLIMIT=100MiB: without a soft heap cap the Go runtime happily grew to
+# 600 MB–1.2 GB RSS on Linux under load and hit the 128 Mi cgroup limit with an
+# OOMKill instead of GCing. 100 MiB leaves ~28 MiB headroom for stack/OS/mmap.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,7 +28,27 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532      # distroless "nonroot"
-        fsGroup: 65532        # so the PVC is writable by nonroot
+        fsGroup: 65532        # helps most CSI drivers — but hostPath/local-path
+                              # volumes IGNORE fsGroup, hence the initContainer below
+      # local-path provisions hostPaths owned by root:root; fsGroup never
+      # applies, so the app (uid 65532) could not create chatgo.db on a fresh
+      # PVC. One-shot busybox chown fixes ownership on every (re)mount.
+      initContainers:
+      - name: fix-data-perms
+        # digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec (busybox:1.37, recorded 2026-11-22)
+        image: busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+        command: ["sh", "-c", "mkdir -p /data && chown -R 65532:65532 /data && chmod 700 /data"]
+        securityContext:
+          runAsUser: 0            # chown needs root…
+          runAsNonRoot: false     # …overrides the pod-level runAsNonRoot
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 32Mi}
+        volumeMounts:
+        - name: data
+          mountPath: /data
       containers:
       - name: chatgo
         image: ghcr.io/OWNER/chatgo:latest   # CI pushes ghcr.io/<org>/chatgo — fix OWNER
@@ -35,11 +59,15 @@ spec:
         envFrom:
         - configMapRef: {name: chatgo-config}   # PUBLIC_URL, OIDC_ISSUER, OIDC_CLIENT_ID, …
         - secretRef: {name: chatgo-secrets}     # SESSION_SECRET, OIDC_CLIENT_SECRET
+        env:
+        - name: GOMEMLIMIT
+          value: "100MiB"     # soft heap cap < 128Mi limit; see header comment
         resources:
           requests:
             cpu: 20m
             memory: 64Mi
           limits:
+            cpu: "1"          # burst headroom; prevents CPU-fairness starvation
             memory: 128Mi
         readinessProbe:
           httpGet: {path: /healthz, port: http}

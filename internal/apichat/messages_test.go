@@ -3,8 +3,13 @@
 package apichat
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -171,7 +176,7 @@ func TestAPI_SendMessageSSE(t *testing.T) {
 	if rec := apiServe(t, d, alice, "POST", "/api/chats/ghost/messages", map[string]any{"content": "x"}); rec.Code != http.StatusNotFound {
 		t.Errorf("ghost chat: %d", rec.Code)
 	}
-	// images resolve through files.Service.DataURL (stubbed → 400, never a crash).
+	// Unknown file_id resolves through the ownership check → 400, never a crash.
 	dFiles := &Deps{Store: s, Files: files.New(&config.Config{DataDir: t.TempDir()}, s)}
 	if rec := apiServe(t, dFiles, alice, "POST", "/api/chats/"+c.ID+"/messages",
 		map[string]any{"content": "x", "images": []map[string]any{{"file_id": "f1"}}}); rec.Code != http.StatusBadRequest {
@@ -234,5 +239,97 @@ func TestAPI_RegenerateParamParse(t *testing.T) {
 	}
 	if f2.gotOpts.From != "" {
 		t.Errorf("From = %q, want empty", f2.gotOpts.From)
+	}
+}
+
+// saveTestPNG stores a tiny png owned by uid through the real files service.
+func saveTestPNG(t *testing.T, svc *files.Service, uid string) *files.Meta {
+	t.Helper()
+	var imgB bytes.Buffer
+	if err := png.Encode(&imgB, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "pic.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(imgB.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	form, err := multipart.NewReader(&body, mw.Boundary()).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { form.RemoveAll() })
+	meta, err := svc.Save(context.Background(), uid, nil, form.File["file"][0], store.FileKindImage)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	return meta
+}
+
+// Vision-input guards: ≤4 images per message, and file ids must belong to the
+// caller (foreign ids never reach the model nor the message markdown).
+func TestAPI_SendImageGuards(t *testing.T) {
+	s := apiTestStore(t)
+	dir := t.TempDir()
+	svc := files.New(&config.Config{DataDir: dir}, s)
+	d := &Deps{Store: s, Files: svc}
+	alice := apiTestUser(t, s, "ig@x.io")
+	bob := apiTestUser(t, s, "ig2@x.io")
+	c := apiTestChat(t, s, alice, "imgs")
+
+	f := &fakeStream{events: []chat.Event{{Type: "done", Data: map[string]any{"usage": nil}}}}
+	useFakeStream(t, f)
+
+	// >4 images → 400 before anything resolves.
+	many := make([]map[string]any, maxMessageImages+1)
+	for i := range many {
+		many[i] = map[string]any{"file_id": "f" + strconv.Itoa(i)}
+	}
+	if rec := apiServe(t, d, alice, "POST", "/api/chats/"+c.ID+"/messages",
+		map[string]any{"content": "x", "images": many}); rec.Code != http.StatusBadRequest {
+		t.Errorf("%d images: %d, want 400", len(many), rec.Code)
+	}
+	// Regenerate path enforces the same cap.
+	if rec := apiServe(t, d, alice, "POST", "/api/chats/"+c.ID+"/regenerate",
+		map[string]any{"content": "x", "images": many}); rec.Code != http.StatusBadRequest {
+		t.Errorf("regen %d images: %d, want 400", len(many), rec.Code)
+	}
+
+	// Foreign-owned file id → 400 (row exists, owner mismatch).
+	foreign := &store.File{ID: "foreign-img", UserID: bob.ID, Name: "victim.png",
+		Mime: "image/png", Size: 8, Path: "files/foreign-img.png", Kind: store.FileKindImage}
+	if err := s.Files.Insert(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	if rec := apiServe(t, d, alice, "POST", "/api/chats/"+c.ID+"/messages",
+		map[string]any{"content": "x", "images": []map[string]any{{"file_id": foreign.ID}}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("foreign file_id: %d, want 400", rec.Code)
+	}
+	if strings.Contains(f.gotMsg.Content, foreign.ID) || strings.Contains(f.gotMsg.Content, "victim") {
+		t.Error("foreign file id/name leaked into streamed message")
+	}
+
+	// Happy path: own file → data URL + markdown reference.
+	meta := saveTestPNG(t, svc, alice.ID)
+	f2 := &fakeStream{events: []chat.Event{{Type: "done", Data: map[string]any{"usage": nil}}}}
+	useFakeStream(t, f2)
+	rec := apiServe(t, d, alice, "POST", "/api/chats/"+c.ID+"/messages",
+		map[string]any{"content": "look", "images": []map[string]any{{"file_id": meta.ID}}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send with own image: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(f2.gotMsg.Images) != 1 || !strings.HasPrefix(f2.gotMsg.Images[0], "data:image/png;base64,") {
+		t.Errorf("vision payload images: %+v", f2.gotMsg.Images)
+	}
+	wantRef := "\n![pic.png](/files/" + meta.ID + "/pic.png)"
+	if !strings.HasSuffix(f2.gotMsg.Content, wantRef) {
+		t.Errorf("content = %q, want suffix %q", f2.gotMsg.Content, wantRef)
 	}
 }

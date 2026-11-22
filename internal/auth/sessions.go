@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"time"
 
+	"chatgo/internal/config"
 	"chatgo/internal/store"
 )
 
@@ -50,9 +52,31 @@ func (a *Auth) CreateSession(ctx context.Context, userID, userAgent, ip string) 
 	return s, nil
 }
 
+// cookieSecure decides the Secure flag for auth cookies (session + OIDC
+// state): the SECURE_COOKIE override wins, else PUBLIC_URL being https, else
+// this very request arriving over https per its first X-Forwarded-Proto hop
+// (works without PUBLIC_URL behind a TLS-terminating proxy).
+func cookieSecure(cfg *config.Config, r *http.Request) bool {
+	switch cfg.SecureCookie {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	if cfg.SessionCookieSecure() {
+		return true
+	}
+	if r != nil {
+		if proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ","); strings.EqualFold(strings.TrimSpace(proto), "https") {
+			return true
+		}
+	}
+	return false
+}
+
 // SetSessionCookie writes the chatgo_session cookie (HttpOnly, SameSite=Lax,
-// Secure per PUBLIC_URL — contract §Stack).
-func (a *Auth) SetSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+// Secure per SECURE_COOKIE / PUBLIC_URL / X-Forwarded-Proto — contract §Stack).
+func (a *Auth) SetSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    token,
@@ -60,12 +84,12 @@ func (a *Auth) SetSessionCookie(w http.ResponseWriter, token string, expiresAt t
 		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   a.Cfg.SessionCookieSecure(),
+		Secure:   cookieSecure(a.Cfg, r),
 	})
 }
 
 // ClearSessionCookie expires the cookie (logout).
-func (a *Auth) ClearSessionCookie(w http.ResponseWriter) {
+func (a *Auth) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
@@ -73,6 +97,6 @@ func (a *Auth) ClearSessionCookie(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   a.Cfg.SessionCookieSecure(),
+		Secure:   cookieSecure(a.Cfg, r),
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"chatgo/internal/config"
@@ -49,7 +50,7 @@ type StreamOpts struct {
 	ModelID    string
 	Messages   []ChatMessage
 	Params     map[string]any // temperature, top_p, … passthrough
-	SearchCtx  string         // extra system text; "" = none
+	SearchCtx  string         // untrusted web-search grounding text sent as a trailing USER turn; "" = none
 }
 
 // Usage reports token counts when the upstream sends them.
@@ -89,6 +90,25 @@ const (
 	maxCompletionBody = 32 << 20 // 32 MiB
 	maxErrBody        = 64 << 10 // just enough to drain for keep-alive
 	streamChanBuffer  = 32
+)
+
+// responseHeaderTimeout bounds the wait for response headers after the
+// connection is up (var so tests can shrink it). It deliberately does NOT
+// bound the streaming body: an SSE response's "body" is the answer itself.
+var responseHeaderTimeout = 15 * time.Second
+
+// Stream liveness watchdogs (vars so tests can shrink them). Tradeoff:
+// reasoning/streaming providers legitimately idle while "thinking", so the
+// between-chunk cap is generous (idleTimeout); it only has to be small enough
+// that a wedged TCP connection (no FIN, no data) releases its goroutine and
+// slot before the whole-turn deadline. Until the first body byte arrives the
+// tighter firstTokenTimeout applies — headers are already in, so a totally
+// silent upstream is indistinguishable from a dead one. Any inbound bytes
+// (including SSE comment keepalives) count as liveness.
+var (
+	streamFirstTokenTimeout = 60 * time.Second
+	streamIdleTimeout       = 120 * time.Second
+	streamWatchdogInterval  = time.Second
 )
 
 type openAIClient struct {
@@ -240,8 +260,10 @@ func (c *openAIClient) do(ctx context.Context, req *http.Request) (*http.Respons
 
 // pumpStream parses the SSE body into out and ALWAYS closes out. ctx
 // cancellation closes the response body (unblocking the read) and stops the
-// goroutine — no leaks. Mid-stream upstream failures surface as an early
-// channel close (Chunk has no error field; frozen).
+// goroutine — no leaks. A liveness watchdog (see streamFirstTokenTimeout /
+// streamIdleTimeout) does the same when the upstream goes silent. Mid-stream
+// upstream failures surface as an early channel close (Chunk has no error
+// field; frozen).
 func (c *openAIClient) pumpStream(ctx context.Context, resp *http.Response, hc *http.Client, out chan<- Chunk) {
 	defer close(out)
 	defer resp.Body.Close()
@@ -254,6 +276,34 @@ func (c *openAIClient) pumpStream(ctx context.Context, resp *http.Response, hc *
 	stopWatch := context.AfterFunc(ctx, func() { _ = resp.Body.Close() })
 	defer stopWatch()
 
+	// Liveness watchdog: every byte read from the body refreshes act; when
+	// silence outlasts the applicable window the watchdog closes the body,
+	// which unblocks the scanner read and ends the pump like a ctx cancel.
+	var act streamActivity
+	act.last.Store(time.Now().UnixNano()) // window starts now (headers already in)
+	// stopWD/ wdDone: the watchdog goroutine is stopped AND reaped before
+	// this pump returns, so no straggler ever reads the (test-shrinkable)
+	// timeout vars after the owning request has finished.
+	stopWD, wdDone := make(chan struct{}), make(chan struct{})
+	defer func() { close(stopWD); <-wdDone }()
+	go func() {
+		defer close(wdDone)
+		tick := time.NewTicker(streamWatchdogInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopWD:
+				return
+			case <-tick.C:
+				if time.Since(act.lastActivity()) > act.window() {
+					_ = resp.Body.Close()
+					return
+				}
+			}
+		}
+	}()
+	body := activityReader{Reader: resp.Body, act: &act}
+
 	send := func(ch Chunk) error {
 		select {
 		case out <- ch:
@@ -265,11 +315,11 @@ func (c *openAIClient) pumpStream(ctx context.Context, resp *http.Response, hc *
 
 	// Tolerate gateways that ignore stream:true and answer with one JSON body.
 	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "application/json") && !strings.Contains(ct, "event-stream") {
-		c.pumpJSONFallback(resp, send)
+		c.pumpJSONFallback(body, send)
 		return
 	}
 
-	err := parseSSE(resp.Body, func(ev sseEvent) error {
+	err := parseSSE(body, func(ev sseEvent) error {
 		if ev.Event == "error" { // provider-sent error frame; stop cleanly
 			return errStreamUpstreamEnd
 		}
@@ -314,8 +364,8 @@ func (c *openAIClient) pumpStream(ctx context.Context, resp *http.Response, hc *
 
 // pumpJSONFallback handles a non-SSE (application/json) answer to a stream
 // request by emitting it as a single Chunk.
-func (c *openAIClient) pumpJSONFallback(resp *http.Response, send func(Chunk) error) {
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCompletionBody))
+func (c *openAIClient) pumpJSONFallback(body io.Reader, send func(Chunk) error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxCompletionBody))
 	if err != nil {
 		return
 	}
@@ -338,6 +388,44 @@ func (c *openAIClient) pumpJSONFallback(resp *http.Response, send func(Chunk) er
 
 // errStreamUpstreamEnd stops parsing on a provider error frame.
 var errStreamUpstreamEnd = errors.New("providers: upstream signalled an error")
+
+// streamActivity tracks when the SSE body last produced bytes so the pump's
+// watchdog can tell "thinking hard" from "dead connection" (see the timeout
+// vars above). Only the pump goroutine writes; the watchdog only reads.
+type streamActivity struct {
+	got  atomic.Bool  // any body bytes seen since response headers
+	last atomic.Int64 // unix nanos of the last body read
+}
+
+func (a *streamActivity) touchAt(t time.Time) {
+	a.got.Store(true)
+	a.last.Store(t.UnixNano())
+}
+
+func (a *streamActivity) lastActivity() time.Time {
+	return time.Unix(0, a.last.Load())
+}
+
+func (a *streamActivity) window() time.Duration {
+	if a.got.Load() {
+		return streamIdleTimeout
+	}
+	return streamFirstTokenTimeout
+}
+
+// activityReader refreshes a streamActivity on every successful read.
+type activityReader struct {
+	io.Reader
+	act *streamActivity
+}
+
+func (r activityReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 {
+		r.act.touchAt(time.Now())
+	}
+	return n, err
+}
 
 // hopDialer holds the validated dialer for the CURRENT redirect hop;
 // CheckRedirect swaps it so every hop is re-validated (contract: no blind
@@ -372,6 +460,7 @@ func (c *openAIClient) httpClientFor(ctx context.Context, rawURL string) (*http.
 	base := http.Transport{
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   tlsTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 5 * time.Second,
 		MaxIdleConns:          4,
 	}
@@ -468,7 +557,9 @@ func buildBody(model string, msgs []ChatMessage, searchCtx string, stream bool, 
 // buildMessages maps ChatMessages to the wire form: plain "content" strings
 // (max gateway compat) unless Images are present, in which case the
 // OpenAI vision parts array is used. SearchCtx, when set, is appended as a
-// trailing system message.
+// trailing USER turn: it carries UNTRUSTED web-search data, and prompt-
+// injection authority research shows untrusted content must never be handed
+// to the model under a system role.
 func buildMessages(msgs []ChatMessage, searchCtx string) []any {
 	out := make([]any, 0, len(msgs)+1)
 	for _, m := range msgs {
@@ -490,7 +581,17 @@ func buildMessages(msgs []ChatMessage, searchCtx string) []any {
 		out = append(out, partsMessage{Role: role, Content: parts})
 	}
 	if searchCtx != "" {
-		out = append(out, plainMessage{Role: "system", Content: searchCtx})
+		// Insert just BEFORE the trailing live user turn (the message the
+		// model must answer) so the untrusted block reads as supporting
+		// material, not as the latest question.
+		searchMsg := plainMessage{Role: "user", Content: searchCtx}
+		at := len(out) - 1
+		if at < 1 {
+			at = len(out)
+		}
+		out = append(out, nil)
+		copy(out[at+1:], out[at:])
+		out[at] = searchMsg
 	}
 	return out
 }

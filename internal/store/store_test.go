@@ -14,7 +14,7 @@ func testStore(t *testing.T) *Store {
 	// other even though :memory: dbs with cache=shared share one process-wide
 	// instance.
 	s, err := Open("file:mem_"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared",
-		[]byte("0123456789abcdef0123456789abcdef"))
+		testSecret())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -187,13 +187,27 @@ func TestProviderKeyRoundTrip(t *testing.T) {
 	if err := s2.Providers.Insert(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	// copy sealed blob (still holding the sk-secret-123 ciphertext from the
-	// initial Insert) into the second store's row and read:
+	// A store with a different secret must NOT fail Get: the row comes back
+	// with an empty key and KeyUnreadable so the admin UI stays operable.
 	if _, err := s2.DB.Exec(`UPDATE providers SET api_key_enc = ?1 WHERE id = ?2`, raw, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s2.Providers.Get(ctx, p.ID); err == nil {
-		t.Error("expected decrypt failure with wrong secret")
+	// copy sealed blob (still holding the sk-secret-123 ciphertext from the
+	// initial Insert) into the second store's row and read:
+	bad, err := s2.Providers.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Get with rotated secret should not error, got %v", err)
+	}
+	if bad.APIKey != "" || !bad.KeyUnreadable {
+		t.Errorf("unreadable row = key %q flag %v, want \"\" + true", bad.APIKey, bad.KeyUnreadable)
+	}
+	// List keeps working and surfaces the flag; the broken row is deletable.
+	list, err := s2.Providers.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].KeyUnreadable {
+		t.Errorf("List = %+v, %v", list, err)
+	}
+	if err := s2.Providers.Delete(ctx, p.ID); err != nil {
+		t.Errorf("Delete unreadable row: %v", err)
 	}
 
 	if err := s.Providers.Delete(ctx, p.ID); err != nil {

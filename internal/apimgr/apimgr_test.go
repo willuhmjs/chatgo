@@ -183,7 +183,10 @@ func proxyReq(body, token string) *http.Request {
 func TestProxyNonStreamHappy(t *testing.T) {
 	d, fake := testDeps(t)
 	u := mustUser(t, d.Store, "p@example.com", store.RoleUser)
-	seedProvider(t, d, "openai")
+	p := seedProvider(t, d, "openai")
+	if err := d.Store.Models.ReplaceForProvider(context.Background(), p.ID, []store.ModelRow{{ModelID: "gpt-4o", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
 	key := mintToken(t, d, u)
 	fake.completeResp = "hello!"
 
@@ -268,7 +271,10 @@ func TestProxyModelResolution(t *testing.T) {
 func TestProxyStreamChunkShape(t *testing.T) {
 	d, fake := testDeps(t)
 	u := mustUser(t, d.Store, "s@example.com", store.RoleUser)
-	seedProvider(t, d, "openai")
+	p := seedProvider(t, d, "openai")
+	if err := d.Store.Models.ReplaceForProvider(context.Background(), p.ID, []store.ModelRow{{ModelID: "gpt-4o", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
 	key := mintToken(t, d, u)
 	fake.chunks = []providers.Chunk{
 		{Content: "Hel"}, {Content: "lo"},
@@ -340,7 +346,10 @@ func TestProxyStreamChunkShape(t *testing.T) {
 func TestProxyStreamUpstreamFail(t *testing.T) {
 	d, fake := testDeps(t)
 	u := mustUser(t, d.Store, "sf@example.com", store.RoleUser)
-	seedProvider(t, d, "openai")
+	p := seedProvider(t, d, "openai")
+	if err := d.Store.Models.ReplaceForProvider(context.Background(), p.ID, []store.ModelRow{{ModelID: "gpt-4o", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
 	key := mintToken(t, d, u)
 	fake.streamErr = fmt.Errorf("boom")
 

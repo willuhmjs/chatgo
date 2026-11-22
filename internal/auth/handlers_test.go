@@ -1,8 +1,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -237,5 +242,127 @@ func TestOIDCDisabledLoginRedirects(t *testing.T) {
 	r := env.get("/api/auth/oidc/login")
 	if r.Status != http.StatusFound || r.Location != "/login?error=oidc_disabled" {
 		t.Errorf("oidc login w/o config = %d %q", r.Status, r.Location)
+	}
+}
+
+// Registration runs bcrypt cost 12, so it must be throttled like login:
+// 5/min/IP bucket admits its burst, then everything gets a 429.
+func TestRegisterRateLimit(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Config) { cfg.Registration = "open" })
+	env.seedFirstUser(t) // not the first-user-admin bootstrap
+
+	for i := range 5 {
+		r := env.register(fmt.Sprintf("spam%d@example.com", i), "secretpass-1", "")
+		if r.Status != http.StatusOK {
+			t.Fatalf("register %d: status = %d, want 200 (body %q)", i+1, r.Status, r.Body)
+		}
+	}
+	r := env.register("spam99@example.com", "secretpass-1", "")
+	assertJSONErr(t, r, http.StatusTooManyRequests)
+}
+
+// Login/Register treat the bcrypt limit as 72 BYTES, not characters, and a
+// 73+ byte login attempt is a plain 401 (short-circuited, no panic, no 500).
+func TestOversizedPasswordRejected(t *testing.T) {
+	env := newTestEnv(t, func(cfg *config.Config) { cfg.Registration = "open" })
+	env.seedUser(t, "bytes@example.com", store.RoleUser, "correct-horse-9")
+
+	long := strings.Repeat("é", 40) // 120 bytes, 40 "characters"
+	res := env.login("bytes@example.com", long)
+	assertJSONErr(t, res, http.StatusUnauthorized)
+
+	weak := env.register("mb@example.com", long, "MB")
+	assertJSONErr(t, weak, http.StatusBadRequest)
+	if !strings.Contains(weak.errMsg(), "bytes") {
+		t.Errorf("weak-password error should speak in bytes, got %q", weak.errMsg())
+	}
+	// 64 multibyte chars = 128 bytes: rejected on registration…
+	ok80 := env.register("ok80@example.com", strings.Repeat("a", 73), "X")
+	assertJSONErr(t, ok80, http.StatusBadRequest)
+}
+
+// ADMIN_EMAIL pins the owner role deterministically: it becomes admin even
+// though another (non-admin) account already exists and the policy is
+// "approve" — no first-wins race needed.
+func TestAdminEmailPromotion(t *testing.T) {
+	env := newTestEnv(t, nil) // approve policy
+	env.seedFirstUser(t)      // existing account is NOT admin
+	env.Cfg.AdminEmail = "boss@example.com"
+
+	r := env.register("BOSS@example.com", "secretpass-1", "Boss") // case-folds to AdminEmail
+	// Role is admin (not pending), so HandleRegister logs the owner straight
+	// in (200 + session) instead of the 201 pending answer.
+	if r.Status != http.StatusOK {
+		t.Fatalf("register = %d %q", r.Status, r.Body)
+	}
+	u, err := env.Store.Users.GetByEmail(context.Background(), "boss@example.com")
+	if err != nil {
+		t.Fatalf("admin email user missing: %v", err)
+	}
+	if u.Role != store.RoleAdmin {
+		t.Errorf("ADMIN_EMAIL role = %q, want admin", u.Role)
+	}
+
+	// Everyone else still follows the policy.
+	env.register("pleb2@example.com", "secretpass-1", "Pleb")
+	pleb, err := env.Store.Users.GetByEmail(context.Background(), "pleb2@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pleb.Role != store.RolePending {
+		t.Errorf("non-admin-email role = %q, want pending", pleb.Role)
+	}
+}
+
+// Secure-flag matrix: SECURE_COOKIE override beats everything, else
+// PUBLIC_URL-https, else this request's X-Forwarded-Proto first hop.
+func TestSessionCookieSecureFlag(t *testing.T) {
+	cases := []struct {
+		name         string
+		secureCookie string
+		publicURL    string // "" keeps the http test-server URL
+		forwarded    string // X-Forwarded-Proto value
+		wantSecure   bool
+	}{
+		{"plain http", "", "", "", false},
+		{"xff https auto", "", "", "https", true},
+		{"xff first hop wins", "", "", "https, http", true},
+		{"xff http", "", "", "http", false},
+		{"override false beats xff", "false", "", "https", false},
+		{"override true beats plain http", "true", "", "", true},
+		{"public url https", "", "https://chat.example.com", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, func(cfg *config.Config) {
+				cfg.Registration = "open"
+				cfg.SecureCookie = tc.secureCookie
+			})
+			if tc.publicURL != "" {
+				env.Cfg.PublicURL = tc.publicURL
+			}
+			env.seedUser(t, "sec@example.com", store.RoleUser, "secretpass-1")
+
+			body, _ := json.Marshal(map[string]string{"email": "sec@example.com", "password": "secretpass-1"})
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.0.2.7:5555"
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwarded)
+			}
+			rec := httptest.NewRecorder()
+			env.Auth.HandleLogin(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("login = %d %q", rec.Code, rec.Body)
+			}
+			sc := rec.Header().Get("Set-Cookie")
+			if !strings.Contains(sc, "chatgo_session=") {
+				t.Fatalf("no session cookie in %q", sc)
+			}
+			if got := strings.Contains(strings.ToLower(sc), "secure"); got != tc.wantSecure {
+				t.Errorf("Secure flag = %v, want %v (Set-Cookie %q)", got, tc.wantSecure, sc)
+			}
+		})
 	}
 }

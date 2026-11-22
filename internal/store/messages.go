@@ -12,6 +12,14 @@ import (
 // Messages are ordered by SQLite rowid (insertion order) — uuid ids carry no
 // order. `beforeID` cursors resolve to the referenced row's rowid.
 
+// MaxContentLen is the maximum size of Message.Content (64 KiB). Enforcing it
+// at Append bounds history-load and share-payload amplification at the source.
+const MaxContentLen = 64 << 10
+
+// ErrContentTooLong is returned by Append when Message.Content exceeds
+// MaxContentLen. Handlers map it to HTTP 400.
+var ErrContentTooLong = errors.New("store: message content exceeds 64KiB limit")
+
 const messageCols = "id, chat_id, role, content, sources_json, error, tokens_in, tokens_out, created_at"
 
 func scanMessage(scan func(...any) error) (*Message, error) {
@@ -27,8 +35,12 @@ func scanMessage(scan func(...any) error) (*Message, error) {
 	return m, nil
 }
 
-// Append inserts a message; fills ID/CreatedAt when zero.
+// Append inserts a message; fills ID/CreatedAt when zero. Content longer
+// than MaxContentLen is rejected with ErrContentTooLong (nothing is written).
 func (r *MessagesRepo) Append(ctx context.Context, m *Message) error {
+	if len(m.Content) > MaxContentLen {
+		return ErrContentTooLong
+	}
 	if m.ID == "" {
 		m.ID = uuid.NewString()
 	}

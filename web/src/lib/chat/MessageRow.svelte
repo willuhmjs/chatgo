@@ -17,6 +17,7 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import { copyText, domainOf, fmtClock, fmtDateTime } from '$lib/chatview-api';
+  import { safeHref } from '$lib/safe-url';
   import { speechSupported, speech, toggleSpeak } from '$lib/chat/state.svelte.js';
   import { push as toast } from '$lib/toast.svelte.js';
 
@@ -167,7 +168,7 @@
               {#each message.sources as s, i (s.url + i)}
                 <a
                   class="chip"
-                  href={s.url}
+                  href={safeHref(s.url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   title={s.title || s.url}

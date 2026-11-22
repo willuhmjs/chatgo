@@ -113,11 +113,24 @@ type sendMessageImage struct {
 	FileID string `json:"file_id"`
 }
 
+// maxMessageImages bounds vision payloads per message (DoS guard: each image
+// is an ≤8MB base64 blob sent upstream).
+const maxMessageImages = 4
+
 // resolveImages turns uploaded file ids into data: URLs for the vision
 // payload via files.Service.DataURL (contract §files).
-func (d *Deps) resolveImages(ctx context.Context, imgs []sendMessageImage) ([]string, string, error) {
+//
+// SECURITY: every id must belong to userID. Ownership is checked against the
+// row BEFORE DataURL and only owned files get the markdown reference, so a
+// foreign file_id can neither feed another user's bytes to the model nor leak
+// its name/id into the caller's message. Unknown and foreign ids answer the
+// same 400 (no existence leak).
+func (d *Deps) resolveImages(ctx context.Context, userID string, imgs []sendMessageImage) ([]string, string, error) {
 	if len(imgs) == 0 {
 		return nil, "", nil
+	}
+	if len(imgs) > maxMessageImages {
+		return nil, "", httpErr(http.StatusBadRequest, fmt.Sprintf("at most %d images per message", maxMessageImages))
 	}
 	if d.Files == nil {
 		return nil, "", httpErr(http.StatusInternalServerError, "files service unavailable")
@@ -128,17 +141,19 @@ func (d *Deps) resolveImages(ctx context.Context, imgs []sendMessageImage) ([]st
 		if im.FileID == "" {
 			return nil, "", httpErr(http.StatusBadRequest, "images[].file_id is required")
 		}
-		url, err := d.Files.DataURL(ctx, im.FileID)
+		f, err := d.Store.Files.Get(ctx, im.FileID)
+		if err != nil || f.UserID != userID {
+			return nil, "", httpErr(http.StatusBadRequest, "invalid image file_id")
+		}
+		url, err := d.Files.DataURL(ctx, userID, im.FileID)
 		if err != nil {
-			// File unknown/inaccessible to this caller — treat as bad input.
+			// File unreadable/too big/not an image — treat as bad input.
 			return nil, "", httpErr(http.StatusBadRequest, "invalid image file_id")
 		}
 		out = append(out, url)
 		// Markdown reference so the image stays visible in history when the
 		// message is reloaded (served same-origin by handleFileGet).
-		if f, ferr := d.Store.Files.Get(ctx, im.FileID); ferr == nil {
-			fmt.Fprintf(&md, "\n![%s](/files/%s/%s)", f.Name, f.ID, url2escape(f.Name))
-		}
+		fmt.Fprintf(&md, "\n![%s](/files/%s/%s)", f.Name, f.ID, url2escape(f.Name))
 	}
 	return out, md.String(), nil
 }
@@ -160,7 +175,7 @@ func (d *Deps) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	images, imgMD, err := d.resolveImages(r.Context(), body.Images)
+	images, imgMD, err := d.resolveImages(r.Context(), u.ID, body.Images)
 	if err != nil {
 		d.fail(w, r, err)
 		return
@@ -198,7 +213,7 @@ func (d *Deps) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	images, imgMD, err := d.resolveImages(r.Context(), body.Images)
+	images, imgMD, err := d.resolveImages(r.Context(), u.ID, body.Images)
 	if err != nil {
 		d.fail(w, r, err)
 		return

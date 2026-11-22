@@ -59,16 +59,26 @@ func (s *Service) saveSummary(ctx context.Context, chatID, upToMessageID, text s
 	return err
 }
 
-// maybeSummarize decides (synchronously, cheaply) whether a rolling summary is
-// due and fires the TaskModel call on its own goroutine. Triggers: chat
-// crossing summarizeMsgThreshold messages, or prompt compaction kicking in.
-// ctx must already be detached from the request (see fireCtx); the stream is
-// never blocked here.
-func (s *Service) maybeSummarize(ctx context.Context, chatID string, total, effective []*store.Message, prev *store.Summary, compacted bool) {
+// maybeSummarize decides (cheaply) whether a rolling summary is due and
+// fires the TaskModel call on a worker goroutine with its own detached
+// context (see fireCtx), which the WORKER cancels when it returns. Triggers:
+// chat crossing summarizeMsgThreshold messages, or prompt compaction kicking
+// in. The stream is never blocked here; parent may be the request context.
+func (s *Service) maybeSummarize(parent context.Context, chatID string, total, effective []*store.Message, prev *store.Summary, compacted bool) {
 	overCount := len(total) > summarizeMsgThreshold
 	if !overCount && !compacted {
 		return
 	}
+	sctx, cancel := fireCtx(parent)
+	go func() {
+		defer cancel() // the worker goroutine owns the detached context
+		s.summarizeTurn(sctx, chatID, effective, prev, compacted)
+	}()
+}
+
+// summarizeTurn is the detached half: window selection, TaskModel
+// resolution and the upstream call.
+func (s *Service) summarizeTurn(ctx context.Context, chatID string, effective []*store.Message, prev *store.Summary, compacted bool) {
 	// Summarize everything except the newest summarizeKeepRecent messages
 	// (the effective window already excludes what an older summary covered).
 	end := len(effective) - summarizeKeepRecent
@@ -103,7 +113,7 @@ func (s *Service) maybeSummarize(ctx context.Context, chatID string, total, effe
 		slog.Warn("chat: summarize provider unavailable", "error", err)
 		return
 	}
-	go s.summarize(ctx, prov, modelID, chatID, upTo, msgs)
+	s.summarize(ctx, prov, modelID, chatID, upTo, msgs)
 }
 
 // summarize runs the non-streaming TaskModel call and upserts the result.

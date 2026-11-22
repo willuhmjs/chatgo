@@ -47,7 +47,7 @@ type Session struct {
 }
 
 // Provider is a row in `providers`. APIKey is PLAINTEXT in memory; the repo
-// encrypts to api_key_enc (AES-256-GCM, key = SHA-256(SESSION_SECRET)) on
+// encrypts to api_key_enc (AES-256-GCM, key = HKDF-SHA256(SESSION_SECRET)) on
 // write and decrypts on read. Never log this struct.
 type Provider struct {
 	ID        string
@@ -58,6 +58,13 @@ type Provider struct {
 	IsDefault bool
 	Sort      int
 	CreatedAt int64
+
+	// KeyUnreadable is true when the stored api_key_enc blob fails to
+	// decrypt (SESSION_SECRET rotated or blob corrupted): APIKey is "" but
+	// the row stays listable so the admin UI can still render it, set a new
+	// key, or delete it. Callers that actually need the key should treat
+	// this like "no key configured" (send the request without auth).
+	KeyUnreadable bool
 }
 
 // ModelRow is a row in `models` (cache of a provider's /v1/models).

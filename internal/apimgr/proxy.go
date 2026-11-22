@@ -72,6 +72,18 @@ func openAIError(w http.ResponseWriter, status int, msg, typ, code string) {
 	httpx.JSON(w, status, map[string]any{"error": openAIErrorBody{Message: msg, Type: typ, Code: code}})
 }
 
+// proxyError is an internal resolution/auth failure carrying the HTTP status
+// and OpenAI envelope type/code the handler must emit (so resolveModel can
+// distinguish 401/403/404/500 instead of one flat 400).
+type proxyError struct {
+	status int
+	msg    string
+	typ    string
+	code   string
+}
+
+func (e *proxyError) Error() string { return e.msg }
+
 type chatChoice struct {
 	Index        int         `json:"index"`
 	Message      chatMsgRole `json:"message"`
@@ -161,7 +173,12 @@ func (h *proxyH) handle(w http.ResponseWriter, r *http.Request) {
 	// that is unique across enabled models.
 	prov, modelID, err := h.resolveModel(r.Context(), req.Model)
 	if err != nil {
-		openAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "model_not_found")
+		var pe *proxyError
+		if errors.As(err, &pe) {
+			openAIError(w, pe.status, pe.msg, pe.typ, pe.code)
+		} else {
+			openAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "model_not_found")
+		}
 		return
 	}
 
@@ -203,11 +220,31 @@ func (h *proxyH) handle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authenticate: "Authorization: Bearer ck_…" → sha256 → Tokens.HashLookup
+// authenticate resolves the caller (Bearer ck_ token owner, or an attached
+// session user) and THEN applies the role gate: only activated accounts
+// (user/admin) may consume providers.
+func (h *proxyH) authenticate(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
+	user, ok := h.authenticateIdentity(w, r)
+	if !ok {
+		return nil, false
+	}
+	// Security (HIGH): the session-fallback path bypasses Require's pending
+	// check, and HashLookup joins users without looking at role, so pending
+	// or demoted accounts could previously spend provider quota. Both paths
+	// carry the CURRENT user row (Attach/UserFrom re-read users; HashLookup
+	// joins users live), so this gate covers session and token auth alike.
+	if user.Role != store.RoleUser && user.Role != store.RoleAdmin {
+		openAIError(w, http.StatusForbidden, "account not activated", "permission_error", "account_not_active")
+		return nil, false
+	}
+	return user, true
+}
+
+// authenticateIdentity: "Authorization: Bearer ck_…" → sha256 → Tokens.HashLookup
 // (also bumps last_used). A present-but-bad Bearer is a hard 401 (no silent
 // session fallback). With no Authorization header, an attached session user
-// (policy Attach) may serve.
-func (h *proxyH) authenticate(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
+// (policy Attach) may serve. Role enforcement lives in authenticate.
+func (h *proxyH) authenticateIdentity(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
 	raw := strings.TrimSpace(r.Header.Get("Authorization"))
 	if raw == "" {
 		if u, ok := h.d.Auth.UserFrom(r.Context()); ok {
@@ -239,10 +276,18 @@ func (h *proxyH) authenticate(w http.ResponseWriter, r *http.Request) (*store.Us
 }
 
 // resolveModel maps the requested model string to (provider, upstream model id).
+// The explicit "prov:model" form must name an ENABLED provider AND the exact
+// model id must sit in the admin models cache for that provider with
+// enabled=1 — otherwise any "prov:whatever" string would reach upstream
+// (hidden/never-listed models reachable, cost exposure). A bare model id must
+// be unique among enabled models of enabled providers.
 func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Provider, string, error) {
 	if provPart, modelID, ok := strings.Cut(requested, ":"); ok && provPart != "" && modelID != "" {
 		p, err := h.lookupProvider(ctx, provPart)
 		if err != nil {
+			return nil, "", err
+		}
+		if err := h.checkCachedModel(ctx, p, modelID); err != nil {
 			return nil, "", err
 		}
 		return p, modelID, nil
@@ -253,7 +298,7 @@ func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Pro
 	// Bare model id: must be unique among enabled models of enabled providers.
 	ms, err := h.d.Store.Models.EnabledModels(ctx)
 	if err != nil {
-		return nil, "", errors.New("model lookup failed")
+		return nil, "", &proxyError{http.StatusInternalServerError, "model lookup failed", "server_error", ""}
 	}
 	var hit *store.ModelWithProvider
 	n := 0
@@ -280,23 +325,51 @@ func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Pro
 func (h *proxyH) lookupProvider(ctx context.Context, idOrName string) (*store.Provider, error) {
 	if p, err := h.d.Store.Providers.Get(ctx, idOrName); err == nil {
 		if !p.Enabled {
-			return nil, fmt.Errorf("provider %q is disabled", idOrName)
+			return nil, disabledProviderError(idOrName)
 		}
 		return p, nil
 	}
 	provs, err := h.d.Store.Providers.List(ctx)
 	if err != nil {
-		return nil, errors.New("provider lookup failed")
+		return nil, &proxyError{http.StatusInternalServerError, "provider lookup failed", "server_error", ""}
 	}
 	for _, p := range provs {
 		if p.Name == idOrName || strings.EqualFold(p.Name, idOrName) {
 			if !p.Enabled {
-				return nil, fmt.Errorf("provider %q is disabled", idOrName)
+				return nil, disabledProviderError(idOrName)
 			}
 			return p, nil
 		}
 	}
-	return nil, fmt.Errorf("model %q not found: unknown provider", idOrName)
+	return nil, &proxyError{http.StatusNotFound,
+		fmt.Sprintf("model %q not found: unknown provider", idOrName), "invalid_request_error", "model_not_found"}
+}
+
+func disabledProviderError(idOrName string) error {
+	return &proxyError{http.StatusForbidden,
+		fmt.Sprintf("provider %q is disabled", idOrName), "permission_error", "model_not_available"}
+}
+
+// checkCachedModel enforces the admin models cache for the explicit
+// "provider:model" form: the exact model id must be cached for this provider
+// (else 404 — never synced/listed) and flagged enabled (else 403).
+func (h *proxyH) checkCachedModel(ctx context.Context, p *store.Provider, modelID string) error {
+	ms, err := h.d.Store.Models.ForProvider(ctx, p.ID)
+	if err != nil {
+		slog.Error("proxy: model cache lookup failed", "provider_id", p.ID, "err", err)
+		return &proxyError{http.StatusInternalServerError, "model lookup failed", "server_error", ""}
+	}
+	for _, m := range ms {
+		if m.ModelID != modelID {
+			continue
+		}
+		if !m.Enabled {
+			return &proxyError{http.StatusForbidden, "model not available", "permission_error", "model_not_available"}
+		}
+		return nil
+	}
+	return &proxyError{http.StatusNotFound,
+		fmt.Sprintf("model %q not found for provider %q", modelID, p.Name), "invalid_request_error", "model_not_found"}
 }
 
 // ---------- message / params translation ----------

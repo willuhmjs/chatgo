@@ -7,9 +7,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"regexp"
 
 	"chatgo/internal/api/httpx"
 )
+
+// fileRefRE matches the image markdown references resolveImages embeds
+// (![name](/files/<id>/<name>)).
+var fileRefRE = regexp.MustCompile(`!\[[^\]]*\]\(/files/[^)]*\)`)
+
+// stripFileRefs replaces stored-file references with a neutral placeholder.
+// The PUBLIC share endpoint must not hand anonymous readers file ids/names
+// (they are unguessable but enumerable bait for the upload/read surface).
+// Owner views are untouched — this runs only on share payload copies.
+func stripFileRefs(content string) string {
+	return fileRefRE.ReplaceAllString(content, "[attachment]")
+}
 
 // shareTokenLen bytes → 24 hex chars (contract task: uuid-hex 24).
 const shareTokenLen = 12
@@ -124,7 +137,9 @@ func (d *Deps) handleSharePublic(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]*messageJSON, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, toMessageJSON(m))
+		mj := toMessageJSON(m)
+		mj.Content = stripFileRefs(mj.Content) // no file ids/names to anonymous readers
+		out = append(out, mj)
 	}
 	httpx.JSON(w, http.StatusOK, sharePayload{Chat: cj, Messages: out})
 }

@@ -1,19 +1,18 @@
 // Lightweight markdown renderer for FE-extra surfaces (Share view, Gallery
-// text preview, Compare panes).
-//
-// DEVIATION NOTE: FE-chat owns src/lib/chat/** and its planned
-// marked+DOMPurify+hljs Markdown component, but that module does not exist
-// yet (placeholder routes only), so it is not importable. This file is a
-// deliberately small duplicate — when FE-chat ships lib/chat/Markdown.svelte
-// with a pure `render()` export, swap this out for it.
-// No highlight.js here: code blocks render plainly; hljs theming is FE-chat's.
+// text preview, Compare panes). Uses the chat pipeline's strict DOMPurify
+// config (exported from $lib/chat/markdown) — DOMPurify defaults alone were
+// weaker than the chat renderer. marked renderer wiring stays local because
+// FE-extra renders plainly (no hljs; that theming is FE-chat's).
 
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { PURIFY_CFG } from '$lib/chat/markdown';
 
 marked.use({ gfm: true, breaks: true });
 
 // Open external links safely in a new tab (marked leaves targets alone).
+// Runs in afterSanitizeAttributes, so setting `target` here survives even
+// though PURIFY_CFG forbids it on *input* markup.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   const el = /** @type {HTMLElement} */ (node);
   if (el.tagName === 'A' && /^https?:/i.test(el.getAttribute('href') ?? '')) {
@@ -25,5 +24,5 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 /** Render markdown → sanitized HTML string for `{@html …}`. */
 export function renderMarkdown(src: string): string {
   const html = marked.parse(src ?? '', { async: false }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] });
+  return DOMPurify.sanitize(html, PURIFY_CFG) as string;
 }

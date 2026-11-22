@@ -126,7 +126,8 @@ func TestSaveSniffsContentNotFilename(t *testing.T) {
 		t.Error("stored bytes differ from upload")
 	}
 
-	// PNG got a thumbnail: longest edge 512 (600x300 → 512x256).
+	// PNG got a thumbnail (async worker): longest edge 512 (600x300 → 512x256).
+	waitThumbs()
 	trc, err := svc.GetThumb(row)
 	if err != nil {
 		t.Fatalf("GetThumb: %v", err)
@@ -219,7 +220,7 @@ func TestDataURLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	du, err := svc.DataURL(ctx, meta.ID)
+	du, err := svc.DataURL(ctx, uid, meta.ID)
 	if err != nil {
 		t.Fatalf("DataURL: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestDataURLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save txt: %v", err)
 	}
-	if _, err := svc.DataURL(ctx, txt.ID); err == nil {
+	if _, err := svc.DataURL(ctx, uid, txt.ID); err == nil {
 		t.Error("DataURL on text file succeeded")
 	}
 }
@@ -263,7 +264,7 @@ func TestDataURLImageTooLarge(t *testing.T) {
 		Mime: "image/png", Size: maxDataURLImage + 1, Path: rel, Kind: store.FileKindImage}); err != nil {
 		t.Fatalf("Files.Insert: %v", err)
 	}
-	if _, err := svc.DataURL(ctx, id); err == nil {
+	if _, err := svc.DataURL(ctx, uid, id); err == nil {
 		t.Fatal("DataURL on >8MB image succeeded")
 	}
 }
@@ -278,6 +279,7 @@ func TestListByUserAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save upload: %v", err)
 	}
+	waitThumbs() // thumbnail worker must finish before Delete asserts it is gone
 	fh = fileHeader(t, "r.pdf", "application/pdf", []byte("%PDF-1.4\nstuff"))
 	art, err := svc.Save(ctx, uid, nil, fh, store.FileKindArtifact)
 	if err != nil {
@@ -333,6 +335,80 @@ func TestNonPngJpegImageNoThumb(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "files", meta.ID+".thumb.jpg")); !os.IsNotExist(err) {
 		t.Errorf("gif got a thumbnail: %v", err)
+	}
+}
+
+func TestDataURLForeignOwnerRejected(t *testing.T) {
+	svc, st, _ := newTestService(t)
+	uid := testUser(t, st)
+	ctx := context.Background()
+
+	other := &store.User{Email: "other-" + t.Name() + "@example.com", Name: "Other", Role: store.RoleUser}
+	if err := st.Users.Insert(ctx, other); err != nil {
+		t.Fatalf("Users.Insert: %v", err)
+	}
+
+	fh := fileHeader(t, "victim.png", "image/png", pngBytes(t, 4, 4))
+	meta, err := svc.Save(ctx, other.ID, nil, fh, store.FileKindImage)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// A different user must not be able to render the file's bytes.
+	if _, err := svc.DataURL(ctx, uid, meta.ID); err == nil {
+		t.Fatal("DataURL for foreign owner succeeded, want error")
+	}
+	// The real owner still works.
+	if _, err := svc.DataURL(ctx, other.ID, meta.ID); err != nil {
+		t.Errorf("owner DataURL failed: %v", err)
+	}
+}
+
+func TestBootSweepsPartFiles(t *testing.T) {
+	_, st, dir := newTestService(t)
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(filesDir, "deadbeef.part")
+	keep := filepath.Join(filesDir, "real.png")
+	for _, p := range []string{stale, keep} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	New(&config.Config{DataDir: dir}, st)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale .part survived boot sweep: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("boot sweep removed a real file: %v", err)
+	}
+}
+
+// Stored bytes must not be world/group readable (gosec G301/G302).
+func TestStoredFilePermissions(t *testing.T) {
+	svc, st, dir := newTestService(t)
+	uid := testUser(t, st)
+
+	fh := fileHeader(t, "perm.png", "image/png", pngBytes(t, 2, 2))
+	meta, err := svc.Save(context.Background(), uid, nil, fh, store.FileKindImage)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	waitThumbs()
+	di, err := os.Stat(filepath.Join(dir, "files"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if di.Mode().Perm()&0o077 != 0 {
+		t.Errorf("files dir mode = %v, want no group/other bits", di.Mode().Perm())
+	}
+	fi, err := os.Stat(filepath.Join(dir, "files", meta.ID+".png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Errorf("stored file mode = %v, want 0600", fi.Mode().Perm())
 	}
 }
 

@@ -137,7 +137,10 @@
         </label>
         <label class="block text-sm">
           <span class="mb-1 block text-[var(--muted)]">Password</span>
-          <input type="password" required minlength={8} autocomplete="new-password" class={input} style={inputStyle} placeholder="At least 8 characters" bind:value={password} />
+          <input type="password" required minlength={8} maxlength={72} autocomplete="new-password" class={input} style={inputStyle} placeholder="At least 8 characters" bind:value={password} />
+          <span class="mt-1 block text-[11px] text-[var(--muted)]">
+            8–72 characters — the server only hashes the first 72 bytes, so very long or multi-byte passwords are truncated.
+          </span>
           {#if password}
             <span class="mt-2 flex items-center gap-2">
               <span class="flex flex-1 gap-1" aria-hidden="true">
