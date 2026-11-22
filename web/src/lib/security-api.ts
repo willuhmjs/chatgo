@@ -55,26 +55,26 @@ export const disableTwoFactor = (password: string) =>
   call<{ ok: boolean }>('POST', '/api/me/2fa/disable', { password });
 
 /**
- * Feature probe without a password: POST /api/me/2fa/setup with an empty body.
- * The handler checks (in order): rate limit → body decode → OIDC-only →
- * already-enabled → password match, so a bodiless probe never reaches secret
- * generation. Mapping:
- *  - 404/405  ⇒ route not wired on this server        → 'unavailable'
- *  - 409      ⇒ "already enabled"                     → 'enabled'
- *  - 400      ⇒ SSO-only account (setup refuses them) → 'unavailable'
- *  - anything else (401 bad password, 429 throttled,
- *    even an odd 200) ⇒ route is live and 2FA is off  → 'off'
+ * GET /api/me/2fa/status → the caller's own enrollment state (auth'd, no
+ * password, no rate-bucket burn). This REPLACES the old bodiless POST
+ * /2fa/setup probe: the handler deliberately verifies the password BEFORE
+ * the enrollment check (SECREV L1-L1 — 409 must not answer before 401), so
+ * a passwordless probe always read 401 and lied "off" for enrolled users,
+ * and every probe burned the shared 2fa:setup rate bucket (audit finding
+ * S2). Status-code guessing is gone: 'unavailable' now means only "this
+ * server has no status route (404/405) or we couldn't reach it" — the
+ * badge never claims "off" without evidence.
  */
-export async function probeTwoFactor(): Promise<TwoFactorStatus> {
+export async function getTwoFactorStatus(): Promise<TwoFactorStatus> {
   try {
-    await call('POST', '/api/me/2fa/setup', {});
-    return 'off';
+    const r = await call<{ enabled?: unknown }>('GET', '/api/me/2fa/status');
+    return r?.enabled === true ? 'enabled' : 'off';
   } catch (e) {
     if (!(e instanceof ApiError)) return 'unavailable'; // network blew up — stay quiet
-    if (e.status === 404 || e.status === 405) return 'unavailable';
-    if (e.status === 409) return 'enabled';
-    if (e.status === 400) return 'unavailable'; // OIDC-only account
-    return 'off';
+    // 404/405 ⇒ route not wired on this server; anything else (401 with a
+    // dead session, 5xx) leaves us ignorant — hiding the section beats
+    // guessing at the user's security state.
+    return 'unavailable';
   }
 }
 
@@ -161,19 +161,40 @@ export async function updateMemory(id: string, patch: MemoryPatch): Promise<Memo
 export const deleteMemory = (id: string) =>
   call<void>('DELETE', `/api/me/memories/${encodeURIComponent(id)}`);
 
+/** Outcome of an extraction: how many landed, plus the first few texts. */
+export interface ExtractResult {
+  count: number;
+  /** Up to 3 created memories' contents, when the server sends them. */
+  samples: string[];
+}
+
 /**
  * POST /api/me/memories/extract {chat_id} → how many memories the model pulled
- * out (slow: up to ~15s). Tolerates {count} | {extracted} | {memories:[…]} |
- * a bare array as the response shape.
+ * out (slow: up to ~15s). Canonical shape is {created:[Memory…]}
+ * (internal/memory/extract.go); the count is the ARRAY length — older
+ * shapes ({count|extracted|added|created|new: n}, {memories|items:[…]} or
+ * a bare array) stay tolerated, arrays checked before numbers so an object
+ * payload is never misread as a missing count (finding #4's "0 extracted"
+ * lie). samples carries the first few created facts for the caller's toast.
  */
-export async function extractMemories(chatId: string): Promise<number> {
+export async function extractMemories(chatId: string): Promise<ExtractResult> {
   const body = await call<unknown>('POST', '/api/me/memories/extract', { chat_id: chatId });
-  if (Array.isArray(body)) return body.length;
+  const contents = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map(mapMemory).map((m) => m.content).filter((c) => c !== '') : [];
+  if (Array.isArray(body)) {
+    const cs = contents(body);
+    return { count: body.length, samples: cs.slice(0, 3) };
+  }
   const o = (body ?? {}) as Record<string, unknown>;
+  for (const k of ['created', 'memories', 'items']) {
+    if (Array.isArray(o[k])) {
+      const cs = contents(o[k]);
+      return { count: cs.length, samples: cs.slice(0, 3) };
+    }
+  }
   for (const k of ['count', 'extracted', 'added', 'created', 'new']) {
     const v = o[k];
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'number' && Number.isFinite(v)) return { count: v, samples: [] };
   }
-  if (Array.isArray(o.memories)) return o.memories.length;
-  return 0;
+  return { count: 0, samples: [] };
 }

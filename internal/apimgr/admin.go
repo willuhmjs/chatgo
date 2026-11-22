@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -335,20 +334,28 @@ func validateMeHiddenModels(v string) string {
 }
 
 // handleMeGet returns the caller's own prefs (namespaced keys stripped) plus
-// the computed search_enabled capability the composer probes for.
+// the computed search_enabled capability the composer probes for. Stored pref
+// values stay bare JSON strings; search_enabled is a top-level boolean
+// sibling (the FE probe requires typeof === 'boolean' — a "true"/"false"
+// string there was invisible to the composer, see docs/PUB-CONTRACT-SWEEP.md
+// CONFIRMED-BROKEN #1).
 func (h *adminH) handleMeGet(w http.ResponseWriter, r *http.Request) {
 	u, ok := h.d.requireUser(w, r)
 	if !ok {
 		return
 	}
-	out := h.meSettings(r, u.ID)
+	prefs := h.meSettings(r, u.ID)
 	enabled := h.d.Cfg != nil && h.d.Cfg.SearXNGURL != ""
 	if !enabled {
 		if v, err := h.d.Store.Settings.Get(r.Context(), "search_url"); err == nil && v != nil && *v != "" {
 			enabled = true
 		}
 	}
-	out["search_enabled"] = strconv.FormatBool(enabled)
+	out := make(map[string]any, len(prefs)+1)
+	for k, v := range prefs {
+		out[k] = v
+	}
+	out["search_enabled"] = enabled
 	httpx.JSON(w, http.StatusOK, out)
 }
 

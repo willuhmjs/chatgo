@@ -3,7 +3,7 @@
 // probing, clipboard, formatting, localStorage keys. No runes here — reactive
 // stores live in $lib/chat/state.svelte.js.
 
-import { getMeSettings, getSettings, patchChat } from './api';
+import { getMeSettings, patchChat } from './api';
 import type { Chat, SourceRef } from './api';
 
 // ---------- SSE payload shapes (docs/CONTRACTS.md §SSE protocol) ----------
@@ -136,26 +136,25 @@ export function formatStopList(stop?: string[]): string {
 
 /**
  * Is the SearXNG-backed search toggle worth showing?
- * 1. /api/me/settings may carry `search_enabled` (bool) — user pref wins.
- * 2. Admin-only env probe: /api/settings exposes `searxng_url`; non-empty ⇒ enabled.
- * 3. Anything else (403/404/absent) ⇒ hidden. Never render values.
+ * /api/me/settings carries the computed `search_enabled` as a real JSON
+ * boolean (apimgr handleMeGet derives it from the global `search_url`
+ * setting, with SEARXNG_URL config as the other source). Anything else —
+ * absent, non-boolean, 403/404/anonymous — ⇒ hidden. Never render values.
+ *
+ * The former admin fallback (GET /api/settings, reading `searxng_url`) is
+ * deleted, not renamed: that route is requireAdmin, so a regular user could
+ * never read `search_url` from it (403; and the keys it read,
+ * searxng_url/SEARXNG_URL, were never in that map), while admins now get the
+ * same `search_enabled` boolean from /api/me/settings as everyone else — no
+ * role remained for which the fallback could see a key.
  */
-export async function probeSearchEnabled(userRole?: string): Promise<boolean> {
+export async function probeSearchEnabled(_userRole?: string): Promise<boolean> {
   try {
     const s = await getMeSettings();
     const v = s['search_enabled'] ?? s['web_search'];
     if (typeof v === 'boolean') return v;
   } catch {
-    /* endpoint absent / anonymous — fall through */
-  }
-  if (userRole === 'admin') {
-    try {
-      const s = await getSettings();
-      const url = s['searxng_url'] ?? s['SEARXNG_URL'] ?? '';
-      if (typeof url === 'string' && url.trim().length > 0) return true;
-    } catch {
-      /* not admin (403) or route missing */
-    }
+    /* endpoint absent / anonymous — stay hidden */
   }
   return false;
 }

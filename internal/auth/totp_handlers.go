@@ -3,12 +3,13 @@ package auth
 // HTTP surface for 2FA (BE-SEC). Integrator wiring (internal/auth owns these
 // handlers; docs/FEATURES-V2.md routes):
 //
+//	GET  /api/me/2fa/status                   → {enabled}
 //	POST /api/me/2fa/setup   {password}     → {secret, otpauth_uri}
 //	POST /api/me/2fa/enable  {code}         → {ok:true}
 //	POST /api/me/2fa/disable {password}     → {ok:true}
 //	POST /api/auth/totp      {totp_token, code} → session cookie + user
 //
-// The first three ride AuthPolicy's /api/* Require branch (session needed);
+// The first four ride AuthPolicy's /api/* Require branch (session needed);
 // /api/auth/totp sits on the public /api/auth/* default branch because the
 // caller has no session yet. That endpoint carries the C6 throttle wall
 // (coarse per-IP pre-cap → token parse → per-USERID bucket) and burns the
@@ -26,8 +27,9 @@ import (
 	"chatgo/internal/totp"
 )
 
-// Register2FA mounts the four 2FA routes on the shared mux.
+// Register2FA mounts the five 2FA routes on the shared mux.
 func (a *Auth) Register2FA(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/me/2fa/status", a.Handle2FAStatus)
 	mux.HandleFunc("POST /api/me/2fa/setup", a.Handle2FASetup)
 	mux.HandleFunc("POST /api/me/2fa/enable", a.Handle2FAEnable)
 	mux.HandleFunc("POST /api/me/2fa/disable", a.Handle2FADisable)
@@ -57,6 +59,34 @@ func (a *Auth) checkUserPassword(r *http.Request, u *store.User, password string
 	}
 	defer release()
 	return VerifyPassword(*u.PasswordHash, password), nil
+}
+
+// Handle2FAStatus GET /api/me/2fa/status → {enabled: bool}.
+// Read-only enrollment state for the Settings badge. It exists to retire
+// the FE's bodiless POST /2fa/setup probe (PUB-CONTRACT-SWEEP #5 + #S2):
+// setup deliberately checks the password BEFORE the enrollment 409
+// (L1-L1 — 409 must not answer before 401), so a passwordless probe could
+// only ever read 401 and lie "off", and every probe burned the shared
+// 2fa:setup bucket. Security audit of this route:
+//   - authenticated twice over: AuthPolicy's /api/* Require branch gates
+//     it, and sessionUser re-checks the context identity (401 without);
+//   - reads ONLY the caller's own enrollment — userID comes from the
+//     session, never from the request — so there is no existence/state
+//     leak beyond what the caller already knows about their own account;
+//   - no password check, no bcrypt slot, no a.Allow bucket (it burns no
+//     setup/verify rate budget), no DB writes, no audit rows, no pending-
+//     secret state: pure read of users.totp_secret via totpEnabled.
+func (a *Auth) Handle2FAStatus(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.sessionUser(w, r)
+	if !ok {
+		return
+	}
+	enabled, err := a.totpEnabled(r.Context(), u.ID)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
 }
 
 // Handle2FASetup POST /api/me/2fa/setup {password}.

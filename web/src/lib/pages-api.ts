@@ -252,8 +252,9 @@ export const deletePrompt = (id: string) => req<void>('DELETE', `/api/prompts/${
 //     {files:[{id,url,name?}]}; ALSO accepted: {images:[<url-string> | {id,url,name?}]}
 //     and bare arrays. Items without a url are dropped (no b64 support assumed).
 //   GET /api/images → newest-50 own images as FileMeta-shaped rows
-//     [{id,name,mime,size|bytes,kind,url,created_at(unix-sec)}];
-//     bare array or {files|items|data: []}.
+//     [{id,name,mime,size|bytes,kind?,url,created_at(unix-sec)}];
+//     {images: []} (shipped envelope, internal/imggen/save.go handleList),
+//     bare array, or {files|items|data: []}.
 //   DELETE /api/images/{id} → 204 (own images only; foreign/unknown → 404).
 //   size is sent as a plain number ("512") — if the Go handler wants OpenAI's
 //   "512x512" string instead, change the one `size:` line in generateImages.
@@ -293,7 +294,9 @@ export async function generateImages(
 
 export async function listImages(): Promise<ImageFile[]> {
   const data = await req<unknown>('GET', '/api/images');
-  return listOf<Raw>(data, 'files', 'items', 'data')
+  // 'images' is what the backend actually sends (save.go handleList);
+  // PUB-CONTRACT-SWEEP #2 — the probe once omitted it and the strip sat empty.
+  return listOf<Raw>(data, 'images', 'files', 'items', 'data')
     .map((f) => ({
       id: firstStr(f.id),
       name: firstStr(f.name) || 'image',
@@ -307,6 +310,64 @@ export async function listImages(): Promise<ImageFile[]> {
 }
 
 export const deleteImage = (id: string) => req<void>('DELETE', `/api/images/${encodeURIComponent(id)}`);
+
+// ---------- files list, paged (gallery · internal/apichat/files.go) ----------
+// Shape assumptions (verified against handleFileList, files.go:100-129):
+//   GET /api/files?kind=&page=&per= →
+//     {items:[{id,name,mime,size,kind,url,created_at(unix-sec)}],total,page,per}
+//     (per defaults 30, clamped ≤ 100; rows newest-first, stable ordering).
+//     Bare arrays and {files|data: []} also accepted, defensively.
+// Why here and not api.ts: the frozen api.ts `listFiles` still claims a bare
+// FileMeta[], but the endpoint has answered with the paging envelope all
+// along (PUB-CONTRACT-SWEEP #3). api.ts stays untouched; the gallery calls
+// this tolerant helper instead — it also surfaces total/page for "load more".
+
+export interface FilePage {
+  items: FileMeta[];
+  total: number;
+  page: number;
+  per: number;
+}
+
+const FILE_KINDS = new Set(['upload', 'artifact', 'image']);
+
+function normFileMeta(f: Raw): FileMeta | null {
+  const id = firstStr(f.id);
+  const url = firstStr(f.url);
+  if (!id || !url) return null; // keyed grids need both
+  const mime = firstStr(f.mime);
+  const kind = firstStr(f.kind);
+  return {
+    id,
+    name: firstStr(f.name) || 'file',
+    mime,
+    size: firstNum(f.size, f.bytes),
+    kind: (FILE_KINDS.has(kind)
+      ? kind
+      : mime.startsWith('image/')
+        ? 'image'
+        : 'artifact') as FileMeta['kind'],
+    url,
+  };
+}
+
+export async function listFilesPage(opts: { kind?: string; page?: number; per?: number } = {}): Promise<FilePage> {
+  const qs = new URLSearchParams();
+  if (opts.kind) qs.set('kind', opts.kind);
+  if (opts.page) qs.set('page', String(opts.page));
+  if (opts.per) qs.set('per', String(opts.per));
+  const data = await req<unknown>('GET', `/api/files${qs.toString() ? `?${qs}` : ''}`);
+  const items = listOf<Raw>(data, 'items', 'files', 'data')
+    .map(normFileMeta)
+    .filter((f): f is FileMeta => f !== null);
+  const p = (Array.isArray(data) ? {} : (data ?? {})) as Raw;
+  return {
+    items,
+    total: firstNum(p.total, items.length),
+    page: firstNum(p.page, 1),
+    per: firstNum(p.per, items.length),
+  };
+}
 
 /**
  * Provider dropdown options for the generate box: distinct providers of

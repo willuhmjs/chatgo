@@ -1,7 +1,7 @@
 package apimgr
 
 // Tests for the per-user model-preference me-settings ("default_model" and
-// "hidden_models"). Reuses newMeSettingsEnv/do/decodeMap from
+// "hidden_models"). Reuses newMeSettingsEnv/do/decodeMap/decodeAnyMap from
 // admin_mesettings_test.go (same package) so the me-settings bucket stays one
 // coherent suite; lives in its own file for ownership boundaries.
 
@@ -92,7 +92,7 @@ func TestMeModelsDefaultAndHiddenRoundTrip(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET = %d (body %q)", rec.Code, rec.Body)
 	}
-	got := decodeMap(t, rec)
+	got := decodeAnyMap(t, rec)
 	if got["default_model"] != meGoodDefault || got["hidden_models"] != meGoodHidden {
 		t.Fatalf("GET round-trip = %v, want both values byte-exact", got)
 	}
@@ -224,12 +224,13 @@ func TestMeModelsNonAdminTouchesOnlyOwnRows(t *testing.T) {
 		t.Fatal("non-admin PUT created a hidden_models row in the admin's namespace")
 	}
 
-	// And its GET only ever shows its own values.
+	// And its GET only ever shows its own values (decodeAnyMap: GET also
+	// carries the computed boolean search_enabled sibling).
 	rec = env.doAs(t, sess.Token, http.MethodGet, "/api/me/settings", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("non-admin GET = %d (body %q)", rec.Code, rec.Body)
 	}
-	got := decodeMap(t, rec)
+	got := decodeAnyMap(t, rec)
 	if got["default_model"] != "plain:pick" || got["hidden_models"] != meGoodHidden {
 		t.Fatalf("non-admin GET = %v, want only its own values", got)
 	}

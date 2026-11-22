@@ -34,6 +34,10 @@ func newTestService(t *testing.T) (*Service, *store.Store, string) {
 		t.Fatalf("Users.Insert: %v", err)
 	}
 	dir := t.TempDir()
+	// Drain in-flight thumbnail workers BEFORE t.TempDir's cleanup runs
+	// (cleanups fire LIFO, so registering after TempDir wins). Without this,
+	// an async thumb write races the RemoveAll and fails cleanup under -count>1.
+	t.Cleanup(waitThumbs)
 	return New(&config.Config{DataDir: dir}, st), st, dir
 }
 

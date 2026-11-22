@@ -86,6 +86,29 @@ func decodeMap(t *testing.T, rec *httptest.ResponseRecorder) map[string]string {
 	return m
 }
 
+// decodeAnyMap decodes a GET /api/me/settings response. Unlike decodeMap it
+// tolerates the computed `search_enabled` JSON boolean riding beside the
+// bare-string stored prefs (a top-level sibling, not a me-setting value).
+func decodeAnyMap(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body, err)
+	}
+	return m
+}
+
+// searchFlag asserts GET /api/me/settings carried search_enabled as a real
+// JSON boolean (never the old "true"/"false" string) and returns it.
+func searchFlag(t *testing.T, rec *httptest.ResponseRecorder) bool {
+	t.Helper()
+	v, ok := decodeAnyMap(t, rec)["search_enabled"].(bool)
+	if !ok {
+		t.Fatalf("search_enabled is not a JSON boolean in %s", rec.Body)
+	}
+	return v
+}
+
 // PUT setup_done+accent is accepted, stored namespaced as me.<uid>.<key>, and
 // GET /api/me/settings strips the namespace back to bare keys (this is the
 // round-trip App.svelte's nudge reads).
@@ -111,12 +134,13 @@ func TestMeSettingsSetupDoneAccentRoundTrip(t *testing.T) {
 		t.Fatalf("raw rows not namespaced: %v", all)
 	}
 
-	// …and GET returns them stripped.
+	// …and GET returns them stripped (decodeAnyMap: the response also carries
+	// the computed boolean search_enabled sibling).
 	rec = env.do(t, http.MethodGet, "/api/me/settings", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET = %d (body %q)", rec.Code, rec.Body)
 	}
-	got := decodeMap(t, rec)
+	got := decodeAnyMap(t, rec)
 	if got["setup_done"] != "true" || got["accent"] != "#0a84ff" || got["theme"] != "dark" {
 		t.Fatalf("GET round-trip = %v", got)
 	}
@@ -160,7 +184,7 @@ func TestMeSettingsRejectsUnknownAndBadValues(t *testing.T) {
 	// The single-key rejections left nothing behind (a mixed valid+invalid
 	// batch may partially persist by pre-existing design — handleMePut
 	// validates per key as it writes, unrelated to the setup_done fix).
-	for k := range decodeMap(t, env.do(t, http.MethodGet, "/api/me/settings", "")) {
+	for k := range decodeAnyMap(t, env.do(t, http.MethodGet, "/api/me/settings", "")) {
 		if k == "accent" || k == "theme" {
 			t.Errorf("rejected write for %q persisted anyway", k)
 		}
@@ -276,7 +300,7 @@ func TestMeSettingsNameRoundTrip(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET = %d (body %q)", rec.Code, rec.Body)
 	}
-	if got := decodeMap(t, rec)["name"]; got != "Ada Lovelace" {
+	if got := decodeAnyMap(t, rec)["name"]; got != "Ada Lovelace" {
 		t.Fatalf("GET round-trip = %q, want Ada Lovelace", got)
 	}
 
@@ -287,6 +311,78 @@ func TestMeSettingsNameRoundTrip(t *testing.T) {
 	}
 	if v, err := env.D.Store.Settings.Get(ctx, "me."+env.userID+".name"); err != nil || v == nil || *v != "" {
 		t.Fatalf("after clear stored = %v (err %v), want empty string", v, err)
+	}
+}
+
+// CONFIRMED-BROKEN #1 (docs/PUB-CONTRACT-SWEEP.md): GET /api/me/settings used
+// to emit search_enabled as the STRING "true"/"false" inside the bare-string
+// me-settings map, so the composer's boolean probe (chatview-api.ts
+// probeSearchEnabled) never matched a boolean and the web-search toggle never
+// appeared. It must be a real top-level JSON boolean for admins AND regular
+// users — derived from the global search_url setting, or the SEARXNG_URL
+// config as its other source — while stored pref values stay JSON strings.
+func TestMeSettingsSearchEnabledBoolean(t *testing.T) {
+	env := newMeSettingsEnv(t)
+	ctx := context.Background()
+
+	// Regular user + session — the role for which the deleted admin-settings
+	// fallback (GET /api/settings is requireAdmin) could never see a key.
+	plain := &store.User{Email: "plain-search@example.com", Name: "P", Role: store.RoleUser}
+	if err := env.D.Store.Users.Insert(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := env.D.Auth.CreateSession(ctx, plain.ID, "test", "192.0.2.11")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A stored string pref must stay a JSON string beside the bool sibling.
+	if rec := env.do(t, http.MethodPut, "/api/me/settings", `{"accent":"#0a84ff"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT accent = %d (body %q)", rec.Code, rec.Body)
+	}
+
+	// search_url unset + SEARXNG_URL unset → boolean false for BOTH roles.
+	rec := env.do(t, http.MethodGet, "/api/me/settings", "")
+	if got := searchFlag(t, rec); got {
+		t.Fatalf("admin search_enabled = %v, want false (search_url unset)", got)
+	}
+	if s, ok := decodeAnyMap(t, rec)["accent"].(string); !ok || s != "#0a84ff" {
+		t.Fatalf("accent lost its string type beside search_enabled: %s", rec.Body)
+	}
+	rec = env.doAs(t, sess.Token, http.MethodGet, "/api/me/settings", "")
+	if got := searchFlag(t, rec); got {
+		t.Fatalf("user search_enabled = %v, want false (search_url unset)", got)
+	}
+
+	// Admin configures search_url → boolean true for BOTH roles.
+	if rec = env.do(t, http.MethodPut, "/api/settings", `{"search_url":"https://searx.example"}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT search_url = %d (body %q)", rec.Code, rec.Body)
+	}
+	if got := searchFlag(t, env.do(t, http.MethodGet, "/api/me/settings", "")); !got {
+		t.Fatal("admin search_enabled = false after search_url was set")
+	}
+	if got := searchFlag(t, env.doAs(t, sess.Token, http.MethodGet, "/api/me/settings", "")); !got {
+		t.Fatal("user search_enabled = false after search_url was set")
+	}
+
+	// Clearing flips it back; the SEARXNG_URL config is the other boolean source.
+	if rec = env.do(t, http.MethodPut, "/api/settings", `{"search_url":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT empty search_url = %d (body %q)", rec.Code, rec.Body)
+	}
+	if got := searchFlag(t, env.doAs(t, sess.Token, http.MethodGet, "/api/me/settings", "")); got {
+		t.Fatal("user search_enabled = true after search_url was cleared")
+	}
+	env.D.Cfg.SearXNGURL = "https://searx.env"
+	t.Cleanup(func() { env.D.Cfg.SearXNGURL = "" })
+	if got := searchFlag(t, env.doAs(t, sess.Token, http.MethodGet, "/api/me/settings", "")); !got {
+		t.Fatal("user search_enabled = false with SEARXNG_URL config set")
+	}
+
+	// Boundary: the admin global view stays the pure map[string]string it
+	// always was — search_enabled is only ever a /api/me/settings sibling,
+	// never a row of GET /api/settings (decodeMap rejects bools).
+	if got := decodeMap(t, env.do(t, http.MethodGet, "/api/settings", "")); got["search_url"] != "" {
+		t.Fatalf("admin settings search_url = %q, want empty", got["search_url"])
 	}
 }
 

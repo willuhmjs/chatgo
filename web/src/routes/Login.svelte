@@ -145,8 +145,22 @@
       navigate('/', { replace: true }); // …then home (post-login pattern)
     } catch (err) {
       if (err instanceof api.ApiError && (err.status === 401 || err.status === 403)) {
-        totpError = 'Incorrect code — try again.'; // retry allowed within the token TTL
+        // The BE burns the challenge nonce on EVERY attempt — pass or fail
+        // (C6 security law: one minted token = one code guess). A retry on
+        // this token, even with the now-correct code, is a replay of a
+        // spent challenge and can only 401 again — so don't dangle "try
+        // again": drop the dead token, return to the password step, and
+        // let the user mint a fresh challenge.
+        totpMode = false;
+        totpToken = '';
+        code = '';
+        totpError = '';
+        formError = 'That code was wrong or expired — sign in again with your password.';
       } else if (err instanceof api.ApiError && err.status === 429) {
+        // Throttled BEFORE the nonce burn (per-IP cap / per-user bucket),
+        // so this challenge is still unspent — staying on the code step and
+        // waiting is honest here. If it keeps failing, the eventual 401
+        // above bounces to the password form anyway.
         totpError = 'Too many attempts — wait a minute and try again.';
       } else {
         totpError = err instanceof Error && err.message ? err.message : 'Verification failed';

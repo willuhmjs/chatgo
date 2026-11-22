@@ -20,8 +20,8 @@
     disableTwoFactor,
     enableTwoFactor,
     extractMemories,
+    getTwoFactorStatus,
     listMemories,
-    probeTwoFactor,
     setupTwoFactor,
     updateMemory,
     type Memory,
@@ -119,9 +119,12 @@
   }
 
   // ----- account: two-factor -----
-  // 'probing' until the lazy setup-route probe resolves; 'unavailable' (404 or
-  // OIDC-only account) hides the whole section. The probe fires when the
-  // account tab first mounts — not at app boot.
+  // 'probing' until the GET /api/me/2fa/status read resolves; 'unavailable'
+  // (route missing / unreachable) hides the whole section. The status read
+  // fires when the account tab first mounts — not at app boot. (It replaces
+  // the old bodiless POST /2fa/setup probe, which lied "Off" for enrolled
+  // users — the BE checks the password before the enrollment 409 — and
+  // burned the setup rate bucket on every mount.)
   type TwofaUi = TwoFactorStatus | 'probing';
   let twofa = $state<TwofaUi>('probing');
   let twofaProbed = false;
@@ -309,9 +312,16 @@
     if (extractingId) return;
     extractingId = chatId;
     try {
-      const n = await extractMemories(chatId);
+      const r = await extractMemories(chatId);
       chatsOpen = false;
-      push(`${n} ${n === 1 ? 'memory' : 'memories'} extracted`, 'success');
+      // Surface the first few extracted facts when the response carries
+      // them ({created:[Memory…]}) — proof the run did something before
+      // the list refresh lands (finding #4: the old parser always said 0).
+      const shown = r.samples.map((s) => (s.length > 34 ? `${s.slice(0, 33)}…` : s));
+      const detail = shown.length
+        ? `: ${shown.map((s) => `"${s}"`).join(', ')}${r.count > shown.length ? ' …' : ''}`
+        : '';
+      push(`${r.count} ${r.count === 1 ? 'memory' : 'memories'} extracted${detail}`, 'success');
       await refreshMemories();
     } catch (e) {
       push(errText(e, 'Extraction failed'), 'error');
@@ -359,13 +369,13 @@
     void loadModels();
   });
 
-  // Lazy section boot: 2FA probe + memory list fire the first time the account
-  // tab renders, never at app boot (docs/WAVE2-PLAN.md §FE-SEC-FE).
+  // Lazy section boot: 2FA status read + memory list fire the first time the
+  // account tab renders, never at app boot (docs/WAVE2-PLAN.md §FE-SEC-FE).
   $effect(() => {
     if (tab !== 'account') return;
     if (!twofaProbed) {
       twofaProbed = true;
-      void probeTwoFactor().then((s) => (twofa = s));
+      void getTwoFactorStatus().then((s) => (twofa = s));
     }
     if (!memLoaded) {
       memLoaded = true;

@@ -5,15 +5,38 @@
   // keeps a 512px .thumb on disk but CONTRACTS.md exposes no thumb endpoint —
   // see $lib/extra-api.ts thumbURL() //INTEGRATION. <img> works because
   // /files/{id}/{name} is same-origin and sends the session cookie.
+  // GET /api/files answers with a paging envelope {items,total,page,per}
+  // (internal/apichat/files.go) — pages-api.listFilesPage unwraps it; we page
+  // 100 at a time (the server's per-page cap) behind a quiet "Load more".
   import * as api from '$lib/api';
   import { navigate } from '$lib/router.svelte.js';
   import { onMount } from 'svelte';
+  import { listFilesPage } from '$lib/pages-api';
   import { isImageFile, isTextFile, formatBytes, thumbURL, fetchTextPreview } from '$lib/extra-api';
   import { fail as toastFail } from '$lib/extra/toasts';
-  import { Download, File, FileText, Images, LayoutGrid, Rows3, Sparkles, X } from 'lucide-svelte';
+  import Button from '$lib/ui/Button.svelte';
+  import { soft } from '$lib/ui/motion.js';
+  import {
+    ChevronDown,
+    Download,
+    File,
+    FileText,
+    Images,
+    LayoutGrid,
+    LoaderCircle,
+    Rows3,
+    Sparkles,
+    X,
+  } from 'lucide-svelte';
+
+  /** server max page size (files.go clamps per ≤ 100) */
+  const PER = 100;
 
   let files = $state<api.FileMeta[]>([]);
+  let total = $state(0);
+  let page = $state(1);
   let loading = $state(true);
+  let loadingMore = $state(false);
   let filter = $state<'all' | 'images' | 'files'>('all');
   let density = $state<'cozy' | 'compact'>('cozy');
   let sel = $state<api.FileMeta | null>(null);
@@ -33,14 +56,38 @@
     { key: 'files' as const, label: `Files (${nFiles})` },
   ]);
 
+  const hasMore = $derived(files.length < total);
+
   async function load() {
     loading = true;
     try {
-      files = await api.listFiles(); // all kinds; filtered client-side
+      const r = await listFilesPage({ page: 1, per: PER }); // all kinds; filtered client-side
+      files = r.items;
+      total = r.total;
+      page = 1;
     } catch (err) {
       toastFail(err instanceof api.ApiError ? err.message : 'Failed to load gallery');
     } finally {
       loading = false;
+    }
+  }
+
+  /** Append the next page. Rows come newest-first with a stable tie-break
+      (created_at DESC, id DESC), so appending is order-safe; the id filter
+      just guards the race of a file landing mid-scroll. */
+  async function loadMore() {
+    if (loadingMore) return;
+    loadingMore = true;
+    try {
+      const r = await listFilesPage({ page: page + 1, per: PER });
+      const seen = new Set(files.map((f) => f.id));
+      files = [...files, ...r.items.filter((f) => !seen.has(f.id))];
+      page += 1;
+      total = Math.max(r.total, files.length); // never below what's on screen
+    } catch (err) {
+      toastFail(err instanceof api.ApiError ? err.message : 'Failed to load more');
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -145,6 +192,7 @@
         {#each shown as f (f.id)}
           <button
             class="card mb-3 block w-full break-inside-avoid overflow-hidden rounded-[14px] text-left align-top"
+            transition:soft
             onclick={() => openFile(f)}
           >
             {#if isImageFile(f)}
@@ -170,6 +218,27 @@
           </button>
         {/each}
       </div>
+    {/if}
+
+    <!-- paging footer: quiet, shown once a page is in. Reports the server's
+         total (uploads are client-side filtered out of the grid, so loaded
+         rows can legitimately exceed what's visible) and only offers more
+         when the server actually has more. -->
+    {#if !loading && total > 0}
+      {#if hasMore}
+        <div class="flex items-center justify-center gap-3 py-5">
+          <Button variant="ghost" size="sm" disabled={loadingMore} onclick={() => void loadMore()}>
+            {#if loadingMore}
+              <LoaderCircle size={14} class="animate-spin" /> Loading…
+            {:else}
+              <ChevronDown size={14} /> Load more ({total - files.length} more)
+            {/if}
+          </Button>
+          <span class="text-[11px] text-[var(--faint)]">{files.length} of {total}</span>
+        </div>
+      {:else if total > PER}
+        <p class="py-4 text-center text-[11px] text-[var(--faint)]">All {total} files loaded</p>
+      {/if}
     {/if}
   </div>
 </div>
