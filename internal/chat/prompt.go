@@ -4,6 +4,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -176,6 +177,11 @@ func (s *Service) taskProvider(ctx context.Context, providerID string) (provider
 	row, err := s.Store.Providers.Get(ctx, providerID)
 	if err != nil {
 		return providers.Provider{}, err
+	}
+	if row.KeyUnreadable {
+		// Same law as the send path: never fire upstream with an empty key
+		// and blame the provider for the resulting 401.
+		return providers.Provider{}, errors.New(errMsgKeyUnreadable)
 	}
 	return providerFromRow(row), nil
 }

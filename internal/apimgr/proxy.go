@@ -327,6 +327,9 @@ func (h *proxyH) lookupProvider(ctx context.Context, idOrName string) (*store.Pr
 		if !p.Enabled {
 			return nil, disabledProviderError(idOrName)
 		}
+		if p.KeyUnreadable {
+			return nil, unreadableKeyError(idOrName)
+		}
 		return p, nil
 	}
 	provs, err := h.d.Store.Providers.List(ctx)
@@ -338,6 +341,9 @@ func (h *proxyH) lookupProvider(ctx context.Context, idOrName string) (*store.Pr
 			if !p.Enabled {
 				return nil, disabledProviderError(idOrName)
 			}
+			if p.KeyUnreadable {
+				return nil, unreadableKeyError(idOrName)
+			}
 			return p, nil
 		}
 	}
@@ -348,6 +354,16 @@ func (h *proxyH) lookupProvider(ctx context.Context, idOrName string) (*store.Pr
 func disabledProviderError(idOrName string) error {
 	return &proxyError{http.StatusForbidden,
 		fmt.Sprintf("provider %q is disabled", idOrName), "permission_error", "model_not_available"}
+}
+
+// unreadableKeyError: the stored key won't decrypt (SESSION_SECRET rotated or
+// the blob corrupted). Sending upstream with an empty key would surface as a
+// confusing provider 401, so we answer honestly — this needs an admin to
+// re-enter the key, retrying from the client cannot help.
+func unreadableKeyError(idOrName string) error {
+	return &proxyError{http.StatusServiceUnavailable,
+		fmt.Sprintf("provider %q stored key can't be decrypted — an admin must re-enter it (the server secret changed)", idOrName),
+		"server_error", "provider_key_unreadable"}
 }
 
 // checkCachedModel enforces the admin models cache for the explicit

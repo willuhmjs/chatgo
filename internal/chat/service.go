@@ -49,6 +49,7 @@ const (
 	// errMsgProviderDisabled surfaces when the chat's provider row has been
 	// disabled by an admin after the chat was created.
 	errMsgProviderDisabled = "model provider disabled"
+	errMsgKeyUnreadable    = "the stored provider key can't be decrypted — the server secret changed after it was saved; re-enter the API key in Admin → Providers"
 	// errMsgModelDisabled surfaces when the chat's cached model row has been
 	// disabled by an admin after the chat was created (SECREV-3 S2-1: the
 	// per-model kill must stop spend even into pre-existing chats).
@@ -462,6 +463,15 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	if !provRow.Enabled {
 		slog.Warn("chat: provider disabled; refusing turn", "chat_id", chatID, "provider_id", chat.ProviderID)
 		emit(ctx, out, EventError, ErrorData{Message: errMsgProviderDisabled})
+		return
+	}
+	// The stored API key failed to decrypt (SESSION_SECRET rotated or the
+	// blob corrupted since it was saved). The row still reads fine so admin
+	// can repair it, but sending upstream with an empty key would surface as
+	// a misleading provider-side 401 — say what is actually wrong.
+	if provRow.KeyUnreadable {
+		slog.Warn("chat: provider key unreadable; refusing turn", "chat_id", chatID, "provider_id", chat.ProviderID)
+		emit(ctx, out, EventError, ErrorData{Message: errMsgKeyUnreadable})
 		return
 	}
 
