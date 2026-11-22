@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -96,7 +98,15 @@ func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// SettingFirstRunDone is the settings key stamped by the first-user
+// bootstrap transaction (docs/AUTHGATE-CONTRACT.md §2). Value "true" once an
+// instance has had its first account; instances upgraded from before the
+// stamp have users but no setting, so isFirstRun falls back to a user COUNT.
+const SettingFirstRunDone = "first_run_done"
+
 // HandleConfig GET /api/auth/config — public capabilities for the login page.
+// first_run is additive (AUTHGATE §5): the FE renders the create-admin card
+// while it is true.
 func (a *Auth) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	name := a.Cfg.OIDC.DisplayName
 	if name == "" {
@@ -106,7 +116,49 @@ func (a *Auth) HandleConfig(w http.ResponseWriter, r *http.Request) {
 		"oidc_enabled": a.OIDCEnabled(),
 		"oidc_name":    name,
 		"registration": a.Cfg.Registration,
+		"first_run":    a.isFirstRun(r.Context()),
 	})
+}
+
+// HandleStatus GET /api/auth/status — public auth-gate probe
+// (docs/AUTHGATE-CONTRACT.md §2): authenticated = a live session cookie is
+// present (same check as the SPA shell guard); first_run = the instance still
+// awaits its admin (SettingFirstRunDone unset AND zero users, see isFirstRun).
+//
+// Integrator wiring (apimgr/auth.go is BE-apichat-owned):
+// mux.HandleFunc("GET /api/auth/status", d.Auth.HandleStatus)
+// — api.AuthPolicy's /api/auth/* default branch already keeps it public.
+func (a *Auth) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"authenticated": a.HasValidSession(r),
+		"first_run":     a.isFirstRun(r.Context()),
+	})
+}
+
+// isFirstRun reports whether the admin bootstrap is still pending — i.e. the
+// instance is unclaimed. The SettingFirstRunDone stamp is only a fast path:
+// upgraded instances predate it, so a missing setting alone must not report
+// first_run while users already exist (the FE would bounce a signed-in admin
+// to /welcome). Authoritative signal: setting=="true" → false; otherwise the
+// instance is in first run only while it has zero users (same COUNT probe the
+// Register bootstrap uses). A store failure degrades to false: first_run only
+// drives FE copy, and the actual register-bootstrap gate is the first-user
+// transaction, so a read error can never widen access.
+func (a *Auth) isFirstRun(ctx context.Context) bool {
+	v, err := a.Store.Settings.Get(ctx, SettingFirstRunDone)
+	if err != nil {
+		slog.Warn("auth: first_run settings read failed", "key", SettingFirstRunDone, "err", err)
+		return false
+	}
+	if v != nil && *v == "true" {
+		return false
+	}
+	n, err := a.userCount(ctx)
+	if err != nil {
+		slog.Warn("auth: first_run user count read failed", "err", err)
+		return false
+	}
+	return n == 0
 }
 
 // HandleMe GET /api/auth/me — identity probe; Require attached (and throttled

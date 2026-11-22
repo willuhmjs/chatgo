@@ -41,7 +41,7 @@
     justify-content: center;
     width: 2rem;
     height: 2rem;
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
     border: 1px solid transparent;
     color: var(--muted);
     background: transparent;
@@ -54,10 +54,10 @@
   }
   .icon-btn:hover:not(:disabled) {
     color: var(--text);
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: var(--fill-hover);
   }
   .icon-btn:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
     outline-offset: 1px;
     color: var(--text);
   }
@@ -66,8 +66,8 @@
     cursor: not-allowed;
   }
   .icon-btn.active {
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--text);
+    background: var(--accent-soft);
   }
   .icon-btn-outline {
     border-color: var(--border);

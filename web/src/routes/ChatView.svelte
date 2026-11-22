@@ -286,7 +286,7 @@
         {#if phase === 'loading'}
           <div class="mx-auto w-full max-w-[48rem] flex-1 px-4 pt-8" aria-busy="true" aria-label="Loading chat">
             {#each [96, 168, 120, 144] as h (h)}
-              <div class="mb-6 animate-pulse rounded-xl" style="height:{h * 0.55}px; background:var(--panel-2)"></div>
+              <div class="mb-7 animate-pulse rounded-xl" style="height:{h * 0.55}px; background:var(--panel)"></div>
             {/each}
           </div>
         {:else if phase === 'notfound'}
@@ -310,8 +310,8 @@
             <p class="text-sm font-medium">Couldn’t load this chat</p>
             <p class="max-w-sm text-xs" style="color:var(--muted)">{loadError}</p>
             <button
-              class="mt-2 rounded-lg border px-3 py-1.5 text-sm"
-              style="border-color:var(--border); background:var(--panel); color:var(--text)"
+              class="mt-2 rounded-full px-3.5 py-1.5 text-sm"
+              style="background:var(--panel); color:var(--text)"
               onclick={() => void load()}>Try again</button
             >
           </div>
@@ -320,13 +320,7 @@
             <MessageList {messages} busy={stream.active} onretry={retry} onedit={edit} />
           {:else}
             <div class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-              <div
-                class="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl text-white"
-                style="background:linear-gradient(135deg, var(--accent), #8b5cf6)"
-              >
-                ✦
-              </div>
-              <p class="text-lg font-semibold">Start the conversation</p>
+              <p class="text-[26px] font-semibold tracking-tight">What can I help with?</p>
               <p class="max-w-xs text-sm" style="color:var(--muted)">
                 Pick a model, attach images or paste screenshots, toggle web search — then say hi.
               </p>

@@ -14,7 +14,7 @@
   } = $props();
 </script>
 
-<div class="flex flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-10 text-center" style="border-color:var(--border)">
+<div class="flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-10 text-center" style="border-color:var(--border); color:var(--text)">
   {#if icon}
     <span class="text-[var(--muted)]">{@render icon()}</span>
   {/if}

@@ -302,7 +302,9 @@ func (a *Auth) oidcUser(ctx context.Context, email string, claims oidcClaims) (*
 	}
 
 	u = &store.User{Email: email, Name: name, Role: role, AvatarURL: claims.Picture}
-	if err := a.insertUserBootstrap(ctx, u); err != nil {
+	// requireFirst=false: the AUTHGATE §2 first-run bootstrap is register-
+	// only; closed OIDC sign-ins stay rejected upstream (see registerUser).
+	if err := a.insertUserBootstrap(ctx, u, false); err != nil {
 		if errors.Is(err, errEmailTaken) {
 			// Lost a registration race for the same address: link the winner.
 			return a.Store.Users.GetByEmail(ctx, email)

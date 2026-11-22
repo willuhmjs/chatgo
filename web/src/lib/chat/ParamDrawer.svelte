@@ -1,6 +1,8 @@
 <script lang="ts">
   // Right slide-over for per-chat sampling params → PATCH /api/chats/{id}.
   // Changes are debounced onto the server; Reset clears params_json.
+  // Polish pass (§1/§7): sheet on --bg-deep, no border (fill contrast),
+  // 12px uppercase --muted section labels, sliders via tokens, quiet reset.
   import {
     patchChatParams,
     parseStopList,
@@ -135,27 +137,26 @@
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-  <div class="fixed inset-0 z-40 bg-black/40 drawer-fade" role="presentation" onclick={onclose}></div>
+  <div class="scrim fixed inset-0 z-40 drawer-fade" role="presentation" onclick={onclose}></div>
   <aside
-    class="fixed right-0 top-0 z-40 flex h-full w-[20rem] max-w-[92vw] flex-col border-l drawer-slide"
-    style="background:var(--panel); border-color:var(--border)"
+    class="drawer fixed right-0 top-0 z-40 flex h-full w-[20rem] max-w-[92vw] flex-col"
     aria-label="Chat parameters"
   >
-    <header class="flex items-center gap-2 border-b px-4 py-3" style="border-color:var(--border)">
-      <h2 class="flex-1 text-sm font-semibold">Parameters</h2>
-      <button type="button" class="mini" title="Reset to defaults" onclick={reset}>
+    <header class="flex flex-none items-center gap-1 px-4 pb-2 pt-4">
+      <h2 class="flex-1 text-[15px] font-medium">Parameters</h2>
+      <button type="button" class="quiet" title="Reset to defaults" onclick={reset}>
         <RotateCcw size={13} /> Reset
       </button>
-      <button type="button" class="mini" title="Close (Esc)" aria-label="Close parameters" onclick={onclose}>
-        <X size={14} />
+      <button type="button" class="iconbtn" title="Close (Esc)" aria-label="Close parameters" onclick={onclose}>
+        <X size={15} />
       </button>
     </header>
 
-    <div class="flex-1 space-y-6 overflow-y-auto p-4">
+    <div class="flex-1 space-y-6 overflow-y-auto px-4 pb-6 pt-2">
       {#each sliders as s (s.label)}
         <div>
-          <div class="mb-1.5 flex items-center justify-between gap-2">
-            <label class="text-xs font-medium" for={`p-${s.label}`}>{s.label}</label>
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <label class="label" for={`p-${s.label}`}>{s.label}</label>
             <input
               id={`p-${s.label}`}
               type="number"
@@ -177,13 +178,13 @@
             aria-label={s.label}
             oninput={(e) => s.set(Number(e.currentTarget.value))}
           />
-          <p class="mt-1 text-[11px]" style="color:var(--muted)">{s.hint}</p>
+          <p class="mt-1.5 text-[11px]" style="color:var(--muted)">{s.hint}</p>
         </div>
       {/each}
 
       <div>
-        <div class="mb-1.5 flex items-center justify-between gap-2">
-          <label class="text-xs font-medium" for="p-maxtok">Max tokens</label>
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <label class="label" for="p-maxtok">Max tokens</label>
           <input
             id="p-maxtok"
             type="number"
@@ -199,17 +200,17 @@
       </div>
 
       <div>
-        <label class="mb-1.5 block text-xs font-medium" for="p-stop">Stop sequences</label>
+        <label class="label mb-2 block" for="p-stop">Stop sequences</label>
         <textarea
           id="p-stop"
           rows="3"
           class="ta"
           placeholder="One per line (or comma-separated)"
           bind:value={stopText}></textarea>
-        <p class="mt-1 text-[11px]" style="color:var(--muted)">Up to 8 sequences; generation halts on match</p>
+        <p class="mt-1.5 text-[11px]" style="color:var(--muted)">Up to 8 sequences; generation halts on match</p>
       </div>
 
-      <p class="text-[11px]" style="color:var(--muted)">
+      <p class="text-[11px]" style="color:var(--faint, #6e6e6e)">
         Saved automatically to this chat. Provider defaults apply to unset fields.
       </p>
     </div>
@@ -217,61 +218,132 @@
 {/if}
 
 <style>
-  .num {
-    width: 5.5rem;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
-    color: var(--text);
-    border-radius: 0.5rem;
-    font-size: 0.75rem;
-    padding: 0.25rem 0.4rem;
-    outline: none;
-    font-variant-numeric: tabular-nums;
+  .scrim {
+    background: rgb(0 0 0 / 0.5);
   }
-  .num:focus {
-    border-color: var(--accent);
-  }
-  .ta {
-    width: 100%;
-    resize: vertical;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
-    color: var(--text);
-    border-radius: 0.625rem;
-    font-size: 0.8125rem;
-    padding: 0.5rem 0.65rem;
-    outline: none;
-    font-family: inherit;
-  }
-  .ta:focus {
-    border-color: var(--accent);
-  }
-  input[type='range'] {
-    accent-color: var(--accent);
-  }
-  .mini {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--muted);
-    border-radius: 0.5rem;
-    font-size: 0.72rem;
-    padding: 0.25rem 0.5rem;
-    cursor: pointer;
-  }
-  .mini:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
-  .drawer-slide {
+  /* sheet on --bg-deep; fill contrast only, no border (§1) */
+  .drawer {
+    background: var(--bg-deep, #171717);
     animation: slidein 160ms ease-out;
-    box-shadow: -12px 0 32px rgb(0 0 0 / 0.3);
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
   }
   .drawer-fade {
     animation: fadein 160ms ease-out;
   }
+
+  .label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted, #a8a8a8);
+  }
+
+  .num {
+    width: 5.5rem;
+    border: 1px solid transparent;
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 0.5rem;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.45rem;
+    outline: none;
+    font-variant-numeric: tabular-nums;
+    transition: box-shadow 120ms ease;
+  }
+  .num:focus {
+    box-shadow: 0 0 0 2px var(--accent-soft, rgb(99 102 241 / 0.18));
+  }
+  .ta {
+    width: 100%;
+    resize: vertical;
+    border: 1px solid transparent;
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 0.75rem;
+    font-size: 0.8125rem;
+    padding: 0.5rem 0.65rem;
+    outline: none;
+    font-family: inherit;
+    transition: box-shadow 120ms ease;
+  }
+  .ta:focus {
+    box-shadow: 0 0 0 2px var(--accent-soft, rgb(99 102 241 / 0.18));
+  }
+
+  /* token-styled slider: hairline track, white thumb */
+  input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--panel-2, #3a3a3a);
+    accent-color: var(--accent);
+    outline: none;
+    cursor: pointer;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--accent, #ffffff);
+    cursor: pointer;
+  }
+  input[type='range']::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--accent, #ffffff);
+    cursor: pointer;
+  }
+  input[type='range']:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px var(--accent-soft, rgb(99 102 241 / 0.18));
+  }
+
+  /* quiet text buttons in the header (§5 "Reset quiet text button") */
+  .quiet {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 0;
+    background: transparent;
+    color: var(--muted, #a8a8a8);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    transition:
+      color 120ms ease,
+      background 120ms ease;
+  }
+  .quiet:hover {
+    color: var(--text);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+  .iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted, #a8a8a8);
+    cursor: pointer;
+    transition:
+      color 120ms ease,
+      background 120ms ease;
+  }
+  .iconbtn:hover {
+    color: var(--text);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+
   @keyframes slidein {
     from {
       transform: translateX(2rem);
@@ -288,6 +360,12 @@
     }
     to {
       opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .drawer,
+    .drawer-fade {
+      animation: none;
     }
   }
 </style>

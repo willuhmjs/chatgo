@@ -1,8 +1,9 @@
 <script lang="ts">
-  // One message row. Assistant: flat full-width + avatar + hover bar
-  // (copy / retry / read-aloud), error card, sources chips, collapse.
-  // User: right-aligned subtle bubble with copy + inline edit (edit →
-  // regenerate path; see docs/FE-CHAT-UI.md "regenerate semantics").
+  // One message row (docs/DESIGN-POLISH.md §5). User: right-aligned quiet
+  // pill (#2f2f2f, radius 24 per DESIGN-REF §3, max 85%) with copy + inline
+  // edit (edit → regenerate path; see docs/FE-CHAT-UI.md "regenerate semantics").
+  // Assistant: plain text on canvas — no bubble, no avatar — quiet sources
+  // chips, error line + Retry pill, and a hover action bar BELOW the text.
   import type { UIMessage } from '$lib/chat/group';
   import { COLLAPSE_CHARS, COLLAPSE_MAX_PX } from '$lib/chat/group';
   import Markdown from './Markdown.svelte';
@@ -15,7 +16,6 @@
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import LinkIcon from 'lucide-svelte/icons/link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
   import { copyText, domainOf, fmtClock, fmtDateTime } from '$lib/chatview-api';
   import { safeHref } from '$lib/safe-url';
   import { speechSupported, speech, toggleSpeak } from '$lib/chat/state.svelte.js';
@@ -43,6 +43,8 @@
   );
   const collapsed = $derived(collapsible && !expanded);
   const speaking = $derived(speech.id === message.id && !!message.id);
+  // pre-first-token "thinking" beat: placeholder row with no content yet
+  const thinking = $derived(!!message.streaming && !message.content && !message.error);
 
   function doCopy(): void {
     void copyText(message.content ?? '').then((ok) =>
@@ -80,12 +82,12 @@
           }}></textarea>
         <div class="flex items-center gap-2 text-xs">
           <button
-            class="rounded-md px-2.5 py-1 font-medium disabled:opacity-40"
-            style="background:var(--accent); color:var(--accent-fg)"
+            class="rounded-full px-3.5 py-1.5 font-medium disabled:opacity-40"
+            style="background:var(--accent); color:var(--accent-fg, #0d0d0d)"
             disabled={!editText.trim() || editText.trim() === message.content || busy}
             onclick={saveEdit}>Save &amp; resend</button
           >
-          <button class="rounded-md px-2 py-1 disabled:opacity-40" style="color:var(--muted)" onclick={() => (editing = false)}>
+          <button class="rounded-full px-2.5 py-1.5 disabled:opacity-40" style="color:var(--muted)" onclick={() => (editing = false)}>
             Cancel
           </button>
           <span class="ml-auto opacity-70">Resends this turn and regenerates the rest</span>
@@ -95,7 +97,7 @@
       <div class="bubble" class:pending={message.pending}>
         <div class="whitespace-pre-wrap">{message.content}</div>
         {#if message.pending}
-          <span class="ml-1 inline-block h-2 w-2 rounded-full align-middle" style="background:var(--accent)"></span>
+          <span class="ml-1 inline-block h-2 w-2 rounded-full align-middle" style="background:var(--muted)"></span>
         {/if}
       </div>
     {/if}
@@ -103,109 +105,104 @@
       <div class="flex items-center gap-1 pr-1">
         <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
         <div class="hoverbar">
-          <IconButton title="Copy" onclick={doCopy}><Copy size={13} /></IconButton>
+          <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
           {#if !busy}
-            <IconButton title="Edit &amp; resend" onclick={startEdit}><Pencil size={13} /></IconButton>
+            <IconButton title="Edit &amp; resend" onclick={startEdit}><Pencil size={15} /></IconButton>
           {/if}
         </div>
       </div>
     {/if}
   </div>
 {:else if message.role === 'system'}
-  <div class="msg-row mx-auto max-w-[85%] rounded-lg border px-3 py-1.5 text-center text-xs" style="border-color:var(--border); color:var(--muted); background:var(--panel-2)">
+  <div class="msg-row mx-auto max-w-[85%] rounded-lg px-3 py-1.5 text-center text-xs" style="color:var(--muted); background:var(--panel)">
     {message.content}
   </div>
 {:else}
-  <div class="msg-row group relative flex gap-3" role="article" aria-label="Assistant message">
-    <div class="avatar" aria-hidden="true"><Sparkles size={13} /></div>
-    <div class="min-w-0 flex-1">
+  <div class="msg-row group relative" role="article" aria-label="Assistant message">
+    {#if thinking}
+      <div class="thinking" role="status" aria-label="Waiting for the model">
+        <span></span><span></span><span></span>
+      </div>
+    {:else}
       <div class="relative" class:clamped={collapsed} style={collapsed ? `max-height:${COLLAPSE_MAX_PX}px` : ''}>
         <Markdown src={message.content ?? ''} streaming={!!message.streaming} />
         {#if collapsed}
           <div class="clampfade"></div>
         {/if}
       </div>
-      {#if collapsible}
-        <button
-          class="mt-1 text-xs font-medium"
-          style="color:var(--accent)"
-          onclick={() => (expanded = !expanded)}
-        >
-          {expanded ? 'Collapse' : 'Expand'}
+    {/if}
+    {#if collapsible}
+      <button
+        class="mt-1 text-xs font-medium"
+        style="color:var(--text)"
+        onclick={() => (expanded = !expanded)}
+      >
+        {expanded ? 'Collapse' : 'Expand'}
+      </button>
+    {/if}
+
+    {#if message.stopped}
+      <p class="mt-1 text-xs" style="color:var(--muted)">Generation stopped.</p>
+    {/if}
+
+    {#if message.error}
+      <div class="errline" role="alert">
+        <TriangleAlert size={14} style="color:var(--danger); flex:none" />
+        <span class="min-w-0 flex-1 text-xs" style="color:var(--muted)">
+          <span style="color:var(--text)">Generation failed.</span> {message.error}
+        </span>
+        <button type="button" class="retrypill" disabled={busy} onclick={() => onretry?.(message)}>
+          <RefreshCw size={11} /> Retry
         </button>
-      {/if}
+      </div>
+    {/if}
 
-      {#if message.stopped}
-        <p class="mt-1 text-xs italic" style="color:var(--muted)">Generation stopped.</p>
-      {/if}
-
-      {#if message.error}
-        <div class="errcard" role="alert">
-          <TriangleAlert size={15} style="color:var(--danger); flex:none; margin-top:2px" />
-          <div class="min-w-0 flex-1">
-            <p class="text-sm font-medium">Generation failed</p>
-            <p class="text-xs" style="color:var(--muted)">{message.error}</p>
+    {#if message.sources?.length}
+      <div class="mt-2.5">
+        <button type="button" class="sourcespill" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
+          <LinkIcon size={12} />
+          Sources · {message.sources.length}
+          <ChevronDown size={12} style={sourcesOpen ? 'transform: rotate(180deg)' : ''} class="transition-transform" />
+        </button>
+        {#if sourcesOpen}
+          <div class="mt-1.5 flex flex-wrap gap-1.5">
+            {#each message.sources as s, i (s.url + i)}
+              <a
+                class="chip"
+                href={safeHref(s.url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={s.title || s.url}
+              >
+                <span class="chipidx">[{i + 1}]</span>
+                <span class="truncate">{domainOf(s.url)}</span>
+              </a>
+            {/each}
           </div>
-          <button
-            class="retrybtn"
-            disabled={busy}
-            onclick={() => onretry?.(message)}
-          >
-            <RefreshCw size={12} /> Retry
-          </button>
-        </div>
-      {/if}
+        {/if}
+      </div>
+    {/if}
 
-      {#if message.sources?.length}
-        <div class="mt-2">
-          <button class="sourcespill" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
-            <LinkIcon size={12} />
-            Sources · {message.sources.length}
-            <ChevronDown size={12} style={sourcesOpen ? 'transform: rotate(180deg)' : ''} class="transition-transform" />
-          </button>
-          {#if sourcesOpen}
-            <div class="mt-1.5 flex flex-wrap gap-1.5">
-              {#each message.sources as s, i (s.url + i)}
-                <a
-                  class="chip"
-                  href={safeHref(s.url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={s.title || s.url}
-                >
-                  <span class="chipidx">[{i + 1}]</span>
-                  <span class="truncate">{domainOf(s.url)}</span>
-                </a>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
-
-      {#if !message.streaming}
-        <div class="mt-0.5 flex items-center gap-1">
-          <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
-          <div class="hoverbar">
-            <IconButton title="Copy" onclick={doCopy}><Copy size={13} /></IconButton>
-            {#if !busy}
-              <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
-                <RefreshCw size={13} />
-              </IconButton>
-            {/if}
-            {#if speechSupported}
-              <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
-                {#if speaking}<VolumeX size={13} />{:else}<Volume2 size={13} />{/if}
-              </IconButton>
-            {/if}
-            {#if message.tokens_out}
-              <span class="ml-1 text-[10px] tabular-nums opacity-0 transition-opacity group-hover:opacity-100" style="color:var(--muted)">
-                {message.tokens_in ?? 0}→{message.tokens_out} tok
-              </span>
-            {/if}
-          </div>
-        </div>
-      {/if}
-    </div>
+    {#if !message.streaming}
+      <!-- hover action bar BELOW the text: copy · regenerate · read-aloud (§5) -->
+      <div class="acts">
+        <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
+        {#if !busy}
+          <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
+            <RefreshCw size={15} />
+          </IconButton>
+        {/if}
+        {#if speechSupported}
+          <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
+            {#if speaking}<VolumeX size={15} />{:else}<Volume2 size={15} />{/if}
+          </IconButton>
+        {/if}
+        <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
+        {#if message.tokens_out}
+          <span class="tokcount">{message.tokens_in ?? 0}→{message.tokens_out} tok</span>
+        {/if}
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -216,52 +213,86 @@
     contain-intrinsic-size: auto 140px;
   }
 
+  /* user: right-aligned quiet pill (§5 + docs/DESIGN-REF.md §3: r24) */
   .bubble {
     max-width: 85%;
-    border-radius: 1.1rem;
-    border-bottom-right-radius: 0.4rem;
-    padding: 0.55rem 0.9rem;
-    font-size: 0.9375rem;
+    border-radius: 24px;
+    padding: 10px 16px;
+    font-size: 1rem;
     line-height: 1.6;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
+    background: var(--panel, #2f2f2f);
     white-space: normal;
   }
   .bubble.pending {
     opacity: 0.7;
   }
 
-  .avatar {
-    flex: none;
+  /* pre-first-token thinking dots — one text line tall, no layout shift (§5) */
+  .thinking {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    margin-top: 3px;
-    border-radius: 0.5rem;
-    color: #fff;
-    background: linear-gradient(135deg, var(--accent), #8b5cf6);
-    box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 35%, transparent);
+    gap: 5px;
+    height: 1.7rem;
+  }
+  .thinking span {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--muted, #a8a8a8);
+    animation: dot-pulse 1.2s ease-in-out infinite;
+  }
+  .thinking span:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+  .thinking span:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+  @keyframes dot-pulse {
+    0%,
+    60%,
+    100% {
+      opacity: 0.25;
+    }
+    30% {
+      opacity: 0.9;
+    }
   }
 
   .timechip {
     font-size: 10px;
-    color: var(--muted);
+    color: var(--muted, #a8a8a8);
     opacity: 0;
     transition: opacity 120ms ease;
   }
-  .group:hover .timechip {
-    opacity: 0.8;
+  .tokcount {
+    margin-left: 4px;
+    font-size: 10px;
+    color: var(--muted, #a8a8a8);
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 120ms ease;
   }
 
+  /* action bar below assistant text: fade in on row hover/focus (§5) */
+  .acts {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-top: 4px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
   .hoverbar {
     display: flex;
     align-items: center;
-    gap: 1px;
+    gap: 2px;
     opacity: 0;
     transition: opacity 120ms ease;
   }
+  .group:hover .acts,
+  .group:hover .timechip,
+  .group:hover .tokcount,
+  .acts:focus-within,
   .group:hover .hoverbar,
   .hoverbar:focus-within {
     opacity: 1;
@@ -270,15 +301,19 @@
   .editbox {
     width: 100%;
     resize: vertical;
-    border-radius: 0.75rem;
-    border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
-    background: var(--panel);
+    border-radius: 16px;
+    border: 1px solid transparent;
+    background: var(--panel, #2f2f2f);
     color: var(--text);
-    padding: 0.6rem 0.8rem;
-    font-size: 0.9375rem;
+    padding: 0.65rem 0.9rem;
+    font-size: 1rem;
     line-height: 1.6;
     outline: none;
     font-family: inherit;
+    transition: box-shadow 120ms ease;
+  }
+  .editbox:focus {
+    box-shadow: 0 0 0 2px var(--accent-soft, rgb(99 102 241 / 0.18));
   }
 
   .clamped {
@@ -290,75 +325,88 @@
     bottom: 0;
     height: 4.5rem;
     pointer-events: none;
-    background: linear-gradient(to bottom, transparent, var(--bg));
+    background: linear-gradient(to bottom, transparent, var(--bg, #212121));
   }
 
-  .errcard {
+  /* quiet red-tinted error line + Retry pill (§5) */
+  .errline {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.6rem;
     margin-top: 0.6rem;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.625rem;
-    border: 1px solid color-mix(in oklab, var(--danger) 40%, var(--border));
-    background: color-mix(in oklab, var(--danger) 8%, var(--panel));
+    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+    border-radius: 0.75rem;
+    background: color-mix(in oklab, var(--danger) 7%, transparent);
   }
-  .retrybtn {
+  .retrypill {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
     flex: none;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
+    border: 0;
+    background: var(--panel-2, #3a3a3a);
     color: var(--text);
-    border-radius: 0.5rem;
+    border-radius: 999px;
     font-size: 0.75rem;
-    padding: 0.25rem 0.6rem;
+    padding: 0.3rem 0.7rem;
     cursor: pointer;
+    transition: background 120ms ease;
   }
-  .retrybtn:hover:not(:disabled) {
-    border-color: var(--accent);
+  .retrypill:hover:not(:disabled) {
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
   }
-  .retrybtn:disabled {
+  .retrypill:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
 
+  /* sources: quiet #2f2f2f pills, no borders (§5) */
   .sourcespill {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
-    color: var(--muted);
+    border: 0;
+    background: var(--panel, #2f2f2f);
+    color: var(--muted, #a8a8a8);
     border-radius: 999px;
-    font-size: 0.72rem;
-    padding: 0.2rem 0.65rem;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.7rem;
     cursor: pointer;
+    transition:
+      color 120ms ease,
+      background 120ms ease;
   }
   .sourcespill:hover {
     color: var(--text);
-    border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+    background: var(--panel-2, #3a3a3a);
   }
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.35rem;
     max-width: 16rem;
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 0.5rem;
-    background: var(--panel);
+    background: var(--panel, #2f2f2f);
     color: var(--text);
-    font-size: 0.72rem;
-    padding: 0.22rem 0.55rem;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
     text-decoration: none;
+    transition: background 120ms ease;
   }
   .chip:hover {
-    border-color: var(--accent);
+    background: var(--panel-2, #3a3a3a);
   }
   .chipidx {
-    color: var(--accent);
-    font-family: ui-monospace, monospace;
+    color: var(--muted, #a8a8a8);
     font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .thinking span {
+      animation: none;
+      opacity: 0.6;
+    }
   }
 </style>

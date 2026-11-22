@@ -71,20 +71,18 @@
   onMount(load);
 </script>
 
-<div class="flex h-full flex-col">
-  <header
-    class="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-3"
-    style="border-color:var(--border); background:var(--panel)"
-  >
-    <Images size={16} class="text-[var(--muted)]" />
-    <h1 class="text-sm font-semibold">Gallery</h1>
+<div class="flex h-full flex-col" style="background:var(--bg); color:var(--text)">
+  <header class="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-3" style="border-color:var(--border)">
+    <Images size={15} class="text-[var(--muted)]" />
+    <h1 class="text-[15px] font-medium tracking-tight">Gallery</h1>
     <span class="text-xs text-[var(--muted)]">{shown.length} item{shown.length === 1 ? '' : 's'}</span>
 
+    <!-- quiet filter pills; active = white fill -->
     <div class="ml-3 flex items-center gap-1.5">
       {#each chips as c (c.key)}
         <button
-          class="rounded-full border px-3 py-1 text-xs {filter === c.key ? 'font-semibold' : 'text-[var(--muted)]'}"
-          style={filter === c.key ? 'border-color:var(--accent); color:var(--accent)' : 'border-color:var(--border)'}
+          class="rounded-full px-3 py-1 text-xs transition-colors {filter === c.key ? 'font-medium' : 'text-[var(--muted)] hover:bg-[var(--fill-hover)]'}"
+          style={filter === c.key ? 'background:var(--accent); color:var(--accent-fg)' : 'background:var(--panel)'}
           aria-pressed={filter === c.key}
           onclick={() => (filter = c.key)}
         >
@@ -93,10 +91,11 @@
       {/each}
     </div>
 
-    <div class="ml-auto flex items-center overflow-hidden rounded-lg border" style="border-color:var(--border)">
+    <!-- density: quiet segmented pill -->
+    <div class="ml-auto flex items-center gap-0.5 rounded-full p-0.5" style="background:var(--panel)">
       <button
-        class="px-2 py-1.5 text-[var(--muted)]"
-        style={density === 'cozy' ? 'background:var(--panel-2); color:var(--text)' : ''}
+        class="rounded-full p-1.5 transition-colors"
+        style={density === 'cozy' ? 'background:var(--panel-2); color:var(--text)' : 'color:var(--muted)'}
         aria-pressed={density === 'cozy'}
         title="Comfortable grid"
         onclick={() => (density = 'cozy')}
@@ -104,8 +103,8 @@
         <LayoutGrid size={14} />
       </button>
       <button
-        class="px-2 py-1.5 text-[var(--muted)]"
-        style={density === 'compact' ? 'background:var(--panel-2); color:var(--text)' : ''}
+        class="rounded-full p-1.5 transition-colors"
+        style={density === 'compact' ? 'background:var(--panel-2); color:var(--text)' : 'color:var(--muted)'}
         aria-pressed={density === 'compact'}
         title="Compact masonry"
         onclick={() => (density = 'compact')}
@@ -131,7 +130,7 @@
         </p>
         {#if outputs.length === 0}
           <button
-            class="mt-5 rounded-lg px-4 py-2 text-sm font-medium"
+            class="mt-5 rounded-[10px] px-4 py-2 text-sm font-medium"
             style="background:var(--accent); color:var(--accent-fg)"
             onclick={() => navigate('/')}
           >
@@ -140,12 +139,12 @@
         {/if}
       </div>
     {:else}
-      <!-- masonry-lite: CSS multi-column flow -->
+      <!-- masonry-lite: CSS multi-column flow. Cards are borderless and take
+           a quiet fill on hover (§3-style). -->
       <div style="column-width:{density === 'compact' ? '10.5rem' : '15rem'}; column-gap:0.75rem">
         {#each shown as f (f.id)}
           <button
-            class="mb-3 block w-full break-inside-avoid overflow-hidden rounded-xl border text-left align-top transition-transform hover:scale-[1.01]"
-            style="background:var(--panel); border-color:var(--border)"
+            class="card mb-3 block w-full break-inside-avoid overflow-hidden rounded-[14px] text-left align-top"
             onclick={() => openFile(f)}
           >
             {#if isImageFile(f)}
@@ -179,37 +178,42 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="fixed inset-0 z-50 bg-black/50" role="presentation" onclick={closeFile}>
-    <!-- side modal -->
+    <!-- side sheet (§7): --panel, rounded, shadow-menu, quiet header -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
     <aside
-      class="absolute right-0 top-0 flex h-full w-full max-w-2xl flex-col border-l"
-      style="background:var(--panel); border-color:var(--border); color:var(--text)"
+      class="sheet absolute right-0 top-0 flex h-full w-full max-w-2xl flex-col"
+      style="background:var(--panel); color:var(--text); box-shadow:var(--shadow-menu)"
       role="dialog"
       aria-modal="true"
+      tabindex="-1"
       aria-label={sel.name}
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex shrink-0 items-center gap-3 border-b px-4 py-3" style="border-color:var(--border)">
+      <div class="flex shrink-0 items-center gap-3 px-4 py-3">
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium">{sel.name}</p>
           <p class="truncate text-xs text-[var(--muted)]">{sel.mime || 'file'} · {formatBytes(sel.size)}</p>
         </div>
         <!-- download only: sharing an artifact URL is a separate feature -->
         <a
-          class="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
-          style="border-color:var(--border)"
+          class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--fill-hover)]"
           href={sel.url}
           download={sel.name}
         >
           <Download size={13} /> Download
         </a>
-        <button class="rounded-md p-1.5 opacity-60 hover:opacity-100" aria-label="Close preview" onclick={closeFile}>
+        <button
+          class="rounded-lg p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
+          aria-label="Close preview"
+          onclick={closeFile}
+        >
           <X size={16} />
         </button>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-auto p-4">
+      <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
         {#if isImageFile(sel)}
-          <img src={sel.url} alt={sel.name} class="mx-auto max-h-full max-w-full rounded-lg" />
+          <img src={sel.url} alt={sel.name} class="mx-auto max-h-full max-w-full rounded-xl" />
         {:else if preview}
           {#if preview.loading}
             <p class="py-10 text-center text-sm text-[var(--muted)]">Loading preview…</p>
@@ -217,8 +221,8 @@
             <p class="py-10 text-center text-sm" style="color:var(--danger)">{preview.error}</p>
           {:else}
             <pre
-              class="rounded-lg border p-3 text-xs leading-relaxed whitespace-pre-wrap"
-              style="background:var(--panel-2); border-color:var(--border); font-family:ui-monospace, Menlo, monospace"
+              class="rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap"
+              style="background:var(--bg-deep); color:var(--text); font-family:ui-monospace, Menlo, monospace"
             >{preview.text}</pre>
           {/if}
         {:else}
@@ -231,3 +235,34 @@
     </aside>
   </div>
 {/if}
+
+<style>
+  .card {
+    transition: background 150ms ease;
+  }
+  .card:hover {
+    background: var(--fill-hover);
+  }
+  .card:focus-visible {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 2px;
+  }
+  .sheet {
+    animation: sheet-in 160ms ease-out;
+  }
+  @keyframes sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sheet {
+      animation: none;
+    }
+  }
+</style>

@@ -31,13 +31,12 @@
     pointer-events: none;
     opacity: 0;
     white-space: nowrap;
-    font-size: 0.6875rem;
-    padding: 0.1875rem 0.5rem;
-    border-radius: 0.375rem;
-    border: 1px solid var(--border);
+    font-size: 0.75rem;
+    padding: 0.25rem 0.625rem;
+    border-radius: 0.5rem;
     background: var(--panel-2);
     color: var(--text);
-    box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+    box-shadow: var(--shadow-menu);
     transition: opacity 0.12s ease 0.15s;
   }
   .tt:hover .tt-bubble,

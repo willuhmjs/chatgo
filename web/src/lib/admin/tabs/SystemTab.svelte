@@ -7,7 +7,7 @@
   import Field from '$lib/admin/ui/Field.svelte';
   import TokensPanel from '$lib/admin/TokensPanel.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, input, inputStyle, panel, panelStyle } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, panelStyle } from '$lib/admin/ui/styles';
 
   let saved = $state<SystemSettings | null>(null);
   let form = $state<SystemSettings>({ task_model: '', system_prompt: '', search_url: '', registration: 'approve' });
@@ -75,11 +75,11 @@
 
 <div class="flex flex-col gap-8">
   {#if loading}
-    <div class="flex items-center gap-2 rounded-xl border px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
+    <div class="flex items-center gap-2 rounded-2xl px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
       <Spinner size={16} /> Loading settings…
     </div>
   {:else if loadError}
-    <div class="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm" style="background:color-mix(in srgb, var(--danger) 10%, transparent); border-color:var(--danger); color:var(--danger)">
+    <div class="flex items-center justify-between gap-3 rounded-[10px] px-4 py-3 text-sm" style={errorBannerStyle}>
       {loadError}
       <button class={btn} style={btnGhostStyle} onclick={load}>Retry</button>
     </div>
@@ -92,9 +92,9 @@
         void save();
       }}
     >
-      <section class="flex flex-col gap-5 rounded-xl border p-5" style={panelStyle}>
+      <section class="flex flex-col gap-5 rounded-2xl p-5" style="background:var(--panel)">
         <div>
-          <h2 class="text-sm font-semibold">Background tasks</h2>
+          <h2 class="text-[15px] font-medium">Background tasks</h2>
           <p class="mt-0.5 text-xs text-[var(--muted)]">Used for auto chat titles and context summaries. Optional — leave blank to disable those features.</p>
         </div>
 
@@ -125,9 +125,9 @@
         </Field>
       </section>
 
-      <section class="flex flex-col gap-5 rounded-xl border p-5" style={panelStyle}>
+      <section class="flex flex-col gap-5 rounded-2xl p-5" style="background:var(--panel)">
         <div>
-          <h2 class="text-sm font-semibold">Web search</h2>
+          <h2 class="text-[15px] font-medium">Web search</h2>
           <p class="mt-0.5 text-xs text-[var(--muted)]">Enables the per-message search toggle in the composer.</p>
         </div>
         <Field label="SearXNG URL" hint="Self-hosted SearXNG base URL, e.g. http://searxng:8080. Blank disables web search. Private hosts need the server's TrustedURLNets/AllowLoopback config.">
@@ -135,18 +135,16 @@
         </Field>
       </section>
 
-      <section class="flex flex-col gap-4 rounded-xl border p-5" style={panelStyle}>
+      <section class="flex flex-col gap-4 rounded-2xl p-5" style="background:var(--panel)">
         <div>
-          <h2 class="text-sm font-semibold">Registration</h2>
+          <h2 class="text-[15px] font-medium">Registration</h2>
           <p class="mt-0.5 text-xs text-[var(--muted)]">Who can create accounts. The instance env var is the startup default; this overrides at runtime.</p>
         </div>
         <div class="grid gap-2 sm:grid-cols-3">
           {#each policies as p (p.value)}
             <label
-              class="flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition-colors"
-              style={form.registration === p.value
-                ? 'border-color:var(--accent); background:color-mix(in srgb, var(--accent) 10%, transparent)'
-                : 'border-color:var(--border); background:var(--panel-2)'}
+              class="flex cursor-pointer items-start gap-2.5 rounded-xl px-3 py-2.5 text-sm transition-colors hover:bg-[var(--fill-hover)]"
+              style={form.registration === p.value ? 'background:var(--panel-2)' : 'background:transparent'}
             >
               <input type="radio" name="registration" class="mt-0.5 h-4 w-4 accent-[var(--accent)]" value={p.value} bind:group={form.registration} />
               <span>
@@ -160,7 +158,7 @@
 
       <!-- dirty-state save bar -->
       {#if dirty}
-        <div class="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 shadow-xl backdrop-blur" style="background:var(--panel-2); border-color:var(--accent)">
+        <div class="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-2xl px-4 py-3" style="background:var(--panel-2); box-shadow:var(--shadow-menu)">
           <span class="text-xs font-medium text-[var(--muted)]">Unsaved system settings</span>
           <div class="flex items-center gap-2">
             <button type="button" class={btn} style={btnGhostStyle} onclick={reset} disabled={saving}>
@@ -177,7 +175,7 @@
     <!-- personal API tokens, admin edition -->
     <section class="flex flex-col gap-3">
       <div>
-        <h2 class="text-sm font-semibold">API tokens</h2>
+        <h2 class="text-[15px] font-medium">API tokens</h2>
         <p class="mt-0.5 text-xs text-[var(--muted)]">Your own <code class="font-mono">ck_…</code> keys for the OpenAI-compatible endpoint. Every user manages theirs under Settings.</p>
       </div>
       <TokensPanel />

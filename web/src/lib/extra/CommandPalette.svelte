@@ -188,25 +188,27 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
-    class="fixed inset-0 z-[60] flex justify-center bg-black/50 px-4 pt-[12vh]"
+    class="fixed inset-0 z-[60] flex justify-center bg-black/50 px-4 pt-[15vh]"
     role="presentation"
     onclick={closePalette}
   >
     <div
-      class="flex max-h-[70vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border shadow-2xl"
-      style="background:var(--panel); border-color:var(--border); color:var(--text)"
+      class="pop flex max-h-[70vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl"
+      style="background:var(--panel); color:var(--text); box-shadow:var(--shadow-menu)"
       role="dialog"
       aria-modal="true"
+      tabindex="-1"
       aria-label="Command palette"
       onclick={(e) => e.stopPropagation()}
       onkeydown={onKey}
     >
-      <div class="flex items-center gap-2 border-b px-3" style="border-color:var(--border)">
+      <div class="flex items-center gap-2.5 px-4 pb-2 pt-3.5">
         <Search size={16} class="shrink-0 text-[var(--muted)]" />
         <input
           bind:this={inputEl}
           type="text"
-          class="w-full bg-transparent py-3 text-sm outline-none placeholder:text-[var(--muted)]"
+          class="w-full bg-transparent py-1.5 text-[15px] outline-none placeholder:text-[var(--faint)]"
+          style="color:var(--text)"
           placeholder="Search chats, actions, models…"
           aria-label="Search commands"
           bind:value={query}
@@ -215,12 +217,9 @@
           autocomplete="off"
           spellcheck="false"
         />
-        <kbd
-          class="hidden shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-[var(--muted)] sm:block"
-          style="border-color:var(--border)"
-        >esc</kbd>
+        <kbd class="hidden shrink-0 text-[11px] text-[var(--muted)] sm:block">esc</kbd>
         <button
-          class="rounded-md p-1 opacity-50 hover:opacity-100 sm:hidden"
+          class="rounded-lg p-1 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] sm:hidden"
           aria-label="Close palette"
           onclick={closePalette}
         >
@@ -228,9 +227,9 @@
         </button>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <div class="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
         {#if !query.trim()}
-          <p class="flex items-center gap-2 px-2 py-4 text-sm text-[var(--muted)]">
+          <p class="flex items-center gap-2 px-2.5 py-4 text-sm text-[var(--muted)]">
             <Command size={14} /> Start typing…
           </p>
         {/if}
@@ -241,13 +240,13 @@
         {/if}
         {#each items as it, i (it.id)}
           {#if i === 0 || items[i - 1]?.section !== it.section}
-            <p class="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-[var(--muted)]">
+            <p class="px-2.5 pb-1 pt-2.5 text-xs font-medium text-[var(--muted)]">
               {it.section}
             </p>
           {/if}
           <button
-            class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
-            style={i === sel ? 'background:var(--panel-2)' : ''}
+            class="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm transition-colors"
+            style={i === sel ? 'background:var(--fill-hover)' : ''}
             bind:this={rowEls[i]}
             onmouseenter={() => (sel = i)}
             onclick={() => run(i)}
@@ -279,10 +278,7 @@
         {/each}
       </div>
 
-      <div
-        class="flex items-center gap-3 border-t px-3 py-2 text-[11px] text-[var(--muted)]"
-        style="border-color:var(--border)"
-      >
+      <div class="flex items-center gap-3 border-t px-4 py-2.5 text-xs text-[var(--muted)]" style="border-color:var(--border)">
         <span>↑↓ navigate</span>
         <span>↵ select</span>
         <span>esc close</span>
@@ -290,3 +286,25 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* §7: floating layer entrance — 150ms fade + rise */
+  .pop {
+    animation: pop-in 150ms ease-out;
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pop {
+      animation: none;
+    }
+  }
+</style>

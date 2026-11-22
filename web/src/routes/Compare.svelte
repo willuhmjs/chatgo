@@ -211,18 +211,16 @@
   });
 </script>
 
-<div class="flex h-full flex-col">
-  <header
-    class="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2"
-    style="border-color:var(--border); background:var(--panel)"
-  >
-    <GitCompare size={16} class="text-[var(--muted)]" />
-    <h1 class="text-sm font-semibold">Compare models</h1>
-    <div class="ml-2 flex items-center overflow-hidden rounded-lg border text-xs" style="border-color:var(--border)">
+<div class="flex h-full flex-col" style="background:var(--bg); color:var(--text)">
+  <header class="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2.5" style="border-color:var(--border)">
+    <GitCompare size={15} class="text-[var(--muted)]" />
+    <h1 class="text-[15px] font-medium tracking-tight">Compare models</h1>
+    <!-- quiet segmented pill -->
+    <div class="ml-2 flex items-center gap-0.5 rounded-full p-0.5" style="background:var(--panel)">
       {#each [2, 3] as n (n)}
         <button
-          class="px-2.5 py-1 {panes.length === n ? 'font-semibold' : 'text-[var(--muted)]'}"
-          style={panes.length === n ? 'background:var(--panel-2); color:var(--text)' : ''}
+          class="rounded-full px-2.5 py-1 text-xs transition-colors {panes.length === n ? 'font-medium' : ''}"
+          style={panes.length === n ? 'background:var(--panel-2); color:var(--text)' : 'color:var(--muted)'}
           aria-pressed={panes.length === n}
           onclick={() => setPaneCount(n)}
         >
@@ -231,8 +229,7 @@
       {/each}
     </div>
     <button
-      class="ml-auto flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs text-[var(--muted)] hover:text-[var(--text)]"
-      style="border-color:var(--border)"
+      class="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)] text-[var(--muted)] hover:text-[var(--text)]"
       onclick={clearPanes}
     >
       <Trash2 size={13} /> Clear panes
@@ -244,17 +241,14 @@
   {:else if models.length === 0}
     <!-- Guard: nothing to compare until a provider is configured -->
     <div class="flex flex-1 items-center justify-center p-6">
-      <div
-        class="w-full max-w-md rounded-xl border p-6 text-center"
-        style="background:var(--panel); border-color:var(--border)"
-      >
+      <div class="w-full max-w-md rounded-2xl p-6 text-center" style="background:var(--panel)">
         <Sparkles size={20} class="mx-auto mb-3 text-[var(--muted)]" />
         <p class="text-sm font-medium">No models loaded yet</p>
         <p class="mt-1 text-xs text-[var(--muted)]">
           Compare needs at least one model. Add a provider and sync its models first.
         </p>
         <button
-          class="mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+          class="mt-4 inline-flex items-center gap-1.5 rounded-[10px] px-3 py-1.5 text-xs font-medium"
           style="background:var(--accent); color:var(--accent-fg)"
           onclick={() => navigate('/admin')}
         >
@@ -266,20 +260,18 @@
       </div>
     </div>
   {:else}
+    <!-- panes on the canvas, hairline dividers instead of cards -->
     <div
-      class="grid min-h-0 flex-1 gap-2 overflow-y-auto p-2 md:overflow-hidden {panes.length === 3
+      class="grid min-h-0 flex-1 divide-y divide-[var(--border)] overflow-y-auto md:divide-y-0 md:divide-x md:overflow-hidden {panes.length === 3
         ? 'md:grid-cols-2 xl:grid-cols-3'
         : 'md:grid-cols-2'}"
     >
       {#each panes as p, i (p.id)}
-        <section
-          class="flex h-[65vh] min-h-0 flex-col overflow-hidden rounded-xl border md:h-auto"
-          style="background:var(--panel); border-color:var(--border)"
-        >
+        <section class="flex h-[60vh] min-h-0 flex-col md:h-auto" style="background:var(--bg)">
           <div class="flex shrink-0 items-center gap-2 border-b px-2.5 py-2" style="border-color:var(--border)">
             <select
-              class="min-w-0 flex-1 truncate rounded-lg border bg-transparent px-2 py-1 text-xs outline-none"
-              style="background:var(--panel-2); border-color:var(--border); color:var(--text)"
+              class="-ml-2 min-w-0 flex-1 cursor-pointer truncate rounded-lg bg-transparent px-2 py-1 text-[13px] font-medium outline-none transition-colors hover:bg-[var(--fill-hover)] disabled:opacity-60 focus-visible:[box-shadow:0_0_0_3px_var(--accent-soft)]"
+              style="color:var(--text)"
               value={p.model ? modelKey(p.model) : ''}
               disabled={p.streaming}
               onchange={(e) => onModelPick(p, e)}
@@ -294,16 +286,13 @@
               {/each}
             </select>
             {#if p.streaming}
-              <span
-                class="shrink-0 animate-pulse rounded-full border px-2 py-0.5 text-[10px]"
-                style="border-color:var(--accent); color:var(--accent)"
-              >
+              <span class="flex shrink-0 items-center gap-1.5 text-xs text-[var(--muted)]">
+                <span class="h-1.5 w-1.5 animate-pulse rounded-full" style="background:var(--accent)"></span>
                 generating
               </span>
             {:else if p.latencyMs != null || p.usage}
               <span
-                class="flex shrink-0 items-center gap-2 rounded-full border px-2 py-0.5 text-[10px] text-[var(--muted)]"
-                style="border-color:var(--border)"
+                class="flex shrink-0 items-center gap-2 text-xs text-[var(--muted)]"
                 title="tokens in/out · time to completion"
               >
                 {#if p.usage}
@@ -318,53 +307,53 @@
 
           <div
             bind:this={bodies[i]}
-            class="min-h-0 flex-1 overflow-y-auto px-3 py-2"
+            class="min-h-0 flex-1 overflow-y-auto px-4 py-3"
           >
             {#if p.msgs.length === 0}
-              <p class="py-8 text-center text-xs text-[var(--muted)]">
+              <p class="py-8 text-center text-[13px] text-[var(--muted)]">
                 Send a prompt below — this pane answers with <span class="text-[var(--text)]">{p.model ? modelLabel(p.model) : '…'}</span>.
               </p>
             {/if}
             {#each p.msgs as m (m.id)}
-              <div class="mb-3 {m.role === 'user' ? 'text-right' : ''}">
+              <div class="mb-5 {m.role === 'user' ? 'text-right' : ''}">
                 {#if m.role === 'user'}
+                  <!-- own copy of the §5 look: right-aligned pill -->
                   <div
-                    class="inline-block max-w-[90%] rounded-xl px-3 py-2 text-left text-sm whitespace-pre-wrap"
-                    style="background:var(--panel-2)"
+                    class="inline-block max-w-[85%] rounded-[20px] px-4 py-2.5 text-left text-sm leading-relaxed whitespace-pre-wrap"
+                    style="background:var(--panel)"
                   >
                     {m.content}
                   </div>
                 {:else}
-                  <div
-                    class="inline-block max-w-full rounded-xl border px-3 py-2 text-left"
-                    style="border-color:var(--border)"
-                  >
+                  <!-- own copy of the §5 look: assistant = plain text on canvas -->
+                  <div class="msg-plain">
                     {#if m.error}
-                      <p class="text-xs" style="color:var(--danger)">{m.error}</p>
+                      <p class="text-[13px]" style="color:var(--danger)">{m.error}</p>
                     {:else if m.content}
                       <div class="md">{@html renderMarkdown(m.content)}</div>
                     {:else}
-                      <p class="text-xs text-[var(--muted)]">…</p>
+                      <span class="inline-block h-3 w-1.5 animate-pulse rounded-sm" style="background:var(--faint)"></span>
                     {/if}
                   </div>
                 {/if}
               </div>
             {/each}
             {#if p.error}
-              <p class="text-xs" style="color:var(--danger)">{p.error}</p>
+              <p class="mb-3 text-[13px]" style="color:var(--danger)">{p.error}</p>
             {/if}
           </div>
         </section>
       {/each}
     </div>
 
-    <!-- shared composer: one prompt → all panes concurrently -->
-    <div class="sticky bottom-0 shrink-0 border-t p-3" style="background:var(--bg); border-color:var(--border)">
-      <div class="flex items-end gap-2">
+    <!-- shared composer: one prompt → all panes concurrently. Own copy of the
+         §6 ChatGPT pill. -->
+    <div class="shrink-0 px-4 pb-4 pt-2" style="background:var(--bg)">
+      <div class="pill mx-auto flex max-w-[48rem] items-end gap-2 rounded-[26px] px-4 pt-3 pb-3">
         <textarea
           rows="2"
-          class="max-h-40 min-w-0 flex-1 resize-none rounded-xl border px-3 py-2 text-sm outline-none"
-          style="background:var(--panel); border-color:var(--border); color:var(--text)"
+          class="max-h-40 min-w-0 flex-1 resize-none bg-transparent text-base outline-none placeholder:text-[var(--faint)]"
+          style="color:var(--text)"
           placeholder="Ask all {panes.length} models the same thing… (Enter to send, Shift+Enter newline)"
           bind:value={draft}
           onkeydown={(e) => {
@@ -376,23 +365,46 @@
         ></textarea>
         {#if anyStreaming}
           <button
-            class="flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium"
-            style="border-color:var(--danger); color:var(--danger)"
+            class="flex size-8 shrink-0 items-center justify-center rounded-full transition-opacity hover:opacity-90"
+            style="background:var(--accent); color:var(--accent-fg)"
+            aria-label="Stop all streams"
+            title="Stop all"
             onclick={stopAll}
           >
-            <Square size={14} /> Stop all
+            <Square size={12} />
           </button>
         {:else}
           <button
-            class="flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium disabled:opacity-50"
+            class="flex size-8 shrink-0 items-center justify-center rounded-full transition-opacity hover:opacity-90 disabled:opacity-25 disabled:hover:opacity-25"
             style="background:var(--accent); color:var(--accent-fg)"
+            aria-label="Send to {panes.length} models"
+            title="Send to {panes.length} models"
             disabled={!draft.trim()}
             onclick={sendAll}
           >
-            <Send size={14} /> Send to {panes.length}
+            <Send size={14} />
           </button>
         {/if}
       </div>
     </div>
   {/if}
 </div>
+
+<style>
+  /* composer pill (§6): --panel fill, soft shadow, brighter on focus, no border */
+  .pill {
+    background: var(--panel);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+    transition: background 150ms ease;
+  }
+  .pill:focus-within {
+    /* fill-hover over the panel fill — solid, theme-aware (§6 #353535) */
+    background: linear-gradient(var(--fill-hover), var(--fill-hover)) var(--panel);
+  }
+  /* assistant body inherits the plain-text look */
+  .msg-plain :global(.md) {
+    font-size: 15px;
+    line-height: 1.7;
+  }
+</style>
+

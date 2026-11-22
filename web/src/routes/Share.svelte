@@ -37,25 +37,16 @@
   <title>{chat ? `${chat.title} — ChatGo` : 'Shared chat — ChatGo'}</title>
 </svelte:head>
 
-<div class="share mx-auto flex h-full w-full max-w-[48rem] flex-col">
-  <header
-    class="chrome flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-6 py-4"
-    style="border-color:var(--border)"
-  >
-    <span class="flex items-center gap-1.5 text-sm font-semibold" style="color:var(--accent)">
-      <Sparkles size={15} /> ChatGo
+<div class="share mx-auto flex h-full w-full max-w-[48rem] flex-col" style="background:var(--bg); color:var(--text)">
+  <header class="chrome flex shrink-0 items-center gap-x-2.5 gap-y-1 border-b px-6 py-3.5" style="border-color:var(--border)">
+    <span class="flex items-center gap-1.5 text-sm font-medium">
+      <Sparkles size={14} /> ChatGo
     </span>
-    <span
-      class="rounded-full border px-2 py-0.5 text-[11px] text-[var(--muted)]"
-      style="border-color:var(--border)"
-    >
-      Shared chat
-    </span>
+    <span class="text-xs text-[var(--muted)]">Shared chat</span>
     {#if chat}
-      <span class="text-xs text-[var(--muted)]">{dateLabel}</span>
+      <span class="text-xs text-[var(--muted)]">· {dateLabel}</span>
       <span
-        class="ml-auto rounded-full border px-2.5 py-0.5 text-xs"
-        style="border-color:var(--border); color:var(--muted)"
+        class="ml-auto max-w-[14rem] truncate text-xs text-[var(--muted)]"
         title="Model{chat.provider_id ? ` · ${chat.provider_id}` : ''}"
       >
         {chat.model_id || 'unknown model'}
@@ -63,26 +54,29 @@
     {/if}
   </header>
 
-  <main class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+  <main class="min-h-0 flex-1 overflow-y-auto px-6 py-8">
     {#if error}
-      <div class="rounded-xl border px-4 py-6 text-center text-sm" style="border-color:var(--border)">
-        <p style="color:var(--danger)">{error}</p>
+      <div class="rounded-xl px-4 py-6 text-center text-sm" style="background:color-mix(in srgb, var(--danger) 8%, transparent); color:var(--danger)">
+        {error}
         <p class="mt-1 text-xs text-[var(--muted)]">This link may have been revoked or the chat deleted.</p>
       </div>
     {:else if chat}
-      <h1 class="mb-5 text-xl font-semibold">{chat.title}</h1>
-      <div class="flex flex-col gap-5">
+      <h1 class="mb-7 text-lg font-semibold tracking-tight">{chat.title}</h1>
+      <div class="flex flex-col gap-6">
         {#each messages as m (m.id)}
-          <article>
-            <p class="mb-1 text-[11px] font-medium uppercase tracking-wider text-[var(--muted)]">
+          <article class={m.role === 'assistant' ? '' : 'text-right'}>
+            <p class="mb-1.5 text-xs text-[var(--muted)]">
               {m.role === 'assistant' ? (chat.model_id || 'Assistant') : m.role}
             </p>
             {#if m.error}
               <p class="text-sm" style="color:var(--danger)">{m.error}</p>
             {:else if m.role === 'assistant'}
+              <!-- assistant: plain text on canvas, 16px (§5) -->
               <div class="md">{@html renderMarkdown(m.content)}</div>
             {:else}
-              <p class="text-sm whitespace-pre-wrap">{m.content}</p>
+              <p class="inline-block max-w-[85%] rounded-[20px] px-4 py-2.5 text-left text-[15px] leading-relaxed whitespace-pre-wrap" style="background:var(--panel)">
+                {m.content}
+              </p>
             {/if}
             {#if m.sources?.length}
               <details class="mt-2 text-xs text-[var(--muted)]">
@@ -109,14 +103,20 @@
 
   <footer class="chrome shrink-0 px-6 pb-5 pt-2 text-center">
     <span
-      class="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs text-[var(--muted)]"
-      style="background:var(--panel); border-color:var(--border)"
-      >made with <span style="color:var(--accent)" class="font-medium">ChatGo</span></span
+      class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs text-[var(--muted)]"
+      style="background:var(--panel)"
+      >made with <span class="font-medium text-[var(--text)]">ChatGo</span></span
     >
   </footer>
 </div>
 
 <style>
+  /* assistant prose at the canvas reading size (§2/§5) */
+  main :global(.md) {
+    font-size: 16px;
+    line-height: 1.7;
+  }
+
   /* print-friendly: drop chrome, expand column, black on white */
   @media print {
     .chrome {
@@ -125,6 +125,7 @@
     .share {
       height: auto;
       max-width: none;
+      background: #fff !important;
       color: #000;
     }
   }

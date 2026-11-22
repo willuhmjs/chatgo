@@ -1,6 +1,8 @@
 <script lang="ts">
-  // Minimal icon button (local FE-chat primitive — FE-shell's lib/ui/* lands
-  // in parallel, so we ship our own to stay independent).
+  // Minimal ghost icon button (local FE-chat primitive — FE-shell's lib/ui/*
+  // lands in parallel, so we ship our own to stay independent).
+  // Spec §5/§6 (docs/DESIGN-POLISH.md): quiet --muted icon, circular fill on
+  // hover (--fill-hover), no borders; active = full-strength text.
   import type { Snippet } from 'svelte';
 
   let {
@@ -40,29 +42,25 @@
     justify-content: center;
     width: 1.75rem;
     height: 1.75rem;
-    border-radius: 0.5rem;
-    border: 1px solid transparent;
+    border-radius: 999px;
+    border: 0;
     background: transparent;
-    color: var(--muted);
+    color: var(--muted, #a8a8a8);
     cursor: pointer;
     transition:
       background 120ms ease,
-      color 120ms ease,
-      border-color 120ms ease;
+      color 120ms ease;
   }
   .iconbtn:hover:not(:disabled) {
-    background: var(--panel-2);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
     color: var(--text);
-    border-color: var(--border);
   }
   .iconbtn:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
   }
   .iconbtn.active {
-    background: color-mix(in oklab, var(--accent) 14%, transparent);
-    color: var(--accent);
-    border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+    color: var(--text);
   }
   .iconbtn.danger:hover:not(:disabled) {
     color: var(--danger);

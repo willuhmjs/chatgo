@@ -12,6 +12,14 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 
 ## Features
 
+- **Sign-in required** — the SPA shell is guarded server-side: anonymous page
+  loads 302 to `/login` (static assets and `/s/<token>` share pages stay
+  public by design). `GET /api/auth/status` → `{authenticated, first_run}`
+  drives the client-side gate.
+- **Guided first run** — `/welcome` creates the instance admin under *any*
+  `REGISTRATION` policy (a fresh deploy is never bricked by its default), then
+  the `/onboarding` admin wizard walks provider → task model → invites /
+  approvals.
 - **Multi-user with roles** — `admin` / `user` / `pending`, admin user
   management, approval flow for new signups.
 - **OIDC SSO** — standard code flow (+nonce); works out of the box with
@@ -58,9 +66,12 @@ docker run -d --name chatgo \
   and keep it out of git; it keys session signing *and* at-rest encryption of
   provider API keys, so rotating it invalidates sessions **and** makes stored
   provider keys unreadable.
-- First registered user should be given the admin role (subsequent
-  signups land as `pending` under the default `REGISTRATION=approve`), or set
-  `ADMIN_EMAIL` to pin admin to a specific account.
+- The first visit redirects to `/login`; on a brand-new instance `/welcome`
+  then offers the create-admin form — the first account becomes admin under
+  any `REGISTRATION` policy (later signups follow it, landing as `pending`
+  under the default `REGISTRATION=approve`), or set `ADMIN_EMAIL` to pin admin
+  to a specific account. First sign-in continues into the `/onboarding` admin
+  wizard (provider → task model → invites / approvals).
 
 Then open <http://localhost:8080>.
 

@@ -10,6 +10,8 @@ const ROUTES = [
   { name: 'admin', pattern: '/admin' },
   { name: 'login', pattern: '/login' },
   { name: 'register', pattern: '/register' },
+  { name: 'welcome', pattern: '/welcome' },
+  { name: 'onboarding', pattern: '/onboarding' },
   { name: 'share', pattern: '/s/:token' },
 ];
 

@@ -1,46 +1,36 @@
 <script lang="ts">
+  // Auth shell (FE-admin owned) — clean two-column per docs/DESIGN-POLISH.md §1:
+  // quiet wordmark column on --bg-deep, form on --bg. No gradients; fill
+  // contrast instead of borders.
   import type { Snippet } from 'svelte';
-  import { MessageSquare, Server, ShieldCheck, Sparkles } from 'lucide-svelte';
+  import { MessageSquare } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
 
   const features = [
-    { icon: Server, text: 'Every model in one place — any OpenAI-compatible endpoint, synced live.' },
-    { icon: Sparkles, text: 'Web-search grounding, folders, tags, sharing and gallery artifacts.' },
-    { icon: ShieldCheck, text: 'Self-hosted in one small binary. Prompts never leave your infrastructure.' },
-    { icon: MessageSquare, text: 'Team-ready: OIDC single sign-on, approval queues and per-user API tokens.' },
+    'Every model in one place — any OpenAI-compatible endpoint, synced live.',
+    'Search grounding, folders, tags, sharing and gallery artifacts.',
+    'Self-hosted in one small binary. Prompts never leave your infrastructure.',
   ];
 </script>
 
-<div class="flex h-full w-full overflow-y-auto">
-  <!-- hero -->
-  <aside
-    class="hidden w-[46%] shrink-0 flex-col justify-between px-12 py-10 lg:flex xl:px-16"
-    style="background: radial-gradient(70rem 42rem at 12% 18%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%), var(--bg); border-right:1px solid var(--border)"
-  >
-    <div class="flex items-center gap-2.5">
-      <span class="flex h-9 w-9 items-center justify-center rounded-xl" style="background:var(--accent); color:var(--accent-fg)">
-        <MessageSquare size={18} />
+<div class="flex h-full w-full overflow-y-auto" style="background:var(--bg)">
+  <!-- quiet wordmark column -->
+  <aside class="hidden w-[42%] shrink-0 flex-col justify-between px-12 py-10 lg:flex xl:px-16" style="background:var(--bg-deep)">
+    <div class="flex items-center gap-2">
+      <span class="flex h-7 w-7 items-center justify-center rounded-lg" style="background:var(--accent); color:var(--accent-fg)">
+        <MessageSquare size={15} />
       </span>
-      <span class="text-lg font-semibold tracking-tight">ChatGo</span>
+      <span class="text-[15px] font-medium tracking-tight" style="color:var(--text)">ChatGo</span>
     </div>
 
-    <div class="flex flex-col gap-8">
-      <h2 class="max-w-md text-3xl font-semibold leading-snug tracking-tight">
-        Team chat,<br />every model,<br /><span style="color:var(--accent)">one tiny binary.</span>
-      </h2>
-      <ul class="flex max-w-md flex-col gap-4">
-        {#each features as f (f.text)}
-          {@const Icon = f.icon}
-          <li class="flex items-start gap-3 text-sm leading-relaxed text-[var(--muted)]">
-            <span class="mt-0.5 shrink-0" style="color:var(--accent)"><Icon size={16} /></span>
-            {f.text}
-          </li>
-        {/each}
-      </ul>
-    </div>
+    <ul class="flex max-w-sm flex-col gap-3.5">
+      {#each features as text (text)}
+        <li class="text-sm leading-relaxed" style="color:var(--muted)">{text}</li>
+      {/each}
+    </ul>
 
-    <p class="text-xs text-[var(--muted)]">Apache-2.0 · single binary · runs in &lt; 128&nbsp;MiB</p>
+    <p class="text-xs" style="color:var(--faint)">Apache-2.0 · single binary · runs in &lt; 128&nbsp;MiB</p>
   </aside>
 
   <!-- form column -->

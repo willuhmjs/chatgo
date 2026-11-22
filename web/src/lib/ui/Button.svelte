@@ -32,12 +32,14 @@
 </button>
 
 <style>
+  /* §1/§5: primary = solid white (--accent) with --accent-fg label. Quiet ghosts
+     elsewhere; pill radius like ChatGPT buttons. */
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    border-radius: 0.5rem;
+    border-radius: 999px;
     border: 1px solid transparent;
     font-weight: 500;
     line-height: 1;
@@ -55,7 +57,7 @@
     cursor: not-allowed;
   }
   .btn:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
     outline-offset: 2px;
   }
   @media (pointer: coarse) {
@@ -66,17 +68,17 @@
 
   .btn-sm {
     height: 2rem;
-    padding: 0 0.75rem;
-    font-size: 0.75rem;
+    padding: 0 0.875rem;
+    font-size: 0.8125rem;
   }
   .btn-md {
     height: 2.25rem;
-    padding: 0 0.875rem;
+    padding: 0 1rem;
     font-size: 0.8125rem;
   }
   .btn-lg {
     height: 2.75rem;
-    padding: 0 1.125rem;
+    padding: 0 1.25rem;
     font-size: 0.875rem;
   }
 
@@ -85,29 +87,29 @@
     color: var(--accent-fg);
   }
   .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.12);
+    background: color-mix(in srgb, var(--accent), var(--muted) 14%);
   }
+  /* gradient variant retired (§3 "no big gradient button") → same solid primary */
   .btn-gradient {
-    background: linear-gradient(135deg, var(--accent), #8b5cf6);
+    background: var(--accent);
     color: var(--accent-fg);
   }
   .btn-gradient:hover:not(:disabled) {
-    filter: brightness(1.12);
+    background: color-mix(in srgb, var(--accent), var(--muted) 14%);
   }
   .btn-secondary {
     background: var(--panel-2);
     color: var(--text);
-    border-color: var(--border);
   }
   .btn-secondary:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--text) 25%, var(--border));
+    background: color-mix(in srgb, var(--panel-2), var(--text) 10%);
   }
   .btn-ghost {
     background: transparent;
     color: var(--text);
   }
   .btn-ghost:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: var(--fill-hover);
   }
   .btn-outline {
     background: transparent;
@@ -115,7 +117,7 @@
     border-color: var(--border);
   }
   .btn-outline:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text) 6%, transparent);
+    background: var(--fill-hover);
   }
   .btn-danger {
     background: var(--danger);

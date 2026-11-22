@@ -1,6 +1,9 @@
 <script lang="ts">
-  // Model pill + grouped dropdown (by provider, context-length badge).
-  // Selection persists per-chat via PATCH /api/chats/{id}.
+  // Model picker (docs/DESIGN-POLISH.md §6): quiet "name + ⌄" trigger inside
+  // the composer pill; menu is rounded-xl --panel, grouped by provider,
+  // checkmark on the right, context length as a 12px --muted line, and a
+  // short scale(0.97→1)+fade pop. Selection persists per-chat via
+  // PATCH /api/chats/{id}.
   import type { Chat, ModelEntry } from '$lib/api';
   import * as api from '$lib/api';
   import { models, loadModels, modelsByProvider } from '$lib/chat/state.svelte.js';
@@ -85,7 +88,7 @@
 <div bind:this={root} class="relative">
   <button
     type="button"
-    class="pill"
+    class="trigger"
     class:activep={open}
     title="Pick model (persisted for this chat)"
     aria-haspopup="listbox"
@@ -95,27 +98,24 @@
       open = !open;
     }}
   >
-    <span class="max-w-[15rem] truncate">{label}</span>
-    {#if current?.context_len}
-      <span class="badge">{formatContextLen(current.context_len)}</span>
-    {/if}
+    <span class="max-w-[14rem] truncate">{label}</span>
     <ChevronDown size={13} style={open ? 'transform: rotate(180deg)' : ''} class="transition-transform" />
   </button>
 
   {#if open}
     <div class="pop" role="listbox" aria-label="Models">
-      <div class="flex items-center gap-2 border-b px-2.5 py-2" style="border-color:var(--border)">
+      <div class="flex items-center gap-2 px-3 pb-1.5 pt-2.5">
         <Search size={13} style="color:var(--muted)" />
         <input
           bind:this={input}
           bind:value={filter}
-          class="w-full bg-transparent text-xs outline-none"
+          class="w-full bg-transparent text-[13px] outline-none"
           style="color:var(--text)"
           placeholder="Filter models…"
           aria-label="Filter models"
         />
       </div>
-      <div class="max-h-72 overflow-y-auto py-1">
+      <div class="max-h-72 overflow-y-auto px-1 pb-1.5">
         {#if models.loading && !models.items.length}
           <p class="px-3 py-3 text-xs" style="color:var(--muted)">Loading models…</p>
         {:else if models.error}
@@ -126,9 +126,7 @@
           </p>
         {:else}
           {#each groups as [provider, items] (provider)}
-            <p class="px-3 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wider" style="color:var(--muted)">
-              {provider}
-            </p>
+            <p class="group-label">{provider}</p>
             {#each items as m (m.provider_id + ':' + m.model_id)}
               <button
                 type="button"
@@ -138,12 +136,14 @@
                 role="option"
                 aria-selected={current?.model_id === m.model_id}
               >
-                <span class="min-w-0 flex-1 truncate">{m.display || m.model_id}</span>
-                {#if m.context_len}
-                  <span class="badge">{formatContextLen(m.context_len)}</span>
-                {/if}
+                <span class="min-w-0 flex-1">
+                  <span class="name">{m.display || m.model_id}</span>
+                  {#if m.context_len}
+                    <span class="meta">{formatContextLen(m.context_len)} context</span>
+                  {/if}
+                </span>
                 {#if current?.model_id === m.model_id && current?.provider_id === m.provider_id}
-                  <Check size={13} style="color:var(--accent)" />
+                  <Check size={14} style="flex:none" />
                 {/if}
               </button>
             {/each}
@@ -155,32 +155,26 @@
 </div>
 
 <style>
-  .pill {
+  /* quiet ghost trigger inside the composer pill (§6) */
+  .trigger {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.25rem;
     border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--panel);
+    border: 0;
+    background: transparent;
     color: var(--text);
-    font-size: 0.75rem;
-    padding: 0.3rem 0.7rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 0.3rem 0.55rem;
     cursor: pointer;
-    transition: border-color 120ms ease;
+    transition: background 120ms ease;
   }
-  .pill:hover,
+  .trigger:hover,
   .activep {
-    border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
   }
-  .badge {
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.65rem;
-    line-height: 1;
-    padding: 0.18rem 0.4rem;
-    font-variant-numeric: tabular-nums;
-  }
+
   .pop {
     position: absolute;
     bottom: calc(100% + 8px);
@@ -188,29 +182,68 @@
     z-index: 30;
     width: 21rem;
     min-width: 16rem;
-    border-radius: 0.75rem;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    box-shadow: 0 12px 32px rgb(0 0 0 / 0.4);
+    border-radius: 0.875rem;
+    border: 0;
+    background: var(--panel, #2f2f2f);
+    box-shadow: var(--shadow-menu, 0 8px 28px rgb(0 0 0 / 0.45));
     overflow: hidden;
+    animation: menu-pop 90ms ease-out;
+  }
+  .group-label {
+    padding: 0.55rem 0.75rem 0.15rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted, #a8a8a8);
   }
   .row {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    padding: 0.4rem 0.75rem;
-    font-size: 0.8125rem;
-    color: var(--text);
-    background: transparent;
+    padding: 0.4rem 0.65rem;
     border: 0;
+    border-radius: 0.625rem;
+    background: transparent;
     text-align: left;
     cursor: pointer;
+    transition: background 120ms ease;
   }
   .row:hover {
-    background: var(--panel-2);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
   }
   .row.sel {
-    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+  .name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.875rem;
+    color: var(--text);
+  }
+  /* context length as a quiet 12px line under the model name (§6) */
+  .meta {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted, #a8a8a8);
+    font-variant-numeric: tabular-nums;
+  }
+  @keyframes menu-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pop {
+      animation: none;
+    }
   }
 </style>

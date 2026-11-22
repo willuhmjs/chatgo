@@ -10,9 +10,9 @@
   } = $props();
 
   const styles: Record<string, string> = {
-    muted: 'background:var(--panel-2); color:var(--muted); border:1px solid var(--border)',
-    accent: 'background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent)',
-    success: 'background:color-mix(in srgb, #34d399 14%, transparent); color:#34d399',
+    muted: 'background:var(--panel-2); color:var(--muted)',
+    accent: 'background:var(--panel-2); color:var(--text)',
+    success: 'background:color-mix(in srgb, #10a37f 14%, transparent); color:#10a37f',
     danger: 'background:color-mix(in srgb, var(--danger) 14%, transparent); color:var(--danger)',
   };
 </script>

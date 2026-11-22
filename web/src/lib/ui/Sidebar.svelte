@@ -1,6 +1,7 @@
 <script lang="ts">
   // App sidebar (FE-shell): chat list w/ search + folders + tags + pinned +
-  // day grouping, row hover menu (rename/pin/move/delete), user block.
+  // day grouping, row hover menu (rename/pin/move/delete), user menu.
+  // Styling follows docs/DESIGN-POLISH.md §3 — quiet rows on --bg-deep.
   import * as api from '$lib/api';
   import type { Chat, Folder, Tag } from '$lib/api';
   import { currentRoute, location, navigate } from '$lib/router.svelte.js';
@@ -23,6 +24,7 @@
   import {
     ChevronDown,
     ChevronRight,
+    ChevronUp,
     Clock,
     Folder as FolderIcon,
     FolderInput,
@@ -41,6 +43,7 @@
     Search,
     Settings,
     ShieldCheck,
+    SquarePen,
     Sun,
     Trash2,
   } from 'lucide-svelte';
@@ -193,6 +196,11 @@
     onCloseMobile?.();
   }
 
+  function newChat() {
+    navigate('/');
+    onCloseMobile?.();
+  }
+
   function startRename(c: Chat) {
     renamingId = c.id;
     renameValue = c.title;
@@ -319,13 +327,16 @@
   }
 
   const displayName = $derived(user?.name || user?.email || 'Signed out');
+
+  const rowFocus =
+    'focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]';
 </script>
 
 <!-- row snippet (shared by pinned / folder / day sections) -->
 {#snippet chatRow(c: Chat)}
     {#if renamingId === c.id}
       <form
-        class="px-1 py-0.5"
+        class="px-1.5 py-0.5"
         onsubmit={(e) => {
           e.preventDefault();
           void commitRename(c);
@@ -334,8 +345,8 @@
         <input
           bind:this={renameEl}
           bind:value={renameValue}
-          class="w-full rounded-md border px-2 py-1 text-sm outline-none"
-          style="background:var(--panel-2); border-color:var(--accent); color:var(--text)"
+          class="h-9 w-full rounded-lg border-0 px-2.5 text-sm text-[var(--text)] outline-none"
+          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent)"
           onkeydown={(e) => {
             if (e.key === 'Escape') {
               e.stopPropagation();
@@ -347,9 +358,9 @@
       </form>
     {:else}
       <div
-        class="chat-row group flex items-center rounded-lg {activeId === c.id
-          ? 'bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text)]'
-          : 'text-[var(--muted)] hover:bg-[color-mix(in_srgb,var(--text)_7%,transparent)] hover:text-[var(--text)]'}"
+        class="chat-row group flex h-9 items-center rounded-lg {activeId === c.id
+          ? 'bg-[var(--fill-hover)] text-[var(--text)]'
+          : 'text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]'}"
       >
         <a
           data-row
@@ -358,34 +369,34 @@
             e.preventDefault();
             go(c.id);
           }}
-          class="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)]"
+          class="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-sm {rowFocus}"
         >
           {#if c.pinned}<Pin class="size-3 shrink-0 opacity-60" />{/if}
-          {#if c.share_token}<span class="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" title="Shared"></span>{/if}
+          {#if c.share_token}<span class="size-1.5 shrink-0 rounded-full bg-[var(--indigo)]" title="Shared"></span>{/if}
           <span class="truncate">{c.title || 'Untitled'}</span>
         </a>
-        <span class="time-ago shrink-0 pr-1.5 text-[10px] tabular-nums opacity-50 group-hover:hidden group-focus-within:hidden">
+        <span class="time-ago shrink-0 pr-1.5 text-[11px] tabular-nums text-[var(--faint)] group-hover:hidden group-focus-within:hidden">
           {timeAgo(c.updated_at)}
         </span>
-        <span class="pr-1 invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+        <span class="shrink-0 pr-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100">
           <Dropdown label="Chat actions">
             <MoreHorizontal class="size-4" />
             {#snippet items({ close })}
               <MenuItem onclick={() => startRename(c)} {close}>
-                {#snippet icon()}<Pencil class="size-3.5" />{/snippet}
+                {#snippet icon()}<Pencil class="size-4" />{/snippet}
                 Rename
               </MenuItem>
               <MenuItem onclick={() => void togglePin(c)} {close}>
-                {#snippet icon()}{#if c.pinned}<PinOff class="size-3.5" />{:else}<Pin class="size-3.5" />{/if}{/snippet}
+                {#snippet icon()}{#if c.pinned}<PinOff class="size-4" />{:else}<Pin class="size-4" />{/if}{/snippet}
                 {c.pinned ? 'Unpin' : 'Pin to top'}
               </MenuItem>
               <MenuItem onclick={() => startMove(c)} {close}>
-                {#snippet icon()}<FolderInput class="size-3.5" />{/snippet}
+                {#snippet icon()}<FolderInput class="size-4" />{/snippet}
                 Move to folder…
               </MenuItem>
               <div class="my-1 border-t" style="border-color:var(--border)"></div>
               <MenuItem danger onclick={() => void removeChat(c)} {close}>
-                {#snippet icon()}<Trash2 class="size-3.5" />{/snippet}
+                {#snippet icon()}<Trash2 class="size-4" />{/snippet}
                 Delete
               </MenuItem>
             {/snippet}
@@ -396,98 +407,87 @@
   {/snippet}
 
   {#snippet sectionLabel(text: string)}
-    <p class="px-2 pt-3 pb-1 text-[11px] font-semibold tracking-wide text-[var(--muted)] uppercase">{text}</p>
+    <p class="px-2.5 pt-3 pb-0.5 text-xs font-medium text-[var(--muted)]">{text}</p>
   {/snippet}
 
 <aside
   class="chat-sidebar {mobileOpen ? 'is-open' : ''}"
-  style="background:var(--panel); border-color:var(--border); width:{rail ? 72 : 260}px"
+  style="background:var(--bg-deep); width:{rail ? 72 : 260}px"
   aria-label="Sidebar"
 >
-  <!-- header -->
-  <div class="flex h-14 shrink-0 items-center gap-2 px-3">
-    {#if rail}
+  <!-- top row: toggle + new chat + brand glyph (§3) -->
+  {#if rail}
+    <div class="flex shrink-0 flex-col items-center gap-1 px-2 pt-2">
       <Tooltip text="Expand sidebar" side="right">
         <IconButton label="Expand sidebar" onclick={() => onToggleCollapse?.()}>
-          <PanelLeftOpen class="size-4" />
+          <PanelLeftOpen class="size-[18px]" />
         </IconButton>
       </Tooltip>
-    {:else}
+      <Tooltip text="New chat" side="right">
+        <IconButton label="New chat" onclick={newChat}>
+          <SquarePen class="size-[18px]" />
+        </IconButton>
+      </Tooltip>
+      <Tooltip text="Search chats" side="right">
+        <IconButton label="Search chats" onclick={() => onToggleCollapse?.()}>
+          <Search class="size-[18px]" />
+        </IconButton>
+      </Tooltip>
+    </div>
+  {:else}
+    <div class="flex h-12 shrink-0 items-center gap-0.5 px-2">
+      <IconButton label="Collapse sidebar" onclick={() => onToggleCollapse?.()} class="hidden md:inline-flex">
+        <PanelLeftClose class="size-[18px]" />
+      </IconButton>
+      <IconButton label="Close sidebar" onclick={() => onCloseMobile?.()} class="md:hidden">
+        <PanelLeftClose class="size-[18px]" />
+      </IconButton>
+      <IconButton label="New chat" onclick={newChat}>
+        <SquarePen class="size-[18px]" />
+      </IconButton>
+      <span class="min-w-0 flex-1"></span>
       <a
         href="/"
+        aria-label="ChatGo home"
         onclick={(e) => {
           e.preventDefault();
           navigate('/');
           onCloseMobile?.();
         }}
-        class="flex min-w-0 flex-1 items-center gap-2 rounded-lg focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)]"
+        class="grid size-7 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
+        >C</a
       >
-        <span
-          class="grid size-7 shrink-0 place-items-center rounded-lg text-[13px] font-bold text-white"
-          style="background:linear-gradient(135deg,var(--accent),#8b5cf6)"
-        >C</span>
-        <span class="truncate text-sm font-semibold">ChatGo</span>
-      </a>
-      <IconButton label="Collapse sidebar" onclick={() => onToggleCollapse?.()} class="hidden md:inline-flex">
-        <PanelLeftClose class="size-4" />
-      </IconButton>
-      <IconButton label="Close sidebar" onclick={() => onCloseMobile?.()} class="md:hidden">
-        <PanelLeftClose class="size-4" />
-      </IconButton>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
-  <!-- new chat -->
-  <div class="shrink-0 px-3 pb-2">
-    {#if rail}
-      <Tooltip text="New chat" side="right">
-        <IconButton label="New chat" onclick={() => { navigate('/'); onCloseMobile?.(); }}>
-          <Plus class="size-5" />
-        </IconButton>
-      </Tooltip>
-    {:else}
-      <Button variant="gradient" full onclick={() => { navigate('/'); onCloseMobile?.(); }}>
-        <Plus class="size-4" /> New chat
-      </Button>
-    {/if}
-  </div>
-
-  <!-- search -->
-  <div class="shrink-0 px-3 pb-2">
-    {#if rail}
-      <Tooltip text="Search chats" side="right">
-        <IconButton label="Search chats" onclick={() => onToggleCollapse?.()}>
-          <Search class="size-4" />
-        </IconButton>
-      </Tooltip>
-    {:else}
+  <!-- search: ghost row with magnifier -->
+  {#if !rail}
+    <div class="shrink-0 px-2 pb-1">
       <div class="relative">
-        <Search class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-[var(--muted)]" />
+        <Search class="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-[var(--muted)]" />
         <input
           type="search"
           role="searchbox"
           aria-label="Search chats"
-          placeholder="Search chats…"
-          class="h-8 w-full rounded-lg border pr-2 pl-8 text-[13px] outline-none focus-visible:border-[var(--accent)] focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)]"
-          style="background:var(--panel-2); border-color:var(--border); color:var(--text)"
+          placeholder="Search chats"
+          class="h-9 w-full appearance-none rounded-lg border-0 bg-transparent pr-2.5 pl-9 text-sm text-[var(--text)] outline-none transition-colors placeholder:text-[var(--faint)] hover:bg-[var(--fill-hover)] focus-visible:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
           bind:value={query}
         />
       </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
-  <!-- tag chip filters -->
+  <!-- tag chip filters: quiet chips, no border -->
   {#if !rail && tags.length > 0 && !pending}
-    <div class="flex shrink-0 flex-wrap gap-1.5 px-3 pb-2" aria-label="Filter by tag">
+    <div class="flex shrink-0 flex-wrap gap-1.5 px-2.5 pb-2" aria-label="Filter by tag">
       {#each tags as t (t.id)}
         <button
           type="button"
-          class="rounded-full border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)] {activeTag === t.id
-            ? 'border-[var(--accent)] text-[var(--accent)]'
-            : 'text-[var(--muted)] hover:text-[var(--text)]'}"
-          style="border-color:{activeTag === t.id ? 'var(--accent)' : 'var(--border)'}; background:{activeTag === t.id
-            ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
-            : 'transparent'}"
+          class="rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] {activeTag === t.id
+            ? 'text-[var(--text)]'
+            : 'bg-[var(--panel)] text-[var(--muted)] hover:bg-[var(--panel-2)] hover:text-[var(--text)]'}"
+          style:background={activeTag === t.id ? 'var(--accent-soft)' : undefined}
+          style:color={activeTag === t.id ? 'var(--indigo)' : undefined}
           aria-pressed={activeTag === t.id}
           onclick={() => onTagClick(t.id)}
         >
@@ -499,7 +499,7 @@
 
   <!-- pending banner -->
   {#if pending}
-    <div class="mx-3 mb-2 rounded-lg border px-3 py-2.5 text-xs leading-relaxed" style="background:var(--panel-2); border-color:var(--border); color:var(--muted)">
+    <div class="mx-2.5 mb-2 rounded-xl px-3 py-2.5 text-xs leading-relaxed" style="background:var(--panel); color:var(--muted)">
       <span class="mb-1 flex items-center gap-1.5 font-medium text-[var(--text)]">
         <Clock class="size-3.5" /> Awaiting approval
       </span>
@@ -515,7 +515,7 @@
       onkeydown={onNavKeys}
     >
       {#if loading && !hasAny}
-        <div class="space-y-2.5 px-1 pt-3">
+        <div class="space-y-2.5 px-1.5 pt-3">
           {#each Array(6) as _i}
             <Skeleton w="90%" />
           {/each}
@@ -544,10 +544,10 @@
             {#each folderSections as { folder: f, chats: fc } (f.id)}
               {@render folderBlock(f, fc)}
             {/each}
-            <div class="mt-1 flex items-center justify-between px-2 pt-2">
-              <p class="text-[11px] font-semibold tracking-wide text-[var(--muted)] uppercase">Folders</p>
+            <div class="mt-1 flex items-center justify-between pr-0.5 pl-2.5 pt-2">
+              <p class="text-xs font-medium text-[var(--muted)]">Folders</p>
               <IconButton label="New folder" onclick={() => (folderModalOpen = true)}>
-                <FolderPlus class="size-3.5" />
+                <FolderPlus class="size-4" />
               </IconButton>
             </div>
             {#each folders as f (f.id)}
@@ -565,7 +565,7 @@
         {/if}
 
         {#if chats.length < total}
-          <Button variant="ghost" size="sm" full class="mt-2" onclick={() => void loadChats(page + 1)}>
+          <Button variant="ghost" size="sm" full class="mt-2 text-[var(--muted)]" onclick={() => void loadChats(page + 1)}>
             Show more ({total - chats.length})
           </Button>
         {/if}
@@ -587,8 +587,8 @@
               e.preventDefault();
               go(c.id);
             }}
-            class="flex size-9 items-center justify-center rounded-lg text-[var(--muted)] hover:bg-[color-mix(in_srgb,var(--text)_8%,transparent)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)] {activeId === c.id
-              ? 'bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)]'
+            class="flex size-9 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] {activeId === c.id
+              ? 'bg-[var(--fill-hover)] text-[var(--text)]'
               : ''}"
           >
             <MessageSquare class="size-4" />
@@ -598,11 +598,8 @@
     </nav>
   {/if}
 
-  <!-- user block -->
-  <div
-    class="shrink-0 border-t p-3"
-    style="border-color:var(--border); padding-bottom:max(0.75rem, env(safe-area-inset-bottom))"
-  >
+  <!-- user block: quiet row that opens a floating account menu (§3) -->
+  <div class="shrink-0 p-2" style="padding-bottom:max(0.5rem, env(safe-area-inset-bottom))">
     {#if user}
       {#if rail}
         <div class="flex flex-col items-center gap-1.5">
@@ -626,31 +623,50 @@
           </Tooltip>
         </div>
       {:else}
-        <div class="flex items-center gap-2">
-          <Avatar name={displayName} src={user.avatar_url ?? ''} size={30} />
-          <div class="min-w-0 flex-1">
-            <p class="flex items-center gap-1 truncate text-[13px] font-medium">
+        <div class="w-full [&>div]:w-full">
+        <Dropdown
+          label="Account menu"
+          align="start"
+          buttonClass="flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-[var(--fill-hover)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+        >
+          <Avatar name={displayName} src={user.avatar_url ?? ''} size={28} />
+          <span class="min-w-0 flex-1">
+            <span class="flex items-center gap-1.5 truncate text-sm font-medium">
               <span class="truncate">{displayName}</span>
               {#if user.role === 'admin'}
                 <span
                   class="flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-semibold tracking-wide uppercase"
-                  style="background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent)"
+                  style="background:var(--panel-2); color:var(--muted)"
                 >
                   <ShieldCheck class="size-2.5" /> Admin
                 </span>
               {/if}
-            </p>
-            {#if user.name}<p class="truncate text-[11px] text-[var(--muted)]">{user.email}</p>{/if}
-          </div>
-          <IconButton label={theme.mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onclick={toggleTheme}>
-            {#if theme.mode === 'dark'}<Sun class="size-4" />{:else}<Moon class="size-4" />{/if}
-          </IconButton>
-          <IconButton label="Settings" onclick={() => navigate('/settings')}>
-            <Settings class="size-4" />
-          </IconButton>
-          <IconButton label="Sign out" variant="danger" onclick={() => void doLogout()}>
-            <LogOut class="size-4" />
-          </IconButton>
+            </span>
+            {#if user.name}<span class="block truncate text-[11px] font-normal text-[var(--muted)]">{user.email}</span>{/if}
+          </span>
+          <ChevronUp class="size-4 shrink-0 text-[var(--muted)]" />
+          {#snippet items({ close })}
+            <MenuItem onclick={() => navigate('/settings')} {close}>
+              {#snippet icon()}<Settings class="size-4" />{/snippet}
+              Settings
+            </MenuItem>
+            <MenuItem onclick={toggleTheme} {close}>
+              {#snippet icon()}{#if theme.mode === 'dark'}<Sun class="size-4" />{:else}<Moon class="size-4" />{/if}{/snippet}
+              {theme.mode === 'dark' ? 'Light mode' : 'Dark mode'}
+            </MenuItem>
+            {#if user.role === 'admin'}
+              <MenuItem onclick={() => navigate('/admin')} {close}>
+                {#snippet icon()}<ShieldCheck class="size-4" />{/snippet}
+                Admin
+              </MenuItem>
+            {/if}
+            <div class="my-1 border-t" style="border-color:var(--border)"></div>
+            <MenuItem danger onclick={() => void doLogout()} {close}>
+              {#snippet icon()}<LogOut class="size-4" />{/snippet}
+              Log out
+            </MenuItem>
+          {/snippet}
+        </Dropdown>
         </div>
       {/if}
     {:else}
@@ -664,7 +680,7 @@
   <div class="mt-0.5">
     {#if renamingFolder === f.id}
       <form
-        class="px-1 py-0.5"
+        class="px-1.5 py-0.5"
         onsubmit={(e) => {
           e.preventDefault();
           void commitFolderRename(f);
@@ -673,8 +689,8 @@
         <input
           bind:value={folderRenameValue}
           autofocus
-          class="w-full rounded-md border px-2 py-1 text-sm outline-none"
-          style="background:var(--panel-2); border-color:var(--accent); color:var(--text)"
+          class="h-9 w-full rounded-lg border-0 px-2.5 text-sm text-[var(--text)] outline-none"
+          style="background:var(--panel-2); box-shadow:0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent)"
           onkeydown={(e) => {
             if (e.key === 'Escape') {
               e.stopPropagation();
@@ -685,24 +701,24 @@
         />
       </form>
     {:else}
-      <div class="group flex items-center rounded-lg hover:bg-[color-mix(in_srgb,var(--text)_7%,transparent)]">
+      <div class="group flex h-9 items-center rounded-lg transition-colors hover:bg-[var(--fill-hover)]">
         <button
           data-row
           type="button"
-          class="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)]"
+          class="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-[var(--text)] {rowFocus}"
           aria-expanded={!collapsedFolders.has(f.id)}
           onclick={() => toggleFolder(f.id)}
         >
           {#if collapsedFolders.has(f.id)}
-            <ChevronRight class="size-3.5 shrink-0 text-[var(--muted)]" />
-            <FolderIcon class="size-3.5 shrink-0 text-[var(--muted)]" />
+            <ChevronRight class="size-4 shrink-0 text-[var(--muted)]" />
+            <FolderIcon class="size-4 shrink-0 text-[var(--muted)]" />
           {:else}
-            <ChevronDown class="size-3.5 shrink-0 text-[var(--muted)]" />
-            <FolderOpen class="size-3.5 shrink-0 text-[var(--muted)]" />
+            <ChevronDown class="size-4 shrink-0 text-[var(--muted)]" />
+            <FolderOpen class="size-4 shrink-0 text-[var(--muted)]" />
           {/if}
           <span class="truncate">{f.name}</span>
           {#if fc.length > 0}
-            <span class="ml-auto shrink-0 pr-1 text-[10px] text-[var(--muted)]">{fc.length}</span>
+            <span class="ml-auto shrink-0 pr-1 text-[11px] text-[var(--faint)]">{fc.length}</span>
           {/if}
         </button>
         <Dropdown label={`Folder actions for ${f.name}`}>
@@ -715,18 +731,18 @@
               }}
               {close}
             >
-              {#snippet icon()}<Pencil class="size-3.5" />{/snippet}
+              {#snippet icon()}<Pencil class="size-4" />{/snippet}
               Rename folder
             </MenuItem>
             <MenuItem danger onclick={() => void removeFolder(f)} {close}>
-              {#snippet icon()}<Trash2 class="size-3.5" />{/snippet}
+              {#snippet icon()}<Trash2 class="size-4" />{/snippet}
               Delete folder
             </MenuItem>
           {/snippet}
         </Dropdown>
       </div>
       {#if !collapsedFolders.has(f.id)}
-        <div class="ml-3 border-l pl-1.5" style="border-color:var(--border)">
+        <div class="ml-3.5 border-l pl-2" style="border-color:var(--border)">
           {#each fc as c (c.id)}{@render chatRow(c)}{/each}
         </div>
       {/if}
@@ -738,16 +754,16 @@
 <Modal open={movingChat !== null} title="Move to folder" width="max-w-sm" onclose={() => (movingChat = null)}>
   <div class="space-y-1" role="radiogroup" aria-label="Choose folder">
     <label
-      class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm hover:bg-[color-mix(in_srgb,var(--text)_7%,transparent)]"
+      class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors hover:bg-[var(--fill-hover)]"
     >
-      <input type="radio" name="move-folder" value="" bind:group={moveChoice} class="accent-[var(--accent)]" />
+      <input type="radio" name="move-folder" value="" bind:group={moveChoice} class="accent-[var(--indigo)]" />
       <MessageSquare class="size-4 text-[var(--muted)]" /> No folder
     </label>
     {#each folders as f (f.id)}
       <label
-        class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm hover:bg-[color-mix(in_srgb,var(--text)_7%,transparent)]"
+        class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors hover:bg-[var(--fill-hover)]"
       >
-        <input type="radio" name="move-folder" value={f.id} bind:group={moveChoice} class="accent-[var(--accent)]" />
+        <input type="radio" name="move-folder" value={f.id} bind:group={moveChoice} class="accent-[var(--indigo)]" />
         <FolderIcon class="size-4 text-[var(--muted)]" /> {f.name}
       </label>
     {/each}
@@ -785,7 +801,6 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
-    border-right: 1px solid var(--border);
     transform: translateX(-100%);
     transition:
       transform 0.2s ease,

@@ -8,7 +8,7 @@
   import Badge from '$lib/admin/ui/Badge.svelte';
   import EmptyState from '$lib/admin/ui/EmptyState.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, input, inputStyle, panel, panelStyle, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, panel, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   let users = $state<User[]>([]);
   let loading = $state(true);
@@ -87,11 +87,11 @@
 
 <div class="flex flex-col gap-6">
   {#if loading}
-    <div class="flex items-center gap-2 rounded-xl border px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
+    <div class="flex items-center gap-2 rounded-2xl px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
       <Spinner size={16} /> Loading users…
     </div>
   {:else if loadError}
-    <div class="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm" style="background:color-mix(in srgb, var(--danger) 10%, transparent); border-color:var(--danger); color:var(--danger)">
+    <div class="flex items-center justify-between gap-3 rounded-[10px] px-4 py-3 text-sm" style={errorBannerStyle}>
       {loadError}
       <button class={btn} style={btnGhostStyle} onclick={load}>Retry</button>
     </div>
@@ -99,13 +99,13 @@
     <!-- pending approval queue -->
     <section class="flex flex-col gap-3">
       <div class="flex items-center justify-between gap-3">
-        <h2 class="flex items-center gap-2 text-sm font-semibold">
+        <h2 class="flex items-center gap-2 text-[15px] font-medium">
           Pending approval
           {#if pending.length > 0}<Badge kind="accent">{pending.length}</Badge>{/if}
         </h2>
         {#if pending.length > 0}
           <div class="flex items-center gap-2">
-            <button class="text-xs text-[var(--accent)] hover:underline" onclick={selectAllPending}>
+            <button class="text-xs text-[var(--muted)] underline-offset-2 hover:text-[var(--text)] hover:underline" onclick={selectAllPending}>
               {selected.size === pending.length ? 'Clear selection' : `Select all (${pending.length})`}
             </button>
             <button
@@ -128,7 +128,7 @@
       {:else}
         <div class="grid gap-2 sm:grid-cols-2">
           {#each pending as u (u.id)}
-            <div class="flex items-center gap-3 rounded-xl border px-3 py-2.5" style={panelStyle}>
+            <div class="flex items-center gap-3 rounded-2xl px-3 py-2.5 transition-colors hover:bg-[var(--fill-hover)]" style="background:var(--panel)">
               <input
                 type="checkbox"
                 class="h-4 w-4 shrink-0 accent-[var(--accent)]"
@@ -159,7 +159,7 @@
 
     <!-- all users -->
     <section class="flex flex-col gap-3">
-      <h2 class="flex items-center gap-2 text-sm font-semibold">
+      <h2 class="flex items-center gap-2 text-[15px] font-medium">
         All users
         <Badge>{active.length}</Badge>
       </h2>
@@ -172,7 +172,7 @@
         <div class="{panel} overflow-x-auto" style={panelStyle}>
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-[11px] uppercase tracking-wider" style="color:var(--muted); {rowBorder}">
+              <tr class="uppercase tracking-wider" style={rowBorder}>
                 <th class={th}>Email</th>
                 <th class={th}>Name</th>
                 <th class={th}>Role</th>
@@ -183,7 +183,7 @@
             <tbody>
               {#each active as u (u.id)}
                 {@const self = me !== null && u.id === me.id}
-                <tr style={rowBorder}>
+                <tr class={row} style={rowBorder}>
                   <td class="{td} flex items-center gap-2">
                     <span class="font-mono text-xs">{u.email}</span>
                     {#if self}<Badge kind="accent">you</Badge>{/if}

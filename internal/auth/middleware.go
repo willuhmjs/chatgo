@@ -114,6 +114,20 @@ func (a *Auth) SessionFrom(ctx context.Context) (*store.Session, bool) {
 	return s, ok
 }
 
+// HasValidSession reports whether r carries a live chatgo_session cookie —
+// the same resolution Require/Attach use, so cookie parsing lives in exactly
+// one place. It answers "is someone signed in?" (pending included), not
+// authorization. Consumed by the SPA shell guard in internal/api and by
+// GET /api/auth/status (docs/AUTHGATE-CONTRACT.md §1–2); behind Attach the
+// already-attached identity short-circuits the second DB round-trip.
+func (a *Auth) HasValidSession(r *http.Request) bool {
+	if _, ok := a.UserFrom(r.Context()); ok {
+		return true
+	}
+	u, _ := a.resolve(r)
+	return u != nil
+}
+
 // touch records activity for the user and session, throttled to one write per
 // touchInterval per key. Failures are ignored: an activity stamp must never
 // fail a request.

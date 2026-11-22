@@ -181,6 +181,12 @@ func TestRegisterApproveGatesPendingUser(t *testing.T) {
 
 func TestRegisterClosed(t *testing.T) {
 	env := newTestEnv(t, func(cfg *config.Config) { cfg.Registration = "closed" })
+	// AUTHGATE §2 supersedes the old "closed always 403" expectation: an
+	// EMPTY instance admits one admin bootstrap (see
+	// TestFirstRunBootstrapUnderClosedPolicy). Closed stays closed once any
+	// account exists, so seed one to exercise the steady state.
+	env.seedFirstUser(t)
+
 	r := env.register("ghost@example.com", "secretpass-1", "Ghost")
 	assertJSONErr(t, r, http.StatusForbidden)
 

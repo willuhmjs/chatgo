@@ -29,7 +29,7 @@
   style="background:{checked ? 'var(--accent)' : 'var(--border)'}"
 >
   <span
-    class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
-    style="left:{checked ? '1.125rem' : '0.125rem'}"
+    class="absolute top-0.5 h-4 w-4 rounded-full shadow transition-all"
+    style="left:{checked ? '1.125rem' : '0.125rem'}; background:var(--bg-deep)"
   ></span>
 </button>

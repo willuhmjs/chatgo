@@ -10,7 +10,7 @@
   import ProviderModal from './ProviderModal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
   import Toggle from '$lib/admin/ui/Toggle.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, panel, panel2Style, panelStyle, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, panel, panel2Style, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   type ModelRow = ModelEntry & { enabled?: boolean };
 
@@ -141,11 +141,11 @@
   </div>
 
   {#if loading}
-    <div class="flex items-center gap-2 rounded-xl border px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
+    <div class="flex items-center gap-2 rounded-2xl px-4 py-8 text-sm text-[var(--muted)]" style={panelStyle}>
       <Spinner size={16} /> Loading providers…
     </div>
   {:else if loadError}
-    <div class="flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm" style="background:color-mix(in srgb, var(--danger) 10%, transparent); border-color:var(--danger); color:var(--danger)">
+    <div class="flex items-center justify-between gap-3 rounded-[10px] px-4 py-3 text-sm" style={errorBannerStyle}>
       {loadError}
       <button class={btn} style={btnGhostStyle} onclick={load}>Retry</button>
     </div>
@@ -163,7 +163,7 @@
     <div class="{panel} overflow-x-auto" style={panelStyle}>
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-[11px] uppercase tracking-wider" style="color:var(--muted); {rowBorder}">
+          <tr class="uppercase tracking-wider" style={rowBorder}>
             <th class="{th} w-8"></th>
             <th class={th}>Provider</th>
             <th class={th}>Base URL</th>
@@ -176,10 +176,10 @@
         <tbody>
           {#each providers as p (p.id)}
             {@const count = models.filter((m) => m.provider_id === p.id).length}
-            <tr style={rowBorder}>
+            <tr class={row} style={rowBorder}>
               <td class={td}>
                 <button
-                  class="rounded p-1 text-[var(--muted)] hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
+                  class="rounded p-1 text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
                   aria-label={expanded.has(p.id) ? 'Collapse models' : 'Expand models'}
                   onclick={() => toggleExpand(p.id)}
                 >
@@ -202,14 +202,14 @@
                 <Toggle checked={p.enabled} onchange={() => toggleEnabled(p)} label="Toggle {p.name}" />
               </td>
               <td class={td}>
-                <button class="text-xs text-[var(--accent)] hover:underline" onclick={() => toggleExpand(p.id)}>
+                <button class="text-xs text-[var(--muted)] underline-offset-2 hover:text-[var(--text)] hover:underline" onclick={() => toggleExpand(p.id)}>
                   {count} model{count === 1 ? '' : 's'}
                 </button>
               </td>
               <td class="{td}">
                 <div class="flex items-center justify-end gap-1">
                   <button
-                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)] disabled:opacity-40"
+                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] disabled:opacity-40"
                     title="Sync models"
                     disabled={syncing[p.id] || syncingAll}
                     onclick={() => syncOne(p)}
@@ -217,14 +217,14 @@
                     {#if syncing[p.id]}<Spinner />{:else}<RefreshCw size={14} />{/if}
                   </button>
                   <button
-                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
+                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
                     title="Edit provider"
                     onclick={() => openEdit(p)}
                   >
                     <Pencil size={14} />
                   </button>
                   <button
-                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--danger)]"
+                    class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--danger)]"
                     title="Delete provider"
                     onclick={() => {
                       deleteTarget = p;
@@ -244,18 +244,18 @@
                     <p class="flex items-center gap-2 py-2 text-xs text-[var(--muted)]"><Spinner /> Fetching models from {p.name}…</p>
                   {:else if count === 0}
                     <p class="py-2 text-xs text-[var(--muted)]">
-                      No cached models — <button class="text-[var(--accent)] hover:underline" onclick={() => syncOne(p)}>sync now</button>.
+                      No cached models — <button class="underline underline-offset-2 hover:text-[var(--text)]" onclick={() => syncOne(p)}>sync now</button>.
                     </p>
                   {:else}
                     <div class="mb-1 flex items-center justify-between">
-                      <p class="text-[11px] uppercase tracking-wider text-[var(--muted)]">Models · {p.name}</p>
+                      <p class="text-xs uppercase tracking-wider text-[var(--muted)]">Models · {p.name}</p>
                       {#if !admin.CAN_EDIT_MODELS}
                         <p class="text-[11px] text-[var(--muted)]">rename / enable need a model-edit API — shown read-only</p>
                       {/if}
                     </div>
                     <table class="w-full text-xs">
                       <thead>
-                        <tr class="text-[10px] uppercase tracking-wider" style="color:var(--muted)">
+                        <tr class="uppercase tracking-wider">
                           <th class="{th} pl-0">Model ID</th>
                           <th class={th}>Display name</th>
                           <th class={th}>Status</th>
@@ -264,7 +264,7 @@
                       </thead>
                       <tbody>
                         {#each models.filter((m) => m.provider_id === p.id) as m (m.model_id)}
-                          <tr style={rowBorder}>
+                          <tr class="transition-colors hover:bg-[var(--fill-hover)]" style={rowBorder}>
                             <td class="{td} pl-0 font-mono text-[var(--muted)]">{m.model_id}</td>
                             <td class={td}>{m.display || m.model_id}</td>
                             <td class={td}>

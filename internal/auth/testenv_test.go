@@ -67,6 +67,9 @@ func newTestEnv(t *testing.T, mut func(*config.Config)) *testEnv {
 
 	mux := http.NewServeMux()
 	apimgr.Register(mux, &apimgr.Deps{Cfg: cfg, Store: st, Auth: a})
+	// GET /api/auth/status (AUTHGATE §2) now ships in apimgr.registerAuth
+	// itself, so Register above wires it — no stand-in here. AuthPolicy's
+	// /api/auth/* default branch keeps it public.
 	// Fixtures standing in for the other route classes of api.AuthPolicy:
 	mux.HandleFunc("GET /api/thing", func(w http.ResponseWriter, r *http.Request) {
 		u, ok := a.UserFrom(r.Context())

@@ -65,7 +65,7 @@ func New(d Deps) *Server {
 	})
 
 	// SPA fallback (must stay last; /api/* mistakes 404 as JSON below).
-	mux.HandleFunc("GET /", spaHandler())
+	mux.HandleFunc("GET /", spaHandler(d.Auth))
 
 	handler := Recover(RequestLog(SecurityHeaders(CapJSONBody(httpx.MaxJSONBody)(AuthPolicy(d.Auth, mux)))))
 
@@ -146,7 +146,12 @@ func AuthPolicy(a *auth.Auth, next http.Handler) http.Handler {
 
 // spaHandler serves embedded assets, falling back to index.html for
 // client-side routes (/c/:id, /admin, …).
-func spaHandler() http.HandlerFunc {
+//
+// Auth-gate (docs/AUTHGATE-CONTRACT.md §1): the SHELL is only served with a
+// valid session — anonymous requests for app routes 302 to /login. Files that
+// exist in dist (assets/, favicon, …) are served before the guard runs, so
+// the login page keeps its styling; a nil a (tests only) disables the guard.
+func spaHandler(a *auth.Auth) http.HandlerFunc {
 	dist := web.Dist()
 	index, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
@@ -170,9 +175,31 @@ func spaHandler() http.HandlerFunc {
 				return
 			}
 		}
+		// About to serve index.html — the app shell. The "GET /" mux pattern
+		// admits only GET/HEAD here; anything without a session bounces to
+		// the login page unless it is a public shell path.
+		if a != nil && !isPublicShellPath(p) && !a.HasValidSession(r) {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(index)
 	}
+}
+
+// isPublicShellPath lists the SPA routes whose shell must render without a
+// session: /login is the guard's own redirect target (gating it would loop),
+// /register is the open/approve signup page, /welcome is AG-2's first-run
+// wizard (session bootstrap routes anonymous users there while
+// /api/auth/status reports first_run) and /s/{token} is the public shared-
+// chat page — it reaches this fallback like any client route (no dedicated
+// mux entry) and the SPA fetches its token via public /api/share.
+func isPublicShellPath(p string) bool {
+	switch p {
+	case "/login", "/register", "/welcome":
+		return true
+	}
+	return strings.HasPrefix(p, "/s/")
 }

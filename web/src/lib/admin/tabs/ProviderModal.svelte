@@ -8,7 +8,7 @@
   import Modal from '$lib/admin/ui/Modal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
   import Toggle from '$lib/admin/ui/Toggle.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, input, inputStyle } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle } from '$lib/admin/ui/styles';
 
   let {
     open = $bindable(false),
@@ -104,7 +104,7 @@
       />
     </Field>
 
-    <div class="flex items-center justify-between gap-4 rounded-lg border px-3 py-2.5" style={inputStyle}>
+    <div class="flex items-center justify-between gap-4 rounded-xl px-3 py-2.5" style="background:var(--panel-2)">
       <div>
         <p class="text-sm font-medium">Enabled</p>
         <p class="text-xs text-[var(--muted)]">Disabled providers stay hidden from chat model pickers.</p>
@@ -121,7 +121,7 @@
     </label>
 
     {#if error}
-      <p class="rounded-lg px-3 py-2 text-xs" style="background:color-mix(in srgb, var(--danger) 12%, transparent); color:var(--danger)">
+      <p class="rounded-[10px] px-3 py-2 text-[13px]" style={errorBannerStyle}>
         {error}
       </p>
     {/if}

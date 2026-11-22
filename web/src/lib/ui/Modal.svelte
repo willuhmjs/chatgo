@@ -56,27 +56,25 @@
       role="presentation"
       onclick={close}
     ></div>
+    <!-- §7 floating layer: --panel, 16px radius, shadow-menu+, .pop entrance -->
     <div
       bind:this={panel}
       role="dialog"
       aria-modal="true"
       aria-label={title || undefined}
       tabindex={-1}
-      class="relative w-full {width} rounded-xl border shadow-2xl outline-none"
-      style="background:var(--panel); border-color:var(--border)"
+      class="pop relative w-full {width} rounded-2xl shadow-2xl outline-none"
+      style="background:var(--panel); box-shadow:0 16px 48px rgb(0 0 0 / 0.5), var(--shadow-menu)"
     >
-      <div class="flex items-center justify-between border-b px-4 py-3" style="border-color:var(--border)">
-        <h2 class="text-sm font-semibold">{title}</h2>
+      <div class="flex items-center justify-between px-4 pt-3.5">
+        <h2 class="text-[15px] font-medium">{title}</h2>
         <IconButton label="Close" onclick={close}>
           <X class="size-4" />
         </IconButton>
       </div>
       <div class="px-4 py-4">{@render children?.()}</div>
       {#if footer}
-        <div
-          class="flex items-center justify-end gap-2 border-t px-4 py-3"
-          style="border-color:var(--border)"
-        >
+        <div class="flex items-center justify-end gap-2 px-4 pb-4">
           {@render footer()}
         </div>
       {/if}

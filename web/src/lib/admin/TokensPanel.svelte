@@ -17,7 +17,7 @@
   import Field from '$lib/admin/ui/Field.svelte';
   import Modal from '$lib/admin/ui/Modal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, input, inputStyle, mono, panel, panelStyle, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, input, inputStyle, mono, panel, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   let tokens = $state<ApiToken[]>([]);
   let loading = $state(true);
@@ -104,9 +104,9 @@
   </div>
 
   {#if revealed}
-    <!-- one-time reveal -->
-    <div class="flex flex-col gap-3 rounded-xl border p-4" style="background:color-mix(in srgb, var(--accent) 8%, var(--panel)); border-color:var(--accent)">
-      <p class="flex items-center gap-2 text-sm font-semibold">
+    <!-- one-time reveal card: quiet panel, mono line + COPY -->
+    <div class="flex flex-col gap-3 rounded-2xl p-4" style="background:var(--panel-2)">
+      <p class="flex items-center gap-2 text-sm font-medium">
         <KeyRound size={15} /> Token “{revealed.name}” created
       </p>
       <p class="text-xs font-medium" style="color:var(--danger)">
@@ -114,11 +114,11 @@
       </p>
       <div class="flex items-center gap-2">
         <code
-          class="min-w-0 flex-1 select-all break-all rounded-lg border px-3 py-2 font-mono text-xs"
-          style={inputStyle}
+          class="min-w-0 flex-1 select-all break-all rounded-xl px-3 py-2 font-mono text-xs"
+          style="background:var(--bg-deep); color:var(--text)"
           id="token-reveal-value"
         >{revealed.key}</code>
-        <button class={btn} style={btnPrimaryStyle} onclick={copyKey}><Copy size={14} /> Copy</button>
+        <button class={`${btn} uppercase tracking-wide`} style={btnPrimaryStyle} onclick={copyKey}><Copy size={13} /> Copy</button>
       </div>
       <div class="flex justify-end">
         <button class={btn} style={btnGhostStyle} onclick={() => (revealed = null)}>Done — I saved it</button>
@@ -127,7 +127,7 @@
   {/if}
 
   {#if loading}
-    <div class="flex items-center gap-2 rounded-xl border px-4 py-6 text-sm text-[var(--muted)]" style={panelStyle}>
+    <div class="flex items-center gap-2 rounded-2xl px-4 py-6 text-sm text-[var(--muted)]" style={panelStyle}>
       <Spinner size={16} /> Loading tokens…
     </div>
   {:else if tokens.length === 0}
@@ -138,7 +138,7 @@
     <div class="{panel} overflow-x-auto" style={panelStyle}>
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-[11px] uppercase tracking-wider" style="color:var(--muted); {rowBorder}">
+          <tr class="uppercase tracking-wider" style={rowBorder}>
             <th class={th}>Name</th>
             <th class={th}>Token</th>
             <th class={th}>Created</th>
@@ -148,14 +148,14 @@
         </thead>
         <tbody>
           {#each tokens as t (t.id)}
-            <tr style={rowBorder}>
+            <tr class={row} style={rowBorder}>
               <td class="{td} font-medium">{t.name}</td>
               <td class={td}><Badge>ck_••••••••••••</Badge></td>
               <td class="{td} text-xs text-[var(--muted)]">{relTime(t.created_at)}</td>
               <td class="{td} text-xs text-[var(--muted)]">{relTime(t.last_used_at)}</td>
               <td class="{td} text-right">
                 <button
-                  class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--danger)]"
+                  class="rounded-md p-1.5 text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--danger)]"
                   title="Revoke {t.name}"
                   onclick={() => {
                     deleteTarget = t;
@@ -179,7 +179,7 @@
       <input class={input} style={inputStyle} required maxlength={64} placeholder="My script" bind:value={newName} />
     </Field>
     {#if createError}
-      <p class="rounded-lg px-3 py-2 text-xs" style="background:color-mix(in srgb, var(--danger) 12%, transparent); color:var(--danger)">
+      <p class="rounded-[10px] px-3 py-2 text-[13px]" style={errorBannerStyle}>
         {createError}
       </p>
     {/if}

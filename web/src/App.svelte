@@ -6,7 +6,7 @@
   import { currentRoute, location, navigate, startRouter } from '$lib/router.svelte.js';
   import { initTheme } from '$lib/theme.svelte.js';
   import { initShortcuts, onShortcut } from '$lib/shortcuts.svelte.js';
-  import { bootstrap } from '$lib/session.svelte.js';
+  import { bootstrap, isAdmin, session, shouldOnboard } from '$lib/session.svelte.js';
   import Toasts from '$lib/extra/ToastHost.svelte';
   import CommandPalette from '$lib/extra/CommandPalette.svelte';
 
@@ -22,13 +22,15 @@
   import Admin from './routes/Admin.svelte';
   import Login from './routes/Login.svelte';
   import Register from './routes/Register.svelte';
+  import FirstRun from './routes/FirstRun.svelte';
+  import Onboarding from './routes/Onboarding.svelte';
   import Share from './routes/Share.svelte';
 
   import { Menu, Plus, X } from 'lucide-svelte';
 
   const route = $derived(currentRoute());
   // auth + public pages render bare (no app chrome)
-  const bare = $derived(['login', 'register', 'share'].includes(route.name));
+  const bare = $derived(['login', 'register', 'welcome', 'onboarding', 'share'].includes(route.name));
 
   // ----- sidebar state -----
   const COLLAPSE_KEY = 'chatgo:sidebar-collapsed';
@@ -80,6 +82,25 @@
   $effect(() => {
     void location.path;
     mobileOpen = false;
+  });
+
+  // fresh-admin wizard nudge (AUTHGATE-CONTRACT §3): an admin on home whose
+  // setup wizard is unfinished gets routed to /onboarding. The navigate()
+  // below flips route.name, so this effect early-returns on re-run — no loop.
+  $effect(() => {
+    if (!session.ready || !isAdmin() || route.name !== 'home') return;
+    void api
+      .getMeSettings()
+      .then((s) => {
+        // still on home when the response lands (avoid racing user navigation)
+        if (route.name !== 'home') return;
+        if (shouldOnboard(session.user, s, { first_run: session.firstRun })) {
+          navigate('/onboarding', { replace: true });
+        }
+      })
+      .catch(() => {
+        /* settings unavailable — stay on home */
+      });
   });
 
   // chat title for the mobile bar + document title
@@ -144,6 +165,10 @@
     <Login />
   {:else if route.name === 'register'}
     <Register />
+  {:else if route.name === 'welcome'}
+    <FirstRun />
+  {:else if route.name === 'onboarding'}
+    <Onboarding />
   {:else}
     <Share token={route.params.token} />
   {/if}
@@ -167,15 +192,15 @@
     {/if}
 
     <div class="flex min-w-0 flex-1 flex-col">
-      <!-- mobile top bar -->
+      <!-- mobile top bar — quiet #171717 bar, fill contrast only (§3) -->
       <header
-        class="flex h-12 shrink-0 items-center gap-1 border-b px-2 md:hidden"
-        style="background:var(--panel); border-color:var(--border); padding-top:env(safe-area-inset-top)"
+        class="flex h-12 shrink-0 items-center gap-1 px-2 md:hidden"
+        style="background:var(--bg-deep); padding-top:env(safe-area-inset-top)"
       >
         <IconButton label="Open sidebar" onclick={() => (mobileOpen = true)}>
           <Menu class="size-5" />
         </IconButton>
-        <h1 class="min-w-0 flex-1 truncate px-1 text-sm font-medium">{chatTitle || 'ChatGo'}</h1>
+        <h1 class="min-w-0 flex-1 truncate px-1 text-[15px] font-medium">{chatTitle || 'ChatGo'}</h1>
         <IconButton label="New chat" onclick={() => navigate('/')}>
           <Plus class="size-5" />
         </IconButton>
@@ -197,7 +222,7 @@
           <Admin />
         {:else}
           <div class="flex h-full items-center justify-center text-sm text-[var(--muted)]">
-            Not found — <a class="ml-1 text-[var(--accent)]" href="/">go home</a>
+            Not found — <a class="ml-1 text-[var(--indigo)] hover:underline" href="/">go home</a>
           </div>
         {/if}
       </main>

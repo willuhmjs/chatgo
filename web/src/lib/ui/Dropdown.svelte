@@ -82,7 +82,7 @@
     aria-label={label}
     {disabled}
     class={buttonClass ||
-      'inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[color-mix(in_srgb,var(--text)_10%,transparent)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)]'}
+      'inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]'}
     onclick={() => (open ? close() : openMenu())}
   >
     {@render children()}
@@ -90,12 +90,13 @@
 </div>
 
 {#if open && items}
+  <!-- §7: --panel, 14px radius, shadow-menu, .pop entrance -->
   <div
     bind:this={menuEl}
     role="menu"
     aria-label={label}
-    class="fixed z-[60] min-w-44 overflow-hidden rounded-lg border py-1 shadow-xl"
-    style="background:var(--panel); border-color:var(--border); {menuStyle(pos)}"
+    class="pop fixed z-[60] min-w-44 rounded-[14px] px-1 py-1.5"
+    style="background:var(--panel); box-shadow:var(--shadow-menu); {menuStyle(pos)}"
   >
     {@render items({ close })}
   </div>

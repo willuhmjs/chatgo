@@ -1,8 +1,11 @@
 <script lang="ts">
   // Message scroll area. Sticky-bottom auto-follows the stream; any real
   // user scroll-up (wheel / touch / PageUp) releases it and shows a floating
-  // "Jump to latest (N)" pill. Rows use content-visibility:auto instead of a
-  // virtualizer (no dependency per contract stack).
+  // circular "jump to latest" button with an unseen-count dot. Rows use
+  // content-visibility:auto instead of a virtualizer (no dependency per
+  // contract stack). Layout per docs/DESIGN-POLISH.md §5/§9: 24px rhythm,
+  // "ChatGo" wordmark above the first message of each assistant turn,
+  // fade+rise 200ms for appended rows only (never on initial load).
   import type { UIMessage } from '$lib/chat/group';
   import { groupMessages } from '$lib/chat/group';
   import MessageRow from './MessageRow.svelte';
@@ -21,6 +24,13 @@
   } = $props();
 
   const groups = $derived(groupMessages(messages));
+
+  // Ids present when this list mounts (initial load) — those rows must NOT
+  // animate; everything appended afterwards gets the rise-in. Capturing the
+  // initial value is the whole point, so the reactive ref is one-shot.
+  // svelte-ignore state_referenced_locally
+  const baseline = new Set(messages.map((m) => m.id));
+  const riseClass = (id: string): string => (baseline.has(id) ? '' : 'rise');
 
   let el = $state<HTMLElement | null>(null);
   let stick = $state(true);
@@ -73,7 +83,7 @@
     });
   }
 
-  // new messages while scrolled away → count them on the pill
+  // new messages while scrolled away → count them on the button dot
   let prevLen = 0;
   $effect(() => {
     const n = messages.length;
@@ -107,18 +117,23 @@
   ontouchmove={releaseFromTouch}
   onkeydown={releaseFromKey}
 >
-  <div class="mx-auto flex w-full max-w-[48rem] flex-col gap-5 px-4 pb-8 pt-6">
+  <div class="mx-auto flex w-full max-w-[48rem] flex-col gap-6 px-4 pb-8 pt-7">
     {#each groups as g (g.key)}
       {#if g.role === 'user'}
-        <div class="flex flex-col items-end gap-2">
+        <div class="flex min-w-0 flex-col items-end gap-2.5">
           {#each g.items as m (m.id)}
-            <MessageRow message={m} {busy} {onretry} {onedit} />
+            <div class="min-w-0 max-w-full {riseClass(m.id)}">
+              <MessageRow message={m} {busy} {onretry} {onedit} />
+            </div>
           {/each}
         </div>
       {:else}
-        <div class="flex flex-col gap-4">
-          {#each g.items as m (m.id)}
-            <MessageRow message={m} {busy} {onretry} {onedit} />
+        <div class="flex min-w-0 flex-col gap-5">
+          {#each g.items as m, i (m.id)}
+            <div class="flex min-w-0 flex-col {riseClass(m.id)}">
+              {#if i === 0}<span class="wordmark">ChatGo</span>{/if}
+              <MessageRow message={m} {busy} {onretry} {onedit} />
+            </div>
           {/each}
         </div>
       {/if}
@@ -126,31 +141,98 @@
   </div>
 
   {#if !stick}
-    <div class="sticky bottom-3 z-10 flex justify-center" aria-live="polite">
-      <button class="jump" onclick={scrollToLatest}>
-        <ArrowDown size={14} />
-        {unseen > 0 ? `Jump to latest (${unseen})` : 'Jump to latest'}
+    <div class="sticky bottom-4 z-10 flex justify-center" aria-live="polite">
+      <button
+        type="button"
+        class="jump"
+        title="Jump to latest"
+        aria-label={unseen > 0 ? `Jump to latest (${unseen} new)` : 'Jump to latest'}
+        onclick={scrollToLatest}
+      >
+        <ArrowDown size={16} />
+        {#if unseen > 0}
+          <span class="count" aria-hidden="true">{unseen > 9 ? '9+' : unseen}</span>
+        {/if}
       </button>
     </div>
   {/if}
 </div>
 
 <style>
+  /* tiny wordmark above the first message of each assistant turn (§5) */
+  .wordmark {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted, #a8a8a8);
+    letter-spacing: 0.01em;
+  }
+
+  /* appended rows fade + rise 200ms; initial load never animates (§9) */
+  .rise {
+    animation: row-rise 200ms ease-out both;
+  }
+  @keyframes row-rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* floating white circular ↓ with unseen-count dot (§5) */
   .jump {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    justify-content: center;
+    width: 2.125rem;
+    height: 2.125rem;
     border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--text);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
-    font-size: 0.75rem;
-    padding: 0.35rem 0.8rem;
+    border: 0;
+    background: var(--accent, #ffffff);
+    color: var(--accent-fg, #0d0d0d);
+    box-shadow: var(--shadow-menu, 0 8px 28px rgb(0 0 0 / 0.45));
     cursor: pointer;
-    transition: border-color 120ms ease;
+    animation: jump-in 150ms ease-out both;
   }
-  .jump:hover {
-    border-color: var(--accent);
+  .count {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.85);
+    color: var(--accent, #ffffff);
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  @keyframes jump-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise,
+    .jump {
+      animation: none;
+    }
   }
 </style>

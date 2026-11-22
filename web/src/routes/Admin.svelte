@@ -39,12 +39,12 @@
   </div>
 {:else if !session.user || !isAdmin()}
   <!-- friendly 403 (unauthenticated users land on the same card w/ a sign-in CTA) -->
-  <div class="flex h-full items-center justify-center px-4">
-    <div class="w-full max-w-md rounded-2xl border p-8 text-center shadow-xl" style="background:var(--panel); border-color:var(--border)">
-      <span class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full" style="background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent)">
+  <div class="flex h-full items-center justify-center px-4" style="background:var(--bg)">
+    <div class="w-full max-w-md rounded-2xl p-8 text-center" style="background:var(--panel); color:var(--text)">
+      <span class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full" style="background:var(--panel-2); color:var(--muted)">
         {#if session.user}<ShieldX size={24} />{:else}<Shield size={24} />{/if}
       </span>
-      <h1 class="text-lg font-semibold">
+      <h1 class="text-[17px] font-semibold tracking-tight">
         {session.user ? 'Admins only' : 'Sign in required'}
       </h1>
       <p class="mt-2 text-sm leading-relaxed text-[var(--muted)]">
@@ -59,34 +59,35 @@
       <div class="mt-6 flex items-center justify-center gap-2">
         <a
           href="/"
-          class="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium"
+          class="inline-flex items-center gap-1.5 rounded-[10px] px-4 py-2 text-sm font-medium"
           style="background:var(--accent); color:var(--accent-fg)"
         >Back to chat</a>
         {#if !session.user}
           <a
             href="/login"
-            class="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-medium"
-            style="background:transparent; color:var(--text); border-color:var(--border)"
+            class="inline-flex items-center gap-1.5 rounded-[10px] px-4 py-2 text-sm font-medium transition-colors hover:bg-[var(--fill-hover)]"
+            style="background:transparent; color:var(--text); border:1px solid var(--border)"
           >Sign in</a>
         {/if}
       </div>
     </div>
   </div>
 {:else}
-  <div class="mx-auto h-full w-full max-w-5xl overflow-y-auto px-6 py-8">
+  <div class="mx-auto h-full w-full max-w-5xl overflow-y-auto px-6 py-8" style="background:var(--bg); color:var(--text)">
     <header class="mb-6 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <Shield size={20} style="color:var(--accent)" /> Admin
+        <h1 class="flex items-center gap-2 text-lg font-semibold tracking-tight">
+          <Shield size={19} class="text-[var(--muted)]" /> Admin
         </h1>
         <p class="mt-0.5 text-sm text-[var(--muted)]">Providers, people and instance settings.</p>
       </div>
-      <nav class="flex items-center gap-1 rounded-xl border p-1" style="background:var(--panel); border-color:var(--border)" aria-label="Admin sections">
+      <!-- quiet segmented pill (§5): active = #3a3a3a fill, no accent bar -->
+      <nav class="flex items-center gap-0.5 rounded-full p-1" style="background:var(--panel)" aria-label="Admin sections">
         {#each tabs as t (t.id)}
           <button
-            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+            class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-colors"
             style={tab === t.id
-              ? 'background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent)'
+              ? 'background:var(--panel-2); color:var(--text); font-weight:500'
               : 'background:transparent; color:var(--muted)'}
             aria-current={tab === t.id ? 'page' : undefined}
             onclick={() => (tab = t.id)}

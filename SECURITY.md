@@ -44,6 +44,9 @@ that *is* a bug, report it privately.
   style responses. Redirects are re-validated, capped at 3 hops.
 - **CSP** — strict Content-Security-Policy on all responses; the SPA does
   not require `unsafe-eval`.
+- **SPA shell guard** — the app shell is server-side gated: unauthenticated
+  page loads redirect to `/login`; static assets and `/s/<token>` share pages
+  are intentionally public.
 - **XSS** — all markdown is rendered through DOMPurify before touching
   the DOM; HTML from models is never trusted.
 - **Body caps** — every request body is size-limited (1 MiB JSON, 20 MiB

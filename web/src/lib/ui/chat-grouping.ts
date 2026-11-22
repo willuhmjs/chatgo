@@ -29,18 +29,19 @@ function startOfDay(ts: number): number {
   return d.getTime() / 1000;
 }
 
-/** Bucket a unix-seconds timestamp into the sidebar day sections. */
+/** Bucket a unix-seconds timestamp into the sidebar day sections (§3). */
 export function dayGroup(ts: number): string {
   const now = Date.now() / 1000;
   const today = startOfDay(now);
   const day = startOfDay(ts);
   if (day >= today) return 'Today';
   if (day >= today - DAY) return 'Yesterday';
-  if (ts > now - 7 * DAY) return 'Last 7 days';
+  if (ts > now - 7 * DAY) return 'Previous 7 Days';
+  if (ts > now - 30 * DAY) return 'Previous 30 Days';
   return 'Older';
 }
 
-const GROUP_ORDER = ['Today', 'Yesterday', 'Last 7 days', 'Older'];
+const GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days', 'Older'];
 
 /** Group chats by day (input order preserved within each bucket). */
 export function groupByDay(chats: Chat[]): ChatGroup[] {

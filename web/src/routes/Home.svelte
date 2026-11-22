@@ -1,8 +1,9 @@
 <script lang="ts">
-  // Home route '/' — hero + model quickstart + suggestion cards + quick
-  // composer. Sending creates a chat via api-shell.startChat, stashes the
-  // prompt (takePendingPrompt) and navigates to /c/{id} for ChatView (FE-chat)
-  // to auto-send. See docs/FE-SHELL-UI.md.
+  // Home route '/' — ChatGPT new-chat moment (docs/DESIGN-POLISH.md §4):
+  // centered greeting + pill composer (§6) + quiet suggestion pills.
+  // Sending creates a chat via api-shell.startChat, stashes the prompt
+  // (takePendingPrompt) and navigates to /c/{id} for ChatView (FE-chat) to
+  // auto-send. See docs/FE-SHELL-UI.md.
   import * as api from '$lib/api';
   import type { ModelEntry } from '$lib/api';
   import { navigate } from '$lib/router.svelte.js';
@@ -16,11 +17,11 @@
     startChat,
     PREFS_EVENT,
   } from '$lib/api-shell';
-  import { firstName } from '$lib/ui/chat-grouping';
-  import Button from '$lib/ui/Button.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import Skeleton from '$lib/ui/Skeleton.svelte';
-  import { Clock, SendHorizontal, Sparkles } from 'lucide-svelte';
+  import Dropdown from '$lib/ui/Dropdown.svelte';
+  import MenuItem from '$lib/ui/MenuItem.svelte';
+  import { ArrowUp, ChevronDown, Clock, LoaderCircle } from 'lucide-svelte';
 
   const user = $derived(session.user);
   const pending = $derived(user?.role === 'pending');
@@ -34,10 +35,6 @@
   let sending = $state(false);
   let sendOnEnter = $state(getSendOnEnter());
   let ta = $state<HTMLTextAreaElement | undefined>();
-
-  const hour = new Date().getHours();
-  const greeting = hour < 5 ? 'Burning the midnight oil' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const hello = $derived(user ? `${greeting}, ${firstName(user.name || user.email)}` : greeting);
 
   const suggestions = [
     {
@@ -89,6 +86,14 @@
     return () => window.removeEventListener(PREFS_EVENT, onPrefs);
   });
 
+  // autosize the pill textarea, 1 → 10 lines (§6)
+  $effect(() => {
+    void draft;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
+  });
+
   function pickModel(m: ModelEntry) {
     selectedId = `${m.provider_id}:${m.model_id}`;
     setHomeModel(selectedId);
@@ -126,13 +131,12 @@
   }
 </script>
 
-<section class="h-full overflow-y-auto">
+<section class="h-full overflow-y-auto" style="background:var(--bg)">
   <div class="mx-auto flex min-h-full w-full max-w-[48rem] flex-col px-5 py-10 sm:py-14">
     {#if !session.ready}
-      <div class="flex flex-1 flex-col justify-center gap-4">
-        <Skeleton w="60%" h="2rem" rounded="0.5rem" />
-        <Skeleton w="40%" h="1rem" />
-        <Skeleton w="100%" h="3.5rem" rounded="1rem" />
+      <div class="flex flex-1 flex-col items-center justify-center gap-4">
+        <Skeleton w="18rem" h="1.875rem" rounded="0.75rem" />
+        <Skeleton w="100%" h="6rem" rounded="26px" />
       </div>
     {:else if pending}
       <div class="flex flex-1 items-center justify-center">
@@ -141,89 +145,132 @@
         </EmptyState>
       </div>
     {:else}
-      <div class="flex flex-1 flex-col justify-center">
-        <!-- hero -->
-        <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{hello}</h1>
-        <p class="mt-1.5 text-sm text-[var(--muted)]">Pick a model, ask something, or grab a starter below.</p>
+      <div class="-mt-[6vh] flex flex-1 flex-col justify-center">
+        <!-- greeting (§4) -->
+        <h1 class="text-center text-[30px] font-semibold tracking-tight">What can I help with?</h1>
 
-        <!-- model pill picker -->
-        <div class="mt-5 flex flex-wrap items-center gap-1.5" aria-label="Choose a model">
-          {#if modelsLoading}
-            {#each Array(3) as _i}<Skeleton w="6rem" h="1.75rem" rounded="999px" />{/each}
-          {:else if models.length === 0}
-            <span
-              class="rounded-full border px-3 py-1 text-xs text-[var(--muted)]"
-              style="border-color:var(--border)"
-            >
-              no models configured
-            </span>
-          {:else}
-            {#each models as m (`${m.provider_id}:${m.model_id}`)}
-              <button
-                type="button"
-                aria-pressed={model?.model_id === m.model_id && model?.provider_id === m.provider_id}
-                onclick={() => pickModel(m)}
-                class="rounded-full border px-3 py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)] {model?.model_id === m.model_id && model?.provider_id === m.provider_id
-                  ? 'border-[var(--accent)] text-[var(--accent)]'
-                  : 'text-[var(--muted)] hover:text-[var(--text)]'}"
-                style="border-color:{model?.model_id === m.model_id && model?.provider_id === m.provider_id
-                  ? 'var(--accent)'
-                  : 'var(--border)'}; background:{model?.model_id === m.model_id && model?.provider_id === m.provider_id
-                  ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
-                  : 'transparent'}"
-              >
-                {m.display || m.model_id}
-              </button>
-            {/each}
-          {/if}
-        </div>
-
-        <!-- quick composer -->
-        <div
-          class="mt-6 rounded-2xl border p-2 shadow-lg"
-          style="background:var(--panel); border-color:var(--border)"
-        >
+        <!-- pill composer (§6) -->
+        <div class="composer mt-7">
           <textarea
             bind:this={ta}
             bind:value={draft}
-            rows={2}
-            placeholder="Message ChatGo…"
+            rows={1}
+            placeholder="Ask anything"
             aria-label="Message"
-            class="max-h-40 min-h-11 w-full resize-none bg-transparent px-2.5 py-2 text-sm outline-none placeholder:text-[var(--muted)]"
+            class="max-h-60 w-full resize-none bg-transparent px-2.5 pb-2 pt-1.5 text-base text-[var(--text)] outline-none placeholder:text-[var(--faint)]"
             onkeydown={onKeydown}
           ></textarea>
-          <div class="flex items-center justify-between gap-2 px-1 pb-0.5">
-            <span class="truncate text-[11px] text-[var(--muted)]">
-              {model ? model.display || model.model_id : 'default model'} · {sendOnEnter ? '↵ send · ⇧↵ newline' : '⌘↵ send'}
-            </span>
-            <Button size="sm" variant="primary" disabled={!draft.trim() || sending} onclick={() => void send()}>
-              <SendHorizontal class="size-4" /> Send
-            </Button>
+          <div class="flex items-center justify-between gap-2 px-1 pb-1">
+            <div class="flex min-w-0 items-center gap-2">
+              <Dropdown
+                label="Choose a model"
+                align="start"
+                disabled={modelsLoading || models.length === 0}
+                buttonClass="flex h-8 min-w-0 max-w-56 items-center gap-1 rounded-full px-2.5 text-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] disabled:pointer-events-none disabled:opacity-50"
+              >
+                <span class="truncate">{modelsLoading ? 'Loading models…' : model ? model.display || model.model_id : 'no models configured'}</span>
+                <ChevronDown class="size-3.5 shrink-0" />
+                {#snippet items({ close })}
+                  {#each models as m (`${m.provider_id}:${m.model_id}`)}
+                    <MenuItem selected={m.provider_id === model?.provider_id && m.model_id === model?.model_id} onclick={() => pickModel(m)} {close}>
+                      {m.display || m.model_id}
+                    </MenuItem>
+                  {/each}
+                {/snippet}
+              </Dropdown>
+              <span class="hidden truncate text-xs text-[var(--faint)] sm:inline">
+                {sendOnEnter ? '↵ send · ⇧↵ newline' : '⌘↵ send'}
+              </span>
+            </div>
+            <button
+              type="button"
+              class="send"
+              aria-label="Send message"
+              disabled={!draft.trim() || sending}
+              onclick={() => void send()}
+            >
+              {#if sending}
+                <LoaderCircle class="size-4 animate-spin" />
+              {:else}
+                <ArrowUp class="size-4" />
+              {/if}
+            </button>
           </div>
         </div>
 
-        <!-- suggestion cards -->
-        <div class="mt-6 grid gap-3 sm:grid-cols-3">
+        <!-- suggestion pills (§4) -->
+        <div class="mt-5 flex flex-wrap justify-center gap-2">
           {#each suggestions as s (s.title)}
             <button
               type="button"
+              class="sug"
+              aria-label="{s.title} — {s.hint}"
               onclick={() => useSuggestion(s.prompt)}
-              class="group flex flex-col items-start gap-1 rounded-xl border p-3.5 text-left transition-colors hover:border-[color-mix(in_srgb,var(--accent)_55%,var(--border))] focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--accent)_70%,transparent)]"
-              style="background:var(--panel); border-color:var(--border)"
             >
-              <span class="text-[var(--muted)] group-hover:text-[var(--accent)]">
-                <Sparkles class="size-4" />
-              </span>
-              <span class="text-sm font-medium">{s.title}</span>
-              <span class="text-xs leading-relaxed text-[var(--muted)]">{s.hint}</span>
+              {s.title}
             </button>
           {/each}
         </div>
 
-        <p class="mt-8 text-center text-[11px] text-[var(--muted)]">
+        <p class="mt-10 text-center text-[11px] text-[var(--faint)]">
           ⌘B sidebar · ⌘N new chat · ⌘K palette (FE-extra)
         </p>
       </div>
     {/if}
   </div>
 </section>
+
+<style>
+  /* ChatGPT composer pill (§6): panel fill, 26px radius, soft shadow, no border */
+  .composer {
+    background: var(--panel);
+    border-radius: 26px;
+    padding: 10px 12px 8px;
+    box-shadow: var(--shadow-composer);
+    transition: background-color 0.15s ease;
+  }
+  .composer:focus-within {
+    background: color-mix(in srgb, var(--panel), var(--text) 6%);
+  }
+  .send {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    cursor: pointer;
+    transition: opacity 0.12s ease;
+  }
+  .send:disabled {
+    opacity: 0.25;
+    cursor: default;
+  }
+  .send:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline-offset: 2px;
+  }
+  .sug {
+    border: 0;
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--muted);
+    padding: 0.5rem 0.875rem;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition:
+      background-color 0.12s ease,
+      color 0.12s ease;
+  }
+  .sug:hover {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .sug:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);
+    outline-offset: 2px;
+  }
+</style>

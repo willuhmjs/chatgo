@@ -131,19 +131,32 @@ func (a *Auth) Login(ctx context.Context, ip, email, password string) (*store.Us
 }
 
 // Register creates a local account per the configured Registration policy:
-// open → role user, approve → role pending, closed → ErrRegistrationClosed.
+// open → role user, approve → role pending, closed → ErrRegistrationClosed —
+// EXCEPT the first-run bootstrap (docs/AUTHGATE-CONTRACT.md §2): on an
+// instance that has never had a user, closed policy still admits exactly one
+// admin (the tx below is the authoritative first-ever-user gate), so a fresh
+// deployment is not bricked by its default policy.
 // The bcrypt cost-12 hash is bounded work: 5/min/IP and 10/min instance-wide
 // token buckets gate entry and the shared bcrypt semaphore serializes the
 // expensive part, so a registration flood queues instead of pinning CPUs.
 func (a *Auth) Register(ctx context.Context, ip, email, password, name string) (*store.User, error) {
 	var role string
+	requireFirst := false
 	switch a.Cfg.Registration {
 	case "open":
 		role = store.RoleUser
 	case "approve":
 		role = store.RolePending
 	default: // "closed" (config.Load validates the set)
-		return nil, ErrRegistrationClosed
+		n, err := a.userCount(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			return nil, ErrRegistrationClosed
+		}
+		role = store.RoleUser // insertUserBootstrap promotes to admin iff first
+		requireFirst = true
 	}
 
 	if !a.Allow("register:"+ip, registerPerMin) || !a.Allow("register:global", registerGlobalPerMin) {
@@ -190,13 +203,25 @@ func (a *Auth) Register(ctx context.Context, ip, email, password, name string) (
 	}
 
 	u := &store.User{Email: email, Name: name, Role: role, PasswordHash: &hash}
-	if err := a.insertUserBootstrap(ctx, u); err != nil {
+	if err := a.insertUserBootstrap(ctx, u, requireFirst); err != nil {
 		if errors.Is(err, errEmailTaken) {
 			return nil, ErrEmailExists
 		}
-		return nil, err
+		return nil, err // ErrRegistrationClosed (lost the bootstrap race) passes through
 	}
 	return u, nil
+}
+
+// userCount is the read-only population probe for the closed-policy
+// first-run pre-check. It is a hint only — insertUserBootstrap re-derives
+// "first account ever" under the write lock, so racing registrants cannot
+// both bootstrap.
+func (a *Auth) userCount(ctx context.Context) (int, error) {
+	var n int
+	if err := a.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // errEmailTaken marks a UNIQUE collision on users.email inside the bootstrap
@@ -210,7 +235,14 @@ var errEmailTaken = errors.New("auth: email already taken")
 // promotes the row only while it is the only account that has ever existed,
 // so exactly one first user can win. On success u.Role reflects the stored
 // (possibly promoted) role.
-func (a *Auth) insertUserBootstrap(ctx context.Context, u *store.User) error {
+//
+// While the lock is held the same transaction also stamps first_run_done for
+// the very first account ever (docs/AUTHGATE-CONTRACT.md §2), so
+// /api/auth/status flips out of first_run atomically with the bootstrap.
+// requireFirst marks callers that may ONLY register as that first account
+// (closed Registration policy): when other users exist the transaction
+// aborts with ErrRegistrationClosed and the row vanishes with the rollback.
+func (a *Auth) insertUserBootstrap(ctx context.Context, u *store.User, requireFirst bool) error {
 	if u.ID == "" {
 		u.ID = uuid.NewString()
 	}
@@ -265,6 +297,28 @@ func (a *Auth) insertUserBootstrap(ctx context.Context, u *store.User) error {
 			return err
 		}
 		u.Role = role
+	}
+
+	// First-run stamp (AUTHGATE §2): still holding the write lock, check
+	// whether any OTHER account has ever existed. If not, this insert owns
+	// the instance — set first_run_done in the same transaction (covers the
+	// open/approve and OIDC first users too, not just the closed bootstrap).
+	var others int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id <> ?1`, u.ID).Scan(&others); err != nil {
+		return err
+	}
+	if others == 0 {
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO settings (key, value) VALUES (?1, ?2)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			SettingFirstRunDone, "true"); err != nil {
+			return err
+		}
+		u.Role = store.RoleAdmin // the first account is the admin by definition
+	} else if requireFirst {
+		// Closed policy and no longer first: lost the bootstrap race (or the
+		// pre-check raced). ROLLBACK via the deferred guard, answer 403.
+		return ErrRegistrationClosed
 	}
 
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {

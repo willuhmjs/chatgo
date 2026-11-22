@@ -41,32 +41,30 @@
 </div>
 
 <style>
+  /* §1: filled #2f2f2f (--panel) fields, no border, indigo-soft focus ring */
   .field {
     width: 100%;
     height: 2.25rem;
-    border-radius: 0.5rem;
-    border: 1px solid var(--border);
-    background: var(--panel-2);
+    border-radius: 0.625rem;
+    border: 1px solid transparent;
+    background: var(--panel);
     color: var(--text);
     padding: 0 0.75rem;
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     outline: none;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
+    transition: box-shadow 0.12s ease;
   }
   .field::placeholder {
-    color: var(--muted);
+    color: var(--faint);
   }
   .field:focus-visible {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--indigo) 55%, transparent);
   }
   .field-error {
-    border-color: var(--danger);
+    box-shadow: 0 0 0 1.5px var(--danger);
   }
   .field:disabled {
-    opacity: 0.6;
+    opacity: 0.55;
   }
   @media (pointer: coarse) {
     .field {
