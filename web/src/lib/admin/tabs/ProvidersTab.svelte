@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronDown, ChevronRight, Inbox, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
+  import { ChevronDown, Inbox, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
   import type { ModelToggle, ProviderAdmin, ProviderModel } from '$lib/admin/api-admin';
@@ -203,16 +203,10 @@
           {#each providers as p (p.id)}
             <tr class={row} style={rowBorder}>
               <td class={td}>
-                <button
-                  class="flex items-center gap-1.5 text-left"
-                  aria-expanded={expanded.has(p.id)}
-                  title={expanded.has(p.id) ? 'Hide models' : 'Manage models'}
-                  onclick={() => toggleExpand(p)}
-                >
-                  {#if expanded.has(p.id)}<ChevronDown size={15} class="shrink-0 text-[var(--muted)]" />{:else}<ChevronRight size={15} class="shrink-0 text-[var(--muted)]" />{/if}
+                <span class="flex items-center gap-1.5 text-left">
                   <span class="font-medium">{p.name}</span>
                   {#if p.is_default}<Badge kind="accent">default</Badge>{/if}
-                </button>
+                </span>
               </td>
               <td class="{td} max-w-[16rem] truncate font-mono text-xs text-[var(--muted)]" title={p.base_url}>{p.base_url}</td>
               <td class={td}>
@@ -239,11 +233,18 @@
               </td>
               <td class={td}>
                 <button
-                  class="text-xs text-[var(--muted)] underline-offset-2 hover:text-[var(--text)] hover:underline"
-                  title="enabled / cached models"
+                  class="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)]"
+                  aria-expanded={expanded.has(p.id)}
+                  title="Enable/disable this provider's models"
                   onclick={() => toggleExpand(p)}
                 >
-                  {p.models_enabled}/{p.model_count}
+                  <span class="tabular-nums">{p.models_enabled}/{p.model_count}</span>
+                  <span>models</span>
+                  <ChevronDown
+                    size={13}
+                    class="transition-transform {expanded.has(p.id) ? 'text-[var(--acc)]' : 'text-[var(--faint)]'}"
+                    style={expanded.has(p.id) ? 'transform:rotate(180deg)' : ''}
+                  />
                 </button>
               </td>
               <td class="{td}">
