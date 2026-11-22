@@ -15,7 +15,7 @@
   let users = $state<User[]>([]);
   let loading = $state(true);
   let loadError = $state('');
-  let selected = $state(new Set<string>());
+  let selected = $state.raw(new Set<string>());
   let approving = $state(false);
 
   // 2FA lockout recovery (POST /api/users/{id}/reset-2fa)
@@ -51,8 +51,10 @@
   void load();
 
   function toggleSelect(id: string) {
-    if (selected.has(id)) selected.delete(id);
-    else selected.add(id);
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selected = next;
   }
   function selectAllPending() {
     if (selected.size === pending.length) selected = new Set();

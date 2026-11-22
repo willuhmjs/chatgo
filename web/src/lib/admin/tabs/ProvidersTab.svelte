@@ -17,7 +17,9 @@
   let loadError = $state('');
   let syncing = $state<Record<string, boolean>>({});
   let syncingAll = $state(false);
-  let expanded = $state(new Set<string>());
+  let expanded = $state.raw(new Set<string>());
+  // NOTE: $state does NOT deep-proxy Set instances (Svelte 5 class-instance semantics) —
+  // mutations would never trigger a rerender; .raw + reassign-on-change is the correct runes idiom.
 
   // Per-provider model editor: lazy-loaded on first expand (includes
   // admin-disabled rows, which never appear in GET /api/models).
@@ -65,12 +67,15 @@
   }
 
   function toggleExpand(p: ProviderAdmin) {
-    if (expanded.has(p.id)) {
-      expanded.delete(p.id);
-      return;
+    // $state.raw Set: mutate-in-place would not notify — rebuild + reassign.
+    const next = new Set(expanded);
+    if (next.has(p.id)) {
+      next.delete(p.id);
+    } else {
+      next.add(p.id);
+      if (!models[p.id]) void loadModels(p);
     }
-    expanded.add(p.id);
-    if (!models[p.id]) void loadModels(p);
+    expanded = next;
   }
 
   /** Bulk write with optimistic rows + revert-on-error; the PUT answers the
