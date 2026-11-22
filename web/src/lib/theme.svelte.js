@@ -1,4 +1,8 @@
 // Theme store (scaffold-owned): dark default, persisted, toggles .dark on <html>.
+// Also boots the accent system (html[data-accent]) so App.svelte needs no new
+// wiring — see $lib/accent.svelte.js.
+
+import { initAccent } from './accent.svelte.js';
 
 const KEY = 'chatgo-theme';
 
@@ -22,6 +26,7 @@ export function initTheme() {
     /* private mode etc. — stay dark */
   }
   apply();
+  initAccent();
 }
 
 export function setTheme(mode) {

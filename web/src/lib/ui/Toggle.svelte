@@ -47,8 +47,8 @@
     transition: background-color 0.15s ease;
   }
   .track[data-on='true'] {
-    background: var(--indigo);
-    border-color: var(--indigo);
+    background: var(--acc, var(--indigo));
+    border-color: var(--acc, var(--indigo));
   }
   .thumb {
     width: 1rem;

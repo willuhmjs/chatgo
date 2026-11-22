@@ -51,7 +51,7 @@
     <div class="mb-6 flex items-center justify-center gap-2">
       <span
         class="flex h-7 w-7 items-center justify-center rounded-lg"
-        style="background:var(--accent); color:var(--accent-fg)"
+        style="background:var(--acc-grad, var(--accent)); color:var(--accent-fg)"
       >
         <MessageSquare size={15} />
       </span>

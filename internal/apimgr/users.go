@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/audit"
 	"chatgo/internal/store"
 )
 
@@ -86,6 +87,8 @@ func (h *usersH) approve(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	u.Role = store.RoleUser
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "user.approve", "user_id="+id, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, userView(u))
 }
 
@@ -134,6 +137,8 @@ func (h *usersH) setRole(w http.ResponseWriter, r *http.Request, id, role string
 		return
 	}
 	u.Role = role
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "user.role", "user_id="+id+" role="+role, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, userView(u))
 }
 

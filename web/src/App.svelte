@@ -6,7 +6,7 @@
   import { currentRoute, location, navigate, startRouter } from '$lib/router.svelte.js';
   import { initTheme } from '$lib/theme.svelte.js';
   import { initShortcuts, onShortcut } from '$lib/shortcuts.svelte.js';
-  import { bootstrap, isAdmin, session, shouldOnboard } from '$lib/session.svelte.js';
+  import { bootstrap, isAdmin, isOnboardDismissed, session, shouldOnboard } from '$lib/session.svelte.js';
   import Toasts from '$lib/extra/ToastHost.svelte';
   import CommandPalette from '$lib/extra/CommandPalette.svelte';
 
@@ -18,6 +18,8 @@
   import ChatView from './routes/ChatView.svelte';
   import Compare from './routes/Compare.svelte';
   import Gallery from './routes/Gallery.svelte';
+  import Knowledge from './routes/Knowledge.svelte';
+  import Images from './routes/Images.svelte';
   import Settings from './routes/Settings.svelte';
   import Admin from './routes/Admin.svelte';
   import Login from './routes/Login.svelte';
@@ -87,8 +89,10 @@
   // fresh-admin wizard nudge (AUTHGATE-CONTRACT §3): an admin on home whose
   // setup wizard is unfinished gets routed to /onboarding. The navigate()
   // below flips route.name, so this effect early-returns on re-run — no loop.
+  // isOnboardDismissed() is the second lock: once the wizard finishes (even
+  // if saving setup_done failed), never bounce the user back into it.
   $effect(() => {
-    if (!session.ready || !isAdmin() || route.name !== 'home') return;
+    if (!session.ready || !isAdmin() || isOnboardDismissed() || route.name !== 'home') return;
     void api
       .getMeSettings()
       .then((s) => {

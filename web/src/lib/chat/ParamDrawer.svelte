@@ -3,13 +3,17 @@
   // Changes are debounced onto the server; Reset clears params_json.
   // Polish pass (§1/§7): sheet on --bg-deep, no border (fill contrast),
   // 12px uppercase --muted section labels, sliders via tokens, quiet reset.
+  import * as api from '$lib/api';
   import {
-    patchChatParams,
+    compactParams,
     parseStopList,
     formatStopList,
     normalizeParams,
     MAX_TOKENS_BOUNDS,
+    type ChatParams,
   } from '$lib/chatview-api';
+  import { memoryCountCached } from '$lib/chat-features-api';
+  import { navigate } from '$lib/router.svelte.js';
   import { push as toast } from '$lib/toast.svelte.js';
   import X from 'lucide-svelte/icons/x';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
@@ -52,14 +56,25 @@
     queueMicrotask(() => (syncing = false));
   });
 
+  // Non-sampling keys inside chats.params (e.g. kb_collection_ids set by the
+  // composer's 📚 toggle) must survive every params PATCH — merge them back.
+  const SAMPLING_KEYS = new Set(['temperature', 'top_p', 'max_tokens', 'stop']);
+  function extraParams(): Record<string, unknown> {
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params ?? {})) if (!SAMPLING_KEYS.has(k)) rest[k] = v;
+    return rest;
+  }
+
   function apply(): void {
     if (!chatId) return;
-    patchChatParams(chatId, {
+    const p: ChatParams = {
       temperature,
       top_p: topP,
       max_tokens: maxTokens ?? undefined,
       stop: parseStopList(stopText),
-    })
+    };
+    api
+      .patchChat(chatId, { params: { ...extraParams(), ...compactParams(p) } })
       .then((c) => {
         onupdated?.(c);
         window.dispatchEvent(new CustomEvent('chatgo:chat-updated', { detail: { chat: c } }));
@@ -93,13 +108,28 @@
     topP = 1;
     maxTokens = null;
     stopText = '';
-    patchChatParams(chatId, {})
+    api
+      .patchChat(chatId, { params: extraParams() })
       .then((c) => {
         onupdated?.(c);
         toast('Params reset to provider defaults', 'success');
       })
       .catch((err: unknown) => toast(`Reset failed: ${String((err as Error)?.message ?? err)}`, 'error'));
   }
+
+  // ---------- memory (read-only count chip; hidden if endpoint absent) ----------
+  let memCount = $state<number | null>(null);
+  let memTried = false;
+  $effect(() => {
+    if (!open || memTried) return;
+    memTried = true;
+    memoryCountCached().then(
+      (n) => (memCount = n),
+      () => {
+        /* 404/no endpoint — quietly omit the row */
+      },
+    );
+  });
 
   $effect(() => {
     if (!open) return;
@@ -210,6 +240,23 @@
         <p class="mt-1.5 text-[11px]" style="color:var(--muted)">Up to 8 sequences; generation halts on match</p>
       </div>
 
+      {#if memCount !== null}
+        <!-- read-only memory status (wave 2); manager lives in Settings → account -->
+        <div class="flex items-center gap-2 border-t pt-4" style="border-color:var(--border)">
+          <p class="min-w-0 flex-1 text-xs" style="color:var(--muted)">
+            Memory · {memCount} {memCount === 1 ? 'memory' : 'memories'} on
+          </p>
+          <a
+            class="quiet"
+            href="/settings"
+            onclick={(e) => {
+              e.preventDefault();
+              navigate('/settings');
+            }}>Manage</a
+          >
+        </div>
+      {/if}
+
       <p class="text-[11px]" style="color:var(--faint, #6e6e6e)">
         Saved automatically to this chat. Provider defaults apply to unset fields.
       </p>
@@ -271,14 +318,14 @@
     box-shadow: 0 0 0 2px var(--accent-soft, rgb(99 102 241 / 0.18));
   }
 
-  /* token-styled slider: hairline track, white thumb */
+  /* token-styled slider: hairline track, accent thumb (FE-COLOR) */
   input[type='range'] {
     -webkit-appearance: none;
     appearance: none;
     height: 4px;
     border-radius: 999px;
     background: var(--panel-2, #3a3a3a);
-    accent-color: var(--accent);
+    accent-color: var(--acc, var(--accent));
     outline: none;
     cursor: pointer;
   }
@@ -289,7 +336,7 @@
     height: 14px;
     border-radius: 999px;
     border: 0;
-    background: var(--accent, #ffffff);
+    background: var(--acc, var(--accent, #ffffff));
     cursor: pointer;
   }
   input[type='range']::-moz-range-thumb {
@@ -297,11 +344,11 @@
     height: 14px;
     border-radius: 999px;
     border: 0;
-    background: var(--accent, #ffffff);
+    background: var(--acc, var(--accent, #ffffff));
     cursor: pointer;
   }
   input[type='range']:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px var(--accent-soft, rgb(99 102 241 / 0.18));
+    box-shadow: 0 0 0 3px var(--acc-tint-strong, var(--accent-soft, rgb(99 102 241 / 0.18)));
   }
 
   /* quiet text buttons in the header (§5 "Reset quiet text button") */

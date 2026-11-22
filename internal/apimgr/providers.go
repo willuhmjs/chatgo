@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/audit"
 	"chatgo/internal/providers"
 	"chatgo/internal/store"
 )
@@ -103,7 +104,8 @@ func (h *providersH) list(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/providers (admin).
 func (h *providersH) handleCreate(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.d.requireAdmin(w, r); !ok {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	var req providerReq
@@ -133,13 +135,15 @@ func (h *providersH) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.create", p.Name, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusCreated, providerView(p))
 }
 
 // PUT /api/providers/{id} (admin) — partial patch; api_key keeps/clears/sets
 // per providerReq semantics above.
 func (h *providersH) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.d.requireAdmin(w, r); !ok {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	p, err := h.d.Store.Providers.Get(r.Context(), r.PathValue("id"))
@@ -188,6 +192,7 @@ func (h *providersH) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.update", p.Name, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, providerView(p))
 }
 
@@ -204,6 +209,8 @@ func (h *providersH) del(w http.ResponseWriter, r *http.Request, id string) {
 		providerLookupFail(w, r, err)
 		return
 	}
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.delete", id, h.d.Auth.RequestIP(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 

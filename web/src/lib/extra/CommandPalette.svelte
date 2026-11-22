@@ -246,7 +246,7 @@
           {/if}
           <button
             class="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm transition-colors"
-            style={i === sel ? 'background:var(--fill-hover)' : ''}
+            style={i === sel ? 'background:var(--acc-tint); box-shadow:inset 2px 0 0 var(--acc)' : ''}
             bind:this={rowEls[i]}
             onmouseenter={() => (sel = i)}
             onclick={() => run(i)}

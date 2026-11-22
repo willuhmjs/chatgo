@@ -7,7 +7,7 @@
   import { toasts, dismiss } from '$lib/toast.svelte.js';
 
   const KIND_DOT: Record<string, string> = {
-    info: 'var(--muted)',
+    info: 'var(--acc, var(--muted))',
     success: '#10a37f',
     error: 'var(--danger)',
   };

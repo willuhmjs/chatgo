@@ -3,13 +3,15 @@
   // explicit link into /admin (FE-admin owns that route).
   import { session, isAdmin } from '$lib/session.svelte.js';
   import SettingsMe from './SettingsMe.svelte';
+  import SettingsPrompts from './SettingsPrompts.svelte';
 
-  type Tab = 'profile' | 'preferences' | 'account';
+  type Tab = 'profile' | 'preferences' | 'account' | 'library';
   let tab = $state<Tab>('profile');
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'profile', label: 'Profile' },
     { id: 'preferences', label: 'Preferences' },
+    { id: 'library', label: 'Library' },
     { id: 'account', label: 'Account' },
   ];
 </script>
@@ -44,7 +46,9 @@
       {/each}
     </div>
 
-    {#if session.user}
+    {#if tab === 'library'}
+      <SettingsPrompts />
+    {:else if session.user}
       <SettingsMe {tab} />
     {:else}
       <p class="rounded-2xl px-4 py-3 text-sm text-[var(--muted)]" style="background:var(--panel)">

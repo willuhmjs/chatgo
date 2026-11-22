@@ -34,7 +34,7 @@
   {/if}
   <span class="min-w-0 flex-1 truncate text-left">{@render children()}</span>
   {#if selected}
-    <span style="color:var(--indigo)">✓</span>
+    <span style="color:var(--acc, var(--indigo))">✓</span>
   {/if}
 </button>
 

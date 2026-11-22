@@ -116,6 +116,24 @@ export function requireAuth() {
 }
 
 /**
+ * Loop-proofing for the /onboarding nudge: once the wizard is finished (or
+ * skipped) we stop nudging for the rest of the page load, even if persisting
+ * setup_done failed server-side — otherwise App.svelte's nudge $effect would
+ * bounce the admin straight back into the wizard forever. A reload clears it.
+ */
+let onboardDismissed = false;
+
+/** Call from the wizard's finish() before navigating away. */
+export function dismissOnboard() {
+  onboardDismissed = true;
+}
+
+/** True once dismissOnboard() ran; callers should skip the nudge entirely. */
+export function isOnboardDismissed() {
+  return onboardDismissed;
+}
+
+/**
  * Admin landing nudge (contract §3): a fresh admin who has not finished the
  * setup wizard should be routed to /onboarding. Read-only helper — the
  * integrator (App/Home) owns the navigate() call.
@@ -130,6 +148,7 @@ export function shouldOnboard(
   /** @type {{ authenticated?: boolean, first_run?: boolean } | null | undefined} */ status,
 ) {
   return (
+    !onboardDismissed &&
     !!user &&
     user.role === 'admin' &&
     String(meSettings?.setup_done ?? '') !== 'true' &&

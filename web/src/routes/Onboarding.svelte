@@ -9,11 +9,33 @@
   import * as api from '$lib/api';
   import type { AuthConfig, ModelEntry, User } from '$lib/api';
   import { navigate } from '$lib/router.svelte.js';
-  import { isAdmin, session } from '$lib/session.svelte.js';
+  import { dismissOnboard, isAdmin, session } from '$lib/session.svelte.js';
   import { push } from '$lib/toast.svelte.js';
 
   const STEPS = ['Provider', 'Task model', 'Invite'] as const;
-  let step = $state<0 | 1 | 2>(0);
+
+  // Keep the wizard's position across remounts: if anything bounces us home
+  // and back (e.g. the old setup_done nudge loop), we resume where we left
+  // off instead of landing on step 1.
+  const STEP_KEY = 'chatgo.onb.step';
+  function restoreStep(): 0 | 1 | 2 {
+    try {
+      const n = Number.parseInt(sessionStorage.getItem(STEP_KEY) ?? '', 10);
+      if (n === 1 || n === 2) return n;
+    } catch {
+      /* storage unavailable (private mode etc.) — start over */
+    }
+    return 0;
+  }
+  let step = $state<0 | 1 | 2>(restoreStep());
+  $effect(() => {
+    try {
+      if (step === 0) sessionStorage.removeItem(STEP_KEY);
+      else sessionStorage.setItem(STEP_KEY, String(step));
+    } catch {
+      /* ignore */
+    }
+  });
 
   // ----- step 1: provider -----
   let pName = $state('');
@@ -144,9 +166,11 @@
   }
 
   /**
-   * Finish the wizard: mark setup done (best-effort — the keys are advisory)
-   * and head home. With `saveWizard` also persists the step-2 choices via the
-   * admin-allowlisted settings keys (contract §4b).
+   * Finish the wizard: persist setup_done (me-setting — App.svelte's nudge
+   * reads it back), best-effort the admin-allowlisted keys (contract §4b),
+   * then head home. A failed setup_done save surfaces a toast but NEVER
+   * traps the user here: dismissOnboard() makes the nudge effect stop even
+   * though the server never recorded the flag.
    */
   let finishing = $state(false);
   async function finish(saveWizard: boolean) {
@@ -158,10 +182,19 @@
       const sp = systemPrompt.trim();
       if (sp) settings.system_prompt = sp;
     }
-    await Promise.allSettled([
+    const [meRes] = await Promise.allSettled([
       api.setMeSettings({ setup_done: 'true' }),
       api.setSettings(settings), // ignore failures per contract (best-effort)
     ]);
+    if (meRes.status === 'rejected') {
+      push('Could not save setup state', 'error');
+    }
+    try {
+      sessionStorage.removeItem(STEP_KEY);
+    } catch {
+      /* ignore */
+    }
+    dismissOnboard();
     navigate('/');
   }
 

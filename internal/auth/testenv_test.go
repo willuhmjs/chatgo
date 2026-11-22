@@ -67,6 +67,7 @@ func newTestEnv(t *testing.T, mut func(*config.Config)) *testEnv {
 
 	mux := http.NewServeMux()
 	apimgr.Register(mux, &apimgr.Deps{Cfg: cfg, Store: st, Auth: a})
+	a.Register2FA(mux) // BE-SEC 2FA routes (integrator wires this besides apimgr.Register)
 	// GET /api/auth/status (AUTHGATE §2) now ships in apimgr.registerAuth
 	// itself, so Register above wires it — no stand-in here. AuthPolicy's
 	// /api/auth/* default branch keeps it public.

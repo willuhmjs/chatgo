@@ -8,15 +8,28 @@
   import type { Chat, SendMessageBody } from '$lib/api';
   import * as api from '$lib/api';
   import ModelPicker from './ModelPicker.svelte';
+  import SlashPrompts from './SlashPrompts.svelte';
   import IconButton from './ui/IconButton.svelte';
   import { capabilities } from './state.svelte.js';
   import { prefersEnterSend, formatBytes } from '$lib/chatview-api';
+  import {
+    listKbCached,
+    kbIdsFromChat,
+    withKbIds,
+    listPromptsCached,
+    filterPrompts,
+    type KbCollection,
+    type PromptEntry,
+  } from '$lib/chat-features-api';
+  import { navigate } from '$lib/router.svelte.js';
   import { onShortcut } from '$lib/shortcuts.svelte.js';
   import { push as toast } from '$lib/toast.svelte.js';
   import Plus from 'lucide-svelte/icons/plus';
   import Mic from 'lucide-svelte/icons/mic';
   import MicOff from 'lucide-svelte/icons/mic-off';
   import Globe from 'lucide-svelte/icons/globe';
+  import BookOpen from 'lucide-svelte/icons/book-open';
+  import Check from 'lucide-svelte/icons/check';
   import ArrowUp from 'lucide-svelte/icons/arrow-up';
   import Square from 'lucide-svelte/icons/square';
   import X from 'lucide-svelte/icons/x';
@@ -82,6 +95,7 @@
   });
 
   function onKeydown(e: KeyboardEvent): void {
+    if (slashOpen && handleSlashKey(e)) return;
     if (e.key !== 'Enter') return;
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
@@ -93,6 +107,11 @@
       e.preventDefault();
       doSend();
     }
+  }
+
+  function onKeyup(e: KeyboardEvent): void {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Escape') return;
+    refreshSlash();
   }
 
   function doSend(): void {
@@ -111,6 +130,8 @@
       search: capabilities.search && searchOn ? true : undefined,
     });
     value = '';
+    slashOpen = false;
+    slashDismissed = null;
     attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
     attachments = [];
   }
@@ -278,6 +299,149 @@
     if (micOn) stopMic();
     else startMic();
   }
+
+  // ---------- KB collections (📚 toggle; selection on chat.params via PATCH) ----------
+  // Hidden when GET /api/kb 404s (endpoint absent on this build). An OK-but-
+  // empty list still shows the toggle with the "No collections yet" hint.
+  let kb = $state<KbCollection[] | null>(null);
+  let kbOpen = $state(false);
+  let kbRoot = $state<HTMLDivElement | null>(null);
+  const kbSelected = $derived(kbIdsFromChat(chat));
+
+  $effect(() => {
+    void listKbCached().then(
+      (rows) => (kb = rows),
+      () => (kb = null),
+    );
+  });
+
+  function toggleKbCollection(cid: string): void {
+    if (!chat) return;
+    const sel = kbSelected.includes(cid) ? kbSelected.filter((x) => x !== cid) : [...kbSelected, cid];
+    api
+      .patchChat(chat.id, { params: withKbIds(chat.params, sel) })
+      .then((c) => {
+        onupdated?.(c);
+        window.dispatchEvent(new CustomEvent('chatgo:chat-updated', { detail: { chat: c } }));
+      })
+      .catch((err: unknown) =>
+        toast(`Knowledge collections not saved: ${String((err as Error)?.message ?? err)}`, 'error'),
+      );
+  }
+
+  function gotoKnowledge(e: MouseEvent): void {
+    e.preventDefault();
+    kbOpen = false;
+    navigate('/knowledge');
+  }
+
+  $effect(() => {
+    if (!kbOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (kbRoot && !kbRoot.contains(e.target as Node)) kbOpen = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // don't steal Esc while the slash menu is being driven from the textarea
+      if (e.key === 'Escape' && !(e.target instanceof HTMLTextAreaElement)) {
+        e.stopPropagation();
+        kbOpen = false;
+      }
+    };
+    document.addEventListener('click', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('click', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  });
+
+  // ---------- slash prompts ('/' popover over GET /api/prompts) ----------
+  let prompts = $state<PromptEntry[]>([]);
+  let promptsFetched = false;
+  let promptsLoading = $state(false);
+  let promptsAvailable = $state(true); // 404 → false: never show the popover
+  let slashOpen = $state(false);
+  let slashQuery = $state('');
+  let slashIndex = $state(0);
+  let slashDismissed = $state<string | null>(null); // value when Esc closed it
+
+  const slashFiltered = $derived(filterPrompts(prompts, slashQuery));
+  $effect(() => {
+    void slashFiltered.length;
+    slashIndex = 0;
+  });
+
+  function loadPrompts(): void {
+    if (promptsFetched || promptsLoading || !promptsAvailable) return;
+    promptsLoading = true;
+    listPromptsCached().then(
+      (rows) => {
+        prompts = rows;
+        promptsFetched = true;
+      },
+      (err: unknown) => {
+        if ((err as { status?: number })?.status === 404) promptsAvailable = false;
+        slashOpen = false;
+      },
+    ).finally(() => (promptsLoading = false));
+  }
+
+  /** Recompute popover visibility from value + caret (single-line guard). */
+  function refreshSlash(): void {
+    const v = value;
+    if (slashDismissed !== null && !v.startsWith(slashDismissed)) slashDismissed = null;
+    const caret = ta ? ta.selectionStart : v.length;
+    const ok =
+      promptsAvailable &&
+      v.startsWith('/') &&
+      !v.slice(0, caret).includes('\n') &&
+      slashDismissed !== v;
+    if (!ok) {
+      slashOpen = false;
+      return;
+    }
+    slashQuery = v.slice(1, caret);
+    loadPrompts();
+    slashOpen = true;
+  }
+
+  function pickPrompt(p: PromptEntry): void {
+    value = p.content;
+    slashOpen = false;
+    slashDismissed = null;
+    requestAnimationFrame(() => {
+      ta?.focus();
+      ta?.setSelectionRange(value.length, value.length);
+    });
+  }
+
+  /** Returns true when the key belongs to the slash popover. */
+  function handleSlashKey(e: KeyboardEvent): boolean {
+    const n = slashFiltered.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (n) slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      slashDismissed = value;
+      slashOpen = false;
+      return true;
+    }
+    if (e.key === 'Tab' && n) {
+      e.preventDefault();
+      pickPrompt(slashFiltered[slashIndex]);
+      return true;
+    }
+    if (e.key === 'Enter' && n && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      pickPrompt(slashFiltered[slashIndex]);
+      return true;
+    }
+    return false;
+  }
 </script>
 
 <div style="background:var(--bg)" aria-label="Message composer">
@@ -313,6 +477,16 @@
         </div>
       {/if}
 
+      {#if slashOpen}
+        <SlashPrompts
+          items={slashFiltered}
+          active={slashIndex}
+          loading={promptsLoading}
+          onpick={pickPrompt}
+          onhover={(i) => (slashIndex = i)}
+        />
+      {/if}
+
       <textarea
         bind:this={ta}
         bind:value={value}
@@ -322,6 +496,9 @@
         style="color:var(--text)"
         aria-label="Message"
         onkeydown={onKeydown}
+        oninput={() => queueMicrotask(refreshSlash)}
+        onkeyup={onKeyup}
+        onblur={() => (slashOpen = false)}
         onpaste={onPaste}></textarea>
 
       <!-- inner bottom row: attach · search · model … mic · send/stop (§6) -->
@@ -348,6 +525,47 @@
               {#if searchOn}<span class="dot" aria-hidden="true"></span>{/if}
             </span>
           </IconButton>
+        {/if}
+        {#if kb !== null}
+          <!-- 📚 KB collections — multi-select persisted on chat.params -->
+          <div bind:this={kbRoot} class="relative">
+            <IconButton
+              title="Knowledge collections"
+              active={kbSelected.length > 0}
+              onclick={() => (kbOpen = !kbOpen)}
+            >
+              <span class="globe">
+                <BookOpen size={15} />
+                {#if kbSelected.length}<span class="dot" aria-hidden="true"></span>{/if}
+              </span>
+            </IconButton>
+            {#if kbOpen}
+              <div class="kbpop" role="listbox" aria-label="Knowledge collections" aria-multiselectable="true">
+                <div class="max-h-64 overflow-y-auto px-1 pt-1.5 pb-1">
+                  {#each kb as c (c.id)}
+                    <button
+                      type="button"
+                      class="kbrow"
+                      class:sel={kbSelected.includes(c.id)}
+                      role="option"
+                      aria-selected={kbSelected.includes(c.id)}
+                      onclick={() => toggleKbCollection(c.id)}
+                    >
+                      <span class="min-w-0 flex-1 truncate">{c.name || 'Untitled'}</span>
+                      {#if kbSelected.includes(c.id)}
+                        <Check size={14} style="flex:none; color:var(--acc, var(--accent))" />
+                      {/if}
+                    </button>
+                  {:else}
+                    <p class="px-3 py-3 text-xs" style="color:var(--muted)">No collections yet</p>
+                  {/each}
+                </div>
+                <div class="kbfoot">
+                  <a href="/knowledge" onclick={gotoKnowledge}>Manage knowledge →</a>
+                </div>
+              </div>
+            {/if}
+          </div>
         {/if}
         <ModelPicker {chat} {onupdated} />
 
@@ -383,6 +601,7 @@
      hairline border (light black/8%, dark white/6%). Blur needs a translucent
      fill to read, so the bg keeps --panel but lets 6% through. */
   .pill {
+    position: relative; /* anchors the slash-prompt popover */
     border-radius: 26px;
     border: 1px solid rgb(0 0 0 / 0.08);
     padding: 10px 12px 8px;
@@ -449,7 +668,7 @@
     background: var(--fill-hover, rgb(255 255 255 / 0.065));
   }
 
-  /* web-search toggle: active state gets a tiny white dot (§6) */
+  /* web-search toggle: active state gets a tiny accent dot (§6) */
   .globe {
     position: relative;
     display: inline-flex;
@@ -461,10 +680,73 @@
     width: 4px;
     height: 4px;
     border-radius: 999px;
-    background: var(--accent, #ffffff);
+    background: var(--acc, var(--accent, #ffffff));
   }
 
-  /* 32px send/stop circle: white fill, near-black glyph, 25% when disabled */
+  /* KB collections popover: ModelPicker menu recipe (--panel r14 shadow-menu) */
+  .kbpop {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 30;
+    width: 18rem;
+    min-width: 14rem;
+    border-radius: 0.875rem;
+    border: 0;
+    background: var(--panel, #2f2f2f);
+    box-shadow: var(--shadow-menu, 0 8px 28px rgb(0 0 0 / 0.45));
+    overflow: hidden;
+    animation: kb-pop 90ms ease-out;
+  }
+  .kbrow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.4rem 0.65rem;
+    border: 0;
+    border-radius: 0.625rem;
+    background: transparent;
+    color: var(--text);
+    font-size: 0.8125rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .kbrow:hover,
+  .kbrow.sel {
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+  .kbfoot {
+    border-top: 1px solid var(--border, rgb(255 255 255 / 0.1));
+    padding: 0.4rem 0.75rem;
+  }
+  .kbfoot a {
+    font-size: 0.75rem;
+    color: var(--acc, var(--accent, #ffffff));
+    text-decoration: none;
+  }
+  .kbfoot a:hover {
+    text-decoration: underline;
+  }
+  @keyframes kb-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kbpop {
+      animation: none;
+    }
+  }
+
+  /* 32px send/stop circle: accent gradient, near-black glyph, 25% when
+     disabled; hover brightens with an --acc-strong glow (FE-COLOR) */
   .send {
     display: inline-flex;
     align-items: center;
@@ -473,16 +755,20 @@
     height: 2rem;
     border-radius: 999px;
     border: 0;
-    background: var(--accent, #ffffff);
+    background: var(--acc-grad, var(--accent, #ffffff));
     color: var(--accent-fg, #0d0d0d);
     cursor: pointer;
-    transition: opacity 120ms ease;
+    transition:
+      opacity 120ms ease,
+      filter 120ms ease,
+      box-shadow 120ms ease;
   }
   .send:disabled {
     opacity: 0.25;
     cursor: not-allowed;
   }
   .send:hover:not(:disabled) {
-    opacity: 0.85;
+    filter: brightness(1.08);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--acc-strong, var(--accent)) 55%, transparent);
   }
 </style>

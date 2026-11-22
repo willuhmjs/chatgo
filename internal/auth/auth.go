@@ -49,6 +49,28 @@ type Auth struct {
 	// lastTouch throttles last_active_at / last_seen_at writes to ≥60s per
 	// user/session (contract §auth). key → time of last write.
 	lastTouch sync.Map
+
+	// --- 2FA state (BE-SEC, internal/auth/totp.go) -------------------------
+	// All three maps are capped/TTL-swept per docs/FEATURES-V2.md §RAM:
+	// pending ≤ totpPendingCap entries, nonces expire with the 10-min token
+	// window (swept on use), last-step ≤ one entry per user.
+
+	// totpSecretKey = HKDF-SHA256(SESSION_SECRET, "chatgo:totp-atrest/v1"):
+	// AES-256-GCM key sealing users.totp_secret at rest (same HKDF pattern
+	// as provider api_key_enc, domain-separated info so keys never collide).
+	totpSecretKey []byte
+	// totpTokenKey = HKDF-SHA256(SESSION_SECRET, "chatgo:totp-token/v1"):
+	// HMAC key for the stateless login→/api/auth/totp handoff token.
+	totpTokenKey []byte
+
+	pendingMu   sync.Mutex
+	pendingTOTP map[string]pendingTOTP // userID → not-yet-confirmed secret
+
+	nonceMu    sync.Mutex
+	usedNonces map[string]int64 // TOTP-token nonce → expiry unix (replay guard)
+
+	lastStepMu   sync.Mutex
+	totpLastStep map[string]int64 // userID → last consumed TOTP step (replay)
 }
 
 type loginBucket struct {
@@ -82,6 +104,9 @@ func New(cfg *config.Config, st *store.Store) (*Auth, error) {
 		if a.oidc, err = newOIDCFlow(cfg, secret); err != nil {
 			return nil, err
 		}
+	}
+	if err := a.initTOTP(); err != nil {
+		return nil, err
 	}
 	return a, nil
 }

@@ -8,6 +8,7 @@
   import * as api from '$lib/api';
   import { models, loadModels, modelsByProvider } from '$lib/chat/state.svelte.js';
   import { formatContextLen } from '$lib/chatview-api';
+  import { hueColor } from '$lib/hue';
   import { push as toast } from '$lib/toast.svelte.js';
   import Check from 'lucide-svelte/icons/check';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
@@ -126,7 +127,9 @@
           </p>
         {:else}
           {#each groups as [provider, items] (provider)}
-            <p class="group-label">{provider}</p>
+            <p class="group-label">
+              <span class="dot" style="background:{hueColor(provider)}" aria-hidden="true"></span>{provider}
+            </p>
             {#each items as m (m.provider_id + ':' + m.model_id)}
               <button
                 type="button"
@@ -136,6 +139,7 @@
                 role="option"
                 aria-selected={current?.model_id === m.model_id}
               >
+                <span class="dot" style="background:{hueColor(provider)}" aria-hidden="true"></span>
                 <span class="min-w-0 flex-1">
                   <span class="name">{m.display || m.model_id}</span>
                   {#if m.context_len}
@@ -196,6 +200,21 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--muted, #a8a8a8);
+  }
+  /* deterministic provider-hue dots (FE-COLOR): 8px, painted from hueColor() */
+  .group-label .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 0.4rem;
+    border-radius: 999px;
+    vertical-align: baseline;
+  }
+  .row .dot {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 999px;
   }
   .row {
     display: flex;

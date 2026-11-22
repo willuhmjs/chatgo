@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/audit"
 	"chatgo/internal/auth"
 	"chatgo/internal/store"
 )
@@ -88,6 +89,9 @@ var settingValidators = map[string]func(string) string{
 	"system_prompt": nil, // global extra system prompt
 	"registration":  validateRegistration,
 	"search_url":    validateSearchURL,
+	// Written once the admin finishes the onboarding wizard (global mirror of
+	// the per-user setup_done me-setting).
+	"instance_setup_done": nil,
 }
 
 func validateTaskModel(v string) string {
@@ -212,6 +216,8 @@ func (h *adminH) put(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "settings.update", "", h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, view)
 }
 
@@ -219,13 +225,17 @@ func (h *adminH) put(w http.ResponseWriter, r *http.Request) {
 //
 // CONTRACT-DEVIATION: the schema (scaffold-owned migrate.go) has no
 // user_settings table, so per-user prefs are namespaced into `settings` under
-// "me.<userID>.<key>". Only "theme" is allowlisted; rows are invisible to
-// admin GET /api/settings because that lists… well, All() — the admin view
+// "me.<userID>.<key>". Only meSettingKeys is allowlisted; rows are invisible
+// to admin GET /api/settings because that lists… well, All() — the admin view
 // filters the "me." namespace out below.
 
 const meSettingPrefix = "me."
 
-var meSettingKeys = map[string]bool{"theme": true}
+// meSettingKeys: "theme" is the UI pref; "setup_done" is written by the
+// onboarding wizard (App.svelte's fresh-admin nudge reads it back); "accent"
+// is reserved for the color-picker wave. All plain strings, 8KB-capped like
+// every other setting value.
+var meSettingKeys = map[string]bool{"theme": true, "setup_done": true, "accent": true}
 
 // handleMeGet returns the caller's own prefs (namespaced keys stripped) plus
 // the computed search_enabled capability the composer probes for.
@@ -313,6 +323,7 @@ func (h *adminH) handleMePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.d.Auth.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
+	audit.Record(r.Context(), h.d.Store.DB, u, "password.change", "", h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -4,14 +4,15 @@
   // mirrored into ?tab=… with history.replaceState (never pushState — keeps
   // the scaffold router's pathname-only location authoritative). Deep links
   // like /admin?tab=users resolve on mount.
-  import { Server, Settings, Shield, ShieldX, Users } from 'lucide-svelte';
+  import { ScanSearch, Server, Settings, Shield, ShieldX, Users } from 'lucide-svelte';
   import { isAdmin, session } from '$lib/session.svelte.js';
   import ProvidersTab from '$lib/admin/tabs/ProvidersTab.svelte';
   import UsersTab from '$lib/admin/tabs/UsersTab.svelte';
   import SystemTab from '$lib/admin/tabs/SystemTab.svelte';
+  import AuditTab from '$lib/admin/tabs/AuditTab.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
 
-  const TABS = ['providers', 'users', 'system'] as const;
+  const TABS = ['providers', 'users', 'system', 'audit'] as const;
   type Tab = (typeof TABS)[number];
 
   function tabFromUrl(): Tab {
@@ -30,6 +31,7 @@
     { id: 'providers', label: 'Providers', icon: Server },
     { id: 'users', label: 'Users', icon: Users },
     { id: 'system', label: 'System', icon: Settings },
+    { id: 'audit', label: 'Audit', icon: ScanSearch },
   ];
 </script>
 
@@ -79,7 +81,7 @@
         <h1 class="flex items-center gap-2 text-lg font-semibold tracking-tight">
           <Shield size={19} class="text-[var(--muted)]" /> Admin
         </h1>
-        <p class="mt-0.5 text-sm text-[var(--muted)]">Providers, people and instance settings.</p>
+        <p class="mt-0.5 text-sm text-[var(--muted)]">Providers, people, instance settings and the audit trail.</p>
       </div>
       <!-- quiet segmented pill (§5): active = #3a3a3a fill, no accent bar -->
       <nav class="flex items-center gap-0.5 rounded-full p-1" style="background:var(--panel)" aria-label="Admin sections">
@@ -102,8 +104,10 @@
       <ProvidersTab />
     {:else if tab === 'users'}
       <UsersTab />
-    {:else}
+    {:else if tab === 'system'}
       <SystemTab />
+    {:else}
+      <AuditTab />
     {/if}
   </div>
 {/if}

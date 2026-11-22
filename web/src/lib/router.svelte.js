@@ -6,6 +6,8 @@ const ROUTES = [
   { name: 'chat', pattern: '/c/:id' },
   { name: 'compare', pattern: '/compare' },
   { name: 'gallery', pattern: '/gallery' },
+  { name: 'knowledge', pattern: '/knowledge' },
+  { name: 'images', pattern: '/images' },
   { name: 'settings', pattern: '/settings' },
   { name: 'admin', pattern: '/admin' },
   { name: 'login', pattern: '/login' },

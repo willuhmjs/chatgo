@@ -18,6 +18,13 @@
   import { stream, send, regenerate, abort } from '$lib/sse.svelte.js';
   import { session } from '$lib/session.svelte.js';
   import { takePendingPrompt } from '$lib/api-shell';
+  import {
+    listRatings,
+    setRating,
+    deleteRating,
+    forkChat,
+    type RatingsMap,
+  } from '$lib/chat-features-api';
   import MessageList from '$lib/chat/MessageList.svelte';
   import Composer from '$lib/chat/Composer.svelte';
   import ParamDrawer from '$lib/chat/ParamDrawer.svelte';
@@ -40,6 +47,12 @@
   let loadError = $state('');
   let drawerOpen = $state(false);
 
+  // wave-2 features (FE-CHATTER): 👍/👎 map hydrated per chat; affordances
+  // hide quietly when their endpoint 404s on this server build
+  let ratings = $state<RatingsMap>({});
+  let ratingsOk = $state(true);
+  let forkOk = $state(true);
+
   // stream bookkeeping (proxy refs; content mutates notify through the proxy)
   let streamMsg: UIMessage | null = null;
   let tokenBuf = '';
@@ -56,6 +69,16 @@
     loadError = '';
     chat = null;
     messages = [];
+    ratings = {};
+    ratingsOk = true;
+    // Ratings hydrate in parallel — never gates the chat from opening.
+    void listRatings(id)
+      .then((r) => {
+        if (seq === loadSeq) ratings = r;
+      })
+      .catch((err: unknown) => {
+        if (seq === loadSeq && (err as api.ApiError)?.status === 404) ratingsOk = false;
+      });
     try {
       const [c, ms] = await Promise.all([api.getChat(id), api.listMessages(id)]);
       if (seq !== loadSeq) return;
@@ -263,6 +286,64 @@
   function chatUpdated(c: Chat): void {
     chat = c;
   }
+
+  // ---------------- ratings (FE-CHATTER wave 2) ----------------
+
+  /** Optimistic 👍/👎 flip; same icon again clears. Rolls back on failure. */
+  function rate(m: UIMessage, value: 1 | -1): void {
+    if (!id || isLocalId(m.id)) return;
+    const prev = ratings[m.id];
+    const restore = (): void => {
+      if (prev) ratings[m.id] = prev;
+      else delete ratings[m.id];
+    };
+    if (prev?.value === value) {
+      delete ratings[m.id];
+      deleteRating(id, m.id).catch((err: unknown) => {
+        restore();
+        if ((err as api.ApiError)?.status === 404) ratingsOk = false;
+      });
+    } else {
+      ratings[m.id] = { value };
+      setRating(id, m.id, value).catch((err: unknown) => {
+        restore();
+        if ((err as api.ApiError)?.status === 404) ratingsOk = false;
+      });
+    }
+  }
+
+  /** Attach (or replace) the optional 👎 comment on the current rating. */
+  function saveRatingComment(m: UIMessage, comment: string): void {
+    if (!id || isLocalId(m.id)) return;
+    const prev = ratings[m.id];
+    const value = prev?.value ?? -1;
+    ratings[m.id] = { value, comment };
+    setRating(id, m.id, value, comment).catch((err: unknown) => {
+      if (prev) ratings[m.id] = prev;
+      else delete ratings[m.id];
+      if ((err as api.ApiError)?.status === 404) ratingsOk = false;
+    });
+  }
+
+  // ---------------- fork ----------------
+
+  /** POST /fork copies messages ≤ this one into a new chat, then switches. */
+  function forkFrom(m: UIMessage): void {
+    if (!id || isLocalId(m.id) || stream.active || streamMsg) return;
+    forkChat(id, m.id)
+      .then((c) => {
+        toast('Forked', 'success', 2000);
+        // sidebar refreshes itself on location.path changes
+        navigate(`/c/${c.id}`);
+      })
+      .catch((err: unknown) => {
+        if ((err as api.ApiError)?.status === 404) {
+          forkOk = false; // endpoint absent — hide the affordance quietly
+          return;
+        }
+        toast(`Fork failed: ${String((err as Error)?.message ?? err)}`, 'error');
+      });
+  }
 </script>
 
 {#if id}
@@ -317,7 +398,16 @@
           </div>
         {:else}
           {#if messages.length}
-            <MessageList {messages} busy={stream.active} onretry={retry} onedit={edit} />
+            <MessageList
+              {messages}
+              {ratings}
+              busy={stream.active}
+              onretry={retry}
+              onedit={edit}
+              onrate={ratingsOk ? rate : undefined}
+              onratecomment={ratingsOk ? saveRatingComment : undefined}
+              onfork={forkOk ? forkFrom : undefined}
+            />
           {:else}
             <div class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
               <p class="text-[26px] font-semibold tracking-tight">What can I help with?</p>

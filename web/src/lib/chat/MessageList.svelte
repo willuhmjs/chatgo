@@ -8,19 +8,28 @@
   // fade+rise 200ms for appended rows only (never on initial load).
   import type { UIMessage } from '$lib/chat/group';
   import { groupMessages } from '$lib/chat/group';
+  import type { RatingsMap } from '$lib/chat-features-api';
   import MessageRow from './MessageRow.svelte';
   import ArrowDown from 'lucide-svelte/icons/arrow-down';
 
   let {
     messages,
     busy = false,
+    ratings,
     onretry,
     onedit,
+    onrate,
+    onratecomment,
+    onfork,
   }: {
     messages: UIMessage[];
     busy?: boolean;
+    ratings?: RatingsMap;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
+    onrate?: (m: UIMessage, value: 1 | -1) => void;
+    onratecomment?: (m: UIMessage, comment: string) => void;
+    onfork?: (m: UIMessage) => void;
   } = $props();
 
   const groups = $derived(groupMessages(messages));
@@ -123,7 +132,16 @@
         <div class="flex min-w-0 flex-col items-end gap-2.5">
           {#each g.items as m (m.id)}
             <div class="min-w-0 max-w-full {riseClass(m.id)}">
-              <MessageRow message={m} {busy} {onretry} {onedit} />
+              <MessageRow
+                message={m}
+                {busy}
+                rating={ratings?.[m.id] ?? null}
+                {onretry}
+                {onedit}
+                {onrate}
+                {onratecomment}
+                {onfork}
+              />
             </div>
           {/each}
         </div>
@@ -132,7 +150,16 @@
           {#each g.items as m, i (m.id)}
             <div class="flex min-w-0 flex-col {riseClass(m.id)}">
               {#if i === 0}<span class="wordmark">ChatGo</span>{/if}
-              <MessageRow message={m} {busy} {onretry} {onedit} />
+              <MessageRow
+                message={m}
+                {busy}
+                rating={ratings?.[m.id] ?? null}
+                {onretry}
+                {onedit}
+                {onrate}
+                {onratecomment}
+                {onfork}
+              />
             </div>
           {/each}
         </div>

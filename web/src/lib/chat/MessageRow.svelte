@@ -4,8 +4,10 @@
   // edit (edit → regenerate path; see docs/FE-CHAT-UI.md "regenerate semantics").
   // Assistant: plain text on canvas — no bubble, no avatar — quiet sources
   // chips, error line + Retry pill, and a hover action bar BELOW the text.
+  import { tick } from 'svelte';
   import type { UIMessage } from '$lib/chat/group';
-  import { COLLAPSE_CHARS, COLLAPSE_MAX_PX } from '$lib/chat/group';
+  import { COLLAPSE_CHARS, COLLAPSE_MAX_PX, isLocalId } from '$lib/chat/group';
+  import type { Rating } from '$lib/chat-features-api';
   import Markdown from './Markdown.svelte';
   import IconButton from './ui/IconButton.svelte';
   import Copy from 'lucide-svelte/icons/copy';
@@ -16,6 +18,9 @@
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import LinkIcon from 'lucide-svelte/icons/link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ThumbsUp from 'lucide-svelte/icons/thumbs-up';
+  import ThumbsDown from 'lucide-svelte/icons/thumbs-down';
+  import GitBranch from 'lucide-svelte/icons/git-branch';
   import { copyText, domainOf, fmtClock, fmtDateTime } from '$lib/chatview-api';
   import { safeHref } from '$lib/safe-url';
   import { speechSupported, speech, toggleSpeak } from '$lib/chat/state.svelte.js';
@@ -24,19 +29,59 @@
   let {
     message,
     busy = false,
+    rating = null,
     onretry,
     onedit,
+    onrate,
+    onratecomment,
+    onfork,
   }: {
     message: UIMessage;
     busy?: boolean;
+    rating?: Rating | null;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
+    onrate?: (m: UIMessage, value: 1 | -1) => void;
+    onratecomment?: (m: UIMessage, comment: string) => void;
+    onfork?: (m: UIMessage) => void;
   } = $props();
 
   let editing = $state(false);
   let editText = $state('');
   let expanded = $state(false);
   let sourcesOpen = $state(false);
+
+  // 👍/👎 + comment popover (FE-CHATTER wave 2); server ids only
+  const rateable = $derived(!!onrate && !isLocalId(message.id));
+  const forkable = $derived(!!onfork && !isLocalId(message.id));
+  const isKbSource = (url: string): boolean => url.startsWith('kb://');
+  let commentOpen = $state(false);
+  let commentText = $state('');
+  let commentTa = $state<HTMLTextAreaElement | null>(null);
+
+  $effect(() => {
+    if (commentOpen) void tick().then(() => commentTa?.focus());
+  });
+
+  function rateUp(): void {
+    commentOpen = false;
+    onrate?.(message, 1);
+  }
+  function rateDown(): void {
+    const firstClick = rating?.value !== -1;
+    onrate?.(message, -1);
+    if (firstClick) {
+      commentText = rating?.comment ?? '';
+      commentOpen = true;
+    } else {
+      commentOpen = false; // second click cleared the rating — close too
+    }
+  }
+  function saveComment(): void {
+    const t = commentText.trim().slice(0, 300);
+    commentOpen = false;
+    if (t) onratecomment?.(message, t);
+  }
 
   const collapsible = $derived(
     !message.streaming && (message.content?.length ?? 0) > COLLAPSE_CHARS,
@@ -167,16 +212,24 @@
         {#if sourcesOpen}
           <div class="mt-1.5 flex flex-wrap gap-1.5">
             {#each message.sources as s, i (s.url + i)}
-              <a
-                class="chip"
-                href={safeHref(s.url)}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={s.title || s.url}
-              >
-                <span class="chipidx">[{i + 1}]</span>
-                <span class="truncate">{domainOf(s.url)}</span>
-              </a>
+              {#if isKbSource(s.url)}
+                <!-- kb:// refs have no public URL — quiet non-clickable chip -->
+                <span class="chip" title={s.title || s.url}>
+                  <span class="chipidx">[{i + 1}]</span>
+                  <span class="truncate">{s.title || s.url}</span>
+                </span>
+              {:else}
+                <a
+                  class="chip"
+                  href={safeHref(s.url)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={s.title || s.url}
+                >
+                  <span class="chipidx">[{i + 1}]</span>
+                  <span class="truncate">{domainOf(s.url)}</span>
+                </a>
+              {/if}
             {/each}
           </div>
         {/if}
@@ -185,7 +238,7 @@
 
     {#if !message.streaming}
       <!-- hover action bar BELOW the text: copy · regenerate · read-aloud (§5) -->
-      <div class="acts">
+      <div class="acts" class:rated={!!rating || commentOpen}>
         <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
         {#if !busy}
           <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
@@ -195,6 +248,51 @@
         {#if speechSupported}
           <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
             {#if speaking}<VolumeX size={15} />{:else}<Volume2 size={15} />{/if}
+          </IconButton>
+        {/if}
+        {#if rateable}
+          <IconButton title={rating?.value === 1 ? 'Remove rating' : 'Good response'} onclick={rateUp}>
+            <ThumbsUp size={15} style={rating?.value === 1 ? 'color:var(--ok, #10a37f)' : ''} />
+          </IconButton>
+          <span class="rateme">
+            <IconButton
+              title={rating?.value === -1 ? 'Remove rating' : 'Poor response'}
+              onclick={rateDown}
+            >
+              <ThumbsDown size={15} style={rating?.value === -1 ? 'color:var(--danger, #ef4444)' : ''} />
+            </IconButton>
+            {#if commentOpen}
+              <div class="ratepop" role="dialog" aria-label="Tell us what went wrong">
+                <textarea
+                  class="ratera"
+                  rows="3"
+                  maxlength="300"
+                  placeholder="What could be better? (optional)"
+                  aria-label="Rating comment"
+                  bind:value={commentText}
+                  bind:this={commentTa}
+                  onkeydown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.stopPropagation();
+                      commentOpen = false;
+                    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      saveComment();
+                    }
+                  }}></textarea>
+                <div class="flex items-center justify-end gap-1.5 pt-1.5">
+                  <button type="button" class="skipbtn" onclick={() => (commentOpen = false)}>Skip</button>
+                  <button type="button" class="savebtn" disabled={!commentText.trim()} onclick={saveComment}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </span>
+        {/if}
+        {#if forkable}
+          <IconButton title="Branch from here" disabled={busy} onclick={() => onfork?.(message)}>
+            <GitBranch size={15} />
           </IconButton>
         {/if}
         <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
@@ -213,14 +311,15 @@
     contain-intrinsic-size: auto 140px;
   }
 
-  /* user: right-aligned quiet pill (§5 + docs/DESIGN-REF.md §3: r24) */
+  /* user: right-aligned quiet pill (§5 + docs/DESIGN-REF.md §3: r24) —
+     accent tint over the --panel fill (FE-COLOR: quiet color = signal) */
   .bubble {
     max-width: 85%;
     border-radius: 24px;
     padding: 10px 16px;
     font-size: 1rem;
     line-height: 1.6;
-    background: var(--panel, #2f2f2f);
+    background: color-mix(in srgb, var(--acc) 16%, var(--panel, #2f2f2f));
     white-space: normal;
   }
   .bubble.pending {
@@ -295,6 +394,10 @@
   .acts:focus-within,
   .group:hover .hoverbar,
   .hoverbar:focus-within {
+    opacity: 1;
+  }
+  /* a message the user already rated keeps its bar visible (quiet signal) */
+  .acts.rated {
     opacity: 1;
   }
 
@@ -401,6 +504,84 @@
     color: var(--muted, #a8a8a8);
     font-size: 0.68rem;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* 👎 inline comment popover: tiny --panel card above the thumb (wave 2) */
+  .rateme {
+    position: relative;
+    display: inline-flex;
+  }
+  .ratepop {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    width: 15.5rem;
+    padding: 0.5rem 0.5rem 0.55rem;
+    border-radius: 0.875rem;
+    background: var(--panel, #2f2f2f);
+    box-shadow: var(--shadow-menu, 0 8px 28px rgb(0 0 0 / 0.45));
+    animation: rate-pop 90ms ease-out;
+  }
+  .ratera {
+    width: 100%;
+    resize: none;
+    border: 0;
+    border-radius: 0.625rem;
+    background: var(--panel-2, #3a3a3a);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    padding: 0.4rem 0.5rem;
+    outline: none;
+  }
+  .ratera::placeholder {
+    color: var(--faint, #6e6e6e);
+  }
+  .skipbtn {
+    border: 0;
+    background: transparent;
+    color: var(--muted, #a8a8a8);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+    transition:
+      color 120ms ease,
+      background 120ms ease;
+  }
+  .skipbtn:hover {
+    color: var(--text);
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+  .savebtn {
+    border: 0;
+    background: var(--panel-2, #3a3a3a);
+    color: var(--text);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.3rem 0.7rem;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .savebtn:hover:not(:disabled) {
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+  }
+  .savebtn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  @keyframes rate-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

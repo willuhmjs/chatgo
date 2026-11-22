@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/audit"
 	"chatgo/internal/store"
 )
 
@@ -94,6 +95,8 @@ func (h *tokensH) create(w http.ResponseWriter, r *http.Request, userID, name st
 	}
 	view := tokenView(t)
 	view.Key = plain // the only time the plaintext leaves this process
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "token.create", name, h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusCreated, view)
 }
 
@@ -116,6 +119,8 @@ func (h *tokensH) del(w http.ResponseWriter, r *http.Request, id, userID string)
 		httpx.InternalError(w, r, err)
 		return
 	}
+	actor, _ := h.d.Auth.UserFrom(r.Context())
+	audit.Record(r.Context(), h.d.Store.DB, actor, "token.delete", id, h.d.Auth.RequestIP(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 

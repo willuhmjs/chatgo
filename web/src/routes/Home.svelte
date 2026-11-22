@@ -21,6 +21,13 @@
   import Skeleton from '$lib/ui/Skeleton.svelte';
   import Dropdown from '$lib/ui/Dropdown.svelte';
   import MenuItem from '$lib/ui/MenuItem.svelte';
+  import SlashPrompts from '$lib/chat/SlashPrompts.svelte';
+  import {
+    listPromptsCached,
+    filterPrompts,
+    type PromptEntry,
+  } from '$lib/chat-features-api';
+  import { hueColor } from '$lib/hue';
   import { ArrowUp, ChevronDown, Clock, LoaderCircle } from 'lucide-svelte';
 
   const user = $derived(session.user);
@@ -100,6 +107,101 @@
     ta?.focus();
   }
 
+  // ---------- slash prompts ('/' popover over GET /api/prompts) ----------
+  let prompts = $state<PromptEntry[]>([]);
+  let promptsFetched = false;
+  let promptsLoading = $state(false);
+  let promptsAvailable = $state(true); // 404 → false: never show the popover
+  let slashOpen = $state(false);
+  let slashQuery = $state('');
+  let slashIndex = $state(0);
+  let slashDismissed = $state<string | null>(null); // value when Esc closed it
+
+  const slashFiltered = $derived(filterPrompts(prompts, slashQuery));
+  $effect(() => {
+    void slashFiltered.length;
+    slashIndex = 0;
+  });
+
+  function loadPrompts(): void {
+    if (promptsFetched || promptsLoading || !promptsAvailable) return;
+    promptsLoading = true;
+    listPromptsCached()
+      .then(
+        (rows) => {
+          prompts = rows;
+          promptsFetched = true;
+        },
+        (err: unknown) => {
+          if ((err as { status?: number })?.status === 404) promptsAvailable = false;
+          slashOpen = false;
+        },
+      )
+      .finally(() => (promptsLoading = false));
+  }
+
+  /** Recompute popover visibility from draft + caret (single-line guard). */
+  function refreshSlash(): void {
+    const v = draft;
+    if (slashDismissed !== null && !v.startsWith(slashDismissed)) slashDismissed = null;
+    const caret = ta ? ta.selectionStart : v.length;
+    const ok =
+      promptsAvailable &&
+      v.startsWith('/') &&
+      !v.slice(0, caret).includes('\n') &&
+      slashDismissed !== v;
+    if (!ok) {
+      slashOpen = false;
+      return;
+    }
+    slashQuery = v.slice(1, caret);
+    loadPrompts();
+    slashOpen = true;
+  }
+
+  function pickPrompt(p: PromptEntry): void {
+    draft = p.content;
+    slashOpen = false;
+    slashDismissed = null;
+    requestAnimationFrame(() => {
+      ta?.focus();
+      ta?.setSelectionRange(draft.length, draft.length);
+    });
+  }
+
+  /** Returns true when the key belongs to the slash popover. */
+  function handleSlashKey(e: KeyboardEvent): boolean {
+    const n = slashFiltered.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (n) slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      slashDismissed = draft;
+      slashOpen = false;
+      return true;
+    }
+    if (e.key === 'Tab' && n) {
+      e.preventDefault();
+      pickPrompt(slashFiltered[slashIndex]);
+      return true;
+    }
+    if (e.key === 'Enter' && n && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      pickPrompt(slashFiltered[slashIndex]);
+      return true;
+    }
+    return false;
+  }
+
+  function onKeyup(e: KeyboardEvent): void {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Escape') return;
+    refreshSlash();
+  }
+
   function useSuggestion(prompt: string) {
     draft = prompt;
     ta?.focus();
@@ -111,6 +213,8 @@
     const text = draft.trim();
     if (!text || sending) return;
     sending = true;
+    slashOpen = false;
+    slashDismissed = null;
     try {
       const chat = await startChat(text, model);
       navigate(`/c/${chat.id}`);
@@ -122,6 +226,7 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (slashOpen && handleSlashKey(e)) return;
     if (e.key !== 'Enter') return;
     const wantSend = sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey;
     if (wantSend) {
@@ -150,7 +255,16 @@
         <h1 class="text-center text-[30px] font-semibold tracking-tight">What can I help with?</h1>
 
         <!-- pill composer (§6) -->
-        <div class="composer mt-7">
+        <div class="composer relative mt-7">
+          {#if slashOpen}
+            <SlashPrompts
+              items={slashFiltered}
+              active={slashIndex}
+              loading={promptsLoading}
+              onpick={pickPrompt}
+              onhover={(i) => (slashIndex = i)}
+            />
+          {/if}
           <textarea
             bind:this={ta}
             bind:value={draft}
@@ -159,6 +273,9 @@
             aria-label="Message"
             class="max-h-60 w-full resize-none bg-transparent px-2.5 pb-2 pt-1.5 text-base text-[var(--text)] outline-none placeholder:text-[var(--faint)]"
             onkeydown={onKeydown}
+            oninput={() => queueMicrotask(refreshSlash)}
+            onkeyup={onKeyup}
+            onblur={() => (slashOpen = false)}
           ></textarea>
           <div class="flex items-center justify-between gap-2 px-1 pb-1">
             <div class="flex min-w-0 items-center gap-2">
@@ -173,6 +290,7 @@
                 {#snippet items({ close })}
                   {#each models as m (`${m.provider_id}:${m.model_id}`)}
                     <MenuItem selected={m.provider_id === model?.provider_id && m.model_id === model?.model_id} onclick={() => pickModel(m)} {close}>
+                      {#snippet icon()}<span class="mdot" style="background:{hueColor(m.provider || m.provider_id)}" aria-hidden="true"></span>{/snippet}
                       {m.display || m.model_id}
                     </MenuItem>
                   {/each}
@@ -240,14 +358,29 @@
     flex-shrink: 0;
     border: 0;
     border-radius: 999px;
-    background: var(--accent);
+    background: var(--acc-grad, var(--accent));
     color: var(--accent-fg);
     cursor: pointer;
-    transition: opacity 0.12s ease;
+    transition:
+      opacity 0.12s ease,
+      filter 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .send:disabled {
     opacity: 0.25;
     cursor: default;
+  }
+  /* FE-COLOR: hover brightens the accent gradient with a soft glow */
+  .send:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--acc-strong, var(--accent)) 55%, transparent);
+  }
+  /* deterministic provider-hue dot in the model menu (FE-COLOR) */
+  .mdot {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
   }
   .send:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--indigo) 60%, transparent);

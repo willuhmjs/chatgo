@@ -55,6 +55,52 @@ html.dark {
   --sidebar-w: 260px;
 }
 
+/* ── Accent system (docs/FEATURES-V2.md · Frontend wave-1) ────────────────
+   Quiet color = signal. html[data-accent='violet|blue|teal|green|orange|pink']
+   picks the hue; lib/accent.svelte.js always sets the attribute (default
+   violet) from localStorage. The derived tokens are computed once here from
+   --acc via color-mix so each hue only needs its base tuned. Light mode uses
+   deeper --acc (tints sit on #ffffff/#f4f4f4); dark uses pastels for the
+   #212121/#2f2f2f canvas. :not(.dark) keeps the light blocks from outranking
+   the html.dark fallback at equal specificity. */
+html {
+  /* fallback = violet if JS never ran */
+  --acc: #7c3aed;
+  --acc-strong: color-mix(in srgb, var(--acc) 82%, #000);
+  --acc-tint: color-mix(in srgb, var(--acc) 16%, transparent);
+  --acc-tint-strong: color-mix(in srgb, var(--acc) 28%, transparent);
+  --acc-grad: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--acc) 88%, #000),
+    var(--acc)
+  );
+}
+html.dark {
+  --acc: #a78bfa;
+  --acc-strong: color-mix(in srgb, var(--acc) 82%, #fff);
+  --acc-grad: linear-gradient(
+    135deg,
+    var(--acc),
+    color-mix(in srgb, var(--acc) 76%, #fff)
+  );
+}
+
+/* light hues — deep enough for tinted fills + text on white/#f4f4f4 */
+html[data-accent='violet']:not(.dark) { --acc: #7c3aed; }
+html[data-accent='blue']:not(.dark)   { --acc: #2563eb; }
+html[data-accent='teal']:not(.dark)   { --acc: #0d9488; }
+html[data-accent='green']:not(.dark)  { --acc: #15803d; }
+html[data-accent='orange']:not(.dark) { --acc: #d97706; }
+html[data-accent='pink']:not(.dark)   { --acc: #db2777; }
+
+/* dark hues — tuned for contrast on #212121/#2f2f2f */
+html.dark[data-accent='violet'] { --acc: #a78bfa; }
+html.dark[data-accent='blue']   { --acc: #60a5fa; }
+html.dark[data-accent='teal']   { --acc: #2dd4bf; }
+html.dark[data-accent='green']  { --acc: #4ade80; }
+html.dark[data-accent='orange'] { --acc: #fbbf24; }
+html.dark[data-accent='pink']   { --acc: #f472b6; }
+
 html,
 body {
   height: 100%;
@@ -102,9 +148,9 @@ body {
   background: color-mix(in srgb, var(--scroll-thumb), var(--text) 30%);
 }
 
-/* subtle selection — indigo, quiet */
+/* subtle selection — accent, quiet */
 ::selection {
-  background: color-mix(in srgb, var(--indigo) 30%, transparent);
+  background: var(--acc-tint-strong);
 }
 
 /* Shared floating-layer entrance (§7): 120ms fade + 2px rise.

@@ -64,7 +64,7 @@ func run() error {
 		return err
 	}
 
-	srv := api.New(api.Deps{
+	srv, err := api.New(api.Deps{
 		Cfg:       cfg,
 		Store:     st,
 		Auth:      authn,
@@ -73,6 +73,9 @@ func run() error {
 		Files:     filesSvc,
 		Providers: prov,
 	})
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

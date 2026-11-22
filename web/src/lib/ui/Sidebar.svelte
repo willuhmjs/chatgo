@@ -11,6 +11,7 @@
   import { ApiError } from '$lib/api';
   import { confirmDialog } from '$lib/ui/confirm.svelte.js';
   import { groupByDay, timeAgo } from '$lib/ui/chat-grouping';
+  import { hueFrom } from '$lib/hue';
   import Button from '$lib/ui/Button.svelte';
   import IconButton from '$lib/ui/IconButton.svelte';
   import Input from '$lib/ui/Input.svelte';
@@ -22,6 +23,7 @@
   import Skeleton from '$lib/ui/Skeleton.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import {
+    BookOpen,
     ChevronDown,
     ChevronRight,
     ChevronUp,
@@ -30,6 +32,7 @@
     FolderInput,
     FolderOpen,
     FolderPlus,
+    Image as ImageIcon,
     LogOut,
     MessageSquare,
     Moon,
@@ -359,7 +362,7 @@
     {:else}
       <div
         class="chat-row group flex h-9 items-center rounded-lg {activeId === c.id
-          ? 'bg-[var(--fill-hover)] text-[var(--text)]'
+          ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
           : 'text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]'}"
       >
         <a
@@ -372,7 +375,7 @@
           class="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-sm {rowFocus}"
         >
           {#if c.pinned}<Pin class="size-3 shrink-0 opacity-60" />{/if}
-          {#if c.share_token}<span class="size-1.5 shrink-0 rounded-full bg-[var(--indigo)]" title="Shared"></span>{/if}
+          {#if c.share_token}<span class="size-1.5 shrink-0 rounded-full bg-[var(--acc)]" title="Shared"></span>{/if}
           <span class="truncate">{c.title || 'Untitled'}</span>
         </a>
         <span class="time-ago shrink-0 pr-1.5 text-[11px] tabular-nums text-[var(--faint)] group-hover:hidden group-focus-within:hidden">
@@ -475,6 +478,25 @@
         />
       </div>
     </div>
+    <!-- FE-PAGES: quiet nav rows (same styling as the rows above) -->
+    <div class="shrink-0 px-2 pb-1">
+      {#each [['/knowledge', 'Knowledge'], ['/images', 'Images']] as [href, label] (href)}
+        <a
+          href={href}
+          onclick={(e) => {
+            e.preventDefault();
+            navigate(href);
+            onCloseMobile?.();
+          }}
+          class="flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors {rowFocus} {location.path.startsWith(href)
+            ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
+            : 'text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]'}"
+        >
+          {#if href === '/knowledge'}<BookOpen class="size-4 shrink-0" />{:else}<ImageIcon class="size-4 shrink-0" />{/if}
+          <span>{label}</span>
+        </a>
+      {/each}
+    </div>
   {/if}
 
   <!-- tag chip filters: quiet chips, no border -->
@@ -483,11 +505,8 @@
       {#each tags as t (t.id)}
         <button
           type="button"
-          class="rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] {activeTag === t.id
-            ? 'text-[var(--text)]'
-            : 'bg-[var(--panel)] text-[var(--muted)] hover:bg-[var(--panel-2)] hover:text-[var(--text)]'}"
-          style:background={activeTag === t.id ? 'var(--accent-soft)' : undefined}
-          style:color={activeTag === t.id ? 'var(--indigo)' : undefined}
+          class="tagchip rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)]"
+          style="--chip-h:{hueFrom(t.name)}"
           aria-pressed={activeTag === t.id}
           onclick={() => onTagClick(t.id)}
         >
@@ -588,7 +607,7 @@
               go(c.id);
             }}
             class="flex size-9 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--indigo)_60%,transparent)] {activeId === c.id
-              ? 'bg-[var(--fill-hover)] text-[var(--text)]'
+              ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
               : ''}"
           >
             <MessageSquare class="size-4" />
@@ -714,7 +733,7 @@
             <FolderIcon class="size-4 shrink-0 text-[var(--muted)]" />
           {:else}
             <ChevronDown class="size-4 shrink-0 text-[var(--muted)]" />
-            <FolderOpen class="size-4 shrink-0 text-[var(--muted)]" />
+            <FolderOpen class="size-4 shrink-0 text-[var(--acc)]" />
           {/if}
           <span class="truncate">{f.name}</span>
           {#if fc.length > 0}
@@ -792,6 +811,36 @@
 </Modal>
 
 <style>
+  /* tag chips (FE-COLOR): quiet pills that cycle hues — deterministic hue per
+     tag name via the --chip-h custom property (lib/hue). Active = stronger
+     tint of the same hue; sizes/spacing unchanged. */
+  .tagchip {
+    border: 0;
+    cursor: pointer;
+    background: hsl(var(--chip-h, 260) 45% 42% / 0.12);
+    color: hsl(var(--chip-h, 260) 45% 32%);
+  }
+  .tagchip:hover {
+    background: hsl(var(--chip-h, 260) 50% 40% / 0.2);
+    color: hsl(var(--chip-h, 260) 50% 24%);
+  }
+  .tagchip[aria-pressed='true'] {
+    background: hsl(var(--chip-h, 260) 52% 42% / 0.24);
+    color: hsl(var(--chip-h, 260) 55% 23%);
+  }
+  :global(html.dark) .tagchip {
+    background: hsl(var(--chip-h, 260) 65% 65% / 0.14);
+    color: hsl(var(--chip-h, 260) 60% 72%);
+  }
+  :global(html.dark) .tagchip:hover {
+    background: hsl(var(--chip-h, 260) 65% 65% / 0.22);
+    color: hsl(var(--chip-h, 260) 65% 80%);
+  }
+  :global(html.dark) .tagchip[aria-pressed='true'] {
+    background: hsl(var(--chip-h, 260) 68% 68% / 0.28);
+    color: hsl(var(--chip-h, 260) 75% 84%);
+  }
+
   /* off-canvas below md, static column at md+ (scoped so it beats utilities) */
   .chat-sidebar {
     position: fixed;

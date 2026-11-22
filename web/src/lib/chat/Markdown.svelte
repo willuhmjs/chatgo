@@ -143,13 +143,13 @@
     color: var(--muted, #a8a8a8);
   }
   :global(.md-body a) {
-    color: var(--accent);
+    color: var(--acc);
     text-decoration: underline;
     text-underline-offset: 2px;
-    text-decoration-color: color-mix(in oklab, var(--accent) 45%, transparent);
+    text-decoration-color: color-mix(in oklab, var(--acc) 45%, transparent);
   }
   :global(.md-body a:hover) {
-    text-decoration-color: var(--accent);
+    text-decoration-color: var(--acc);
   }
   /* blockquote (docs/DESIGN-REF.md §4): 2px gray-700 bar, gray-400 text, not-italic */
   :global(.md-body blockquote) {
@@ -320,50 +320,88 @@
     }
   }
 
-  /* hljs token theme (dark-first; class names per highlight.js v11) */
+  /* hljs token theme (FE-COLOR: colorized both modes — strings green,
+     keywords on the accent hue, numbers orange, comments --faint; class
+     names per highlight.js v11). Light values first (code bg #f4f4f4),
+     pastel overrides under html.dark (code bg #000). --acc/--faint flip
+     with the mode automatically. */
   :global(.md-body .hljs-comment),
   :global(.md-body .hljs-quote) {
-    color: #7d8590;
+    color: var(--faint);
     font-style: italic;
   }
   :global(.md-body .hljs-keyword),
   :global(.md-body .hljs-selector-tag),
   :global(.md-body .hljs-literal),
   :global(.md-body .hljs-control) {
-    color: #c792ea;
+    color: var(--acc);
   }
   :global(.md-body .hljs-string),
   :global(.md-body .hljs-addition),
   :global(.md-body .hljs-regexp) {
-    color: #a5d6a7;
+    color: #0f7b3e;
   }
   :global(.md-body .hljs-number),
   :global(.md-body .hljs-symbol),
   :global(.md-body .hljs-bullet) {
-    color: #f0b464;
+    color: #b26a00;
   }
   :global(.md-body .hljs-title),
   :global(.md-body .hljs-name),
   :global(.md-body .hljs-section) {
-    color: #82aaff;
+    color: #0a5bc4;
   }
   :global(.md-body .hljs-attr),
   :global(.md-body .hljs-attribute),
   :global(.md-body .hljs-variable),
   :global(.md-body .hljs-template-variable) {
-    color: #9fb6d8;
+    color: #57606a;
   }
   :global(.md-body .hljs-built_in),
   :global(.md-body .hljs-type),
   :global(.md-body .hljs-class .hljs-title) {
-    color: #7fdbca;
+    color: #0e7490;
   }
   :global(.md-body .hljs-meta),
   :global(.md-body .hljs-deletion) {
-    color: #e2a0a0;
+    color: #9a3412;
   }
   :global(.md-body .hljs-selector-class),
   :global(.md-body .hljs-selector-id) {
+    color: #946200;
+  }
+  :global(html.dark .md-body .hljs-string),
+  :global(html.dark .md-body .hljs-addition),
+  :global(html.dark .md-body .hljs-regexp) {
+    color: #7ee787;
+  }
+  :global(html.dark .md-body .hljs-number),
+  :global(html.dark .md-body .hljs-symbol),
+  :global(html.dark .md-body .hljs-bullet) {
+    color: #f0b464;
+  }
+  :global(html.dark .md-body .hljs-title),
+  :global(html.dark .md-body .hljs-name),
+  :global(html.dark .md-body .hljs-section) {
+    color: #82aaff;
+  }
+  :global(html.dark .md-body .hljs-attr),
+  :global(html.dark .md-body .hljs-attribute),
+  :global(html.dark .md-body .hljs-variable),
+  :global(html.dark .md-body .hljs-template-variable) {
+    color: #9fb6d8;
+  }
+  :global(html.dark .md-body .hljs-built_in),
+  :global(html.dark .md-body .hljs-type),
+  :global(html.dark .md-body .hljs-class .hljs-title) {
+    color: #7fdbca;
+  }
+  :global(html.dark .md-body .hljs-meta),
+  :global(html.dark .md-body .hljs-deletion) {
+    color: #e2a0a0;
+  }
+  :global(html.dark .md-body .hljs-selector-class),
+  :global(html.dark .md-body .hljs-selector-id) {
     color: #ffcb6b;
   }
   :global(.md-body .hljs-emphasis) {

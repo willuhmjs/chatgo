@@ -60,7 +60,7 @@
     cursor: not-allowed;
   }
   .iconbtn.active {
-    color: var(--text);
+    color: var(--acc, var(--text));
   }
   .iconbtn.danger:hover:not(:disabled) {
     color: var(--danger);

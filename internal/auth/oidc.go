@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/oauth2"
 
+	"chatgo/internal/audit"
 	"chatgo/internal/config"
 	"chatgo/internal/store"
 )
@@ -257,6 +258,7 @@ func (a *Auth) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
+	audit.Record(ctx, a.Store.DB, u, audit.ActionLoginSuccess, "method=oidc", a.RequestIP(r))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

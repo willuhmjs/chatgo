@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"chatgo/internal/api/httpx"
+	"chatgo/internal/audit"
 	"chatgo/internal/store"
 )
 
@@ -29,6 +31,9 @@ func viewUser(u *store.User) userView {
 }
 
 // HandleLogin POST /api/auth/login {email,password}.
+// Local password success for a user with 2FA enabled issues NO cookie: the
+// answer is {requires_totp, totp_token} and the session comes from
+// POST /api/auth/totp (docs/FEATURES-V2.md §BE-SEC).
 func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
@@ -38,17 +43,46 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	u, err := a.Login(r.Context(), a.RequestIP(r), body.Email, body.Password)
+	ip := a.RequestIP(r)
+	u, err := a.Login(r.Context(), ip, body.Email, body.Password)
 	switch {
 	case errors.Is(err, ErrRateLimited):
 		httpx.ErrorJSON(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 	case errors.Is(err, ErrInvalidCredentials):
+		// Identity lands in the email column, never in detail (PII rule);
+		// unknown-user vs wrong-password are indistinguishable by design.
+		audit.RecordIdentity(r.Context(), a.Store.DB, "", strings.ToLower(strings.TrimSpace(body.Email)),
+			audit.ActionLoginFail, "invalid credentials", ip)
 		httpx.ErrorJSON(w, http.StatusUnauthorized, "invalid email or password")
 	case err != nil:
 		httpx.InternalError(w, r, err)
 	default:
-		a.finishLogin(w, r, u)
+		enabled, err := a.totpEnabled(r.Context(), u.ID)
+		if err != nil {
+			httpx.InternalError(w, r, err)
+			return
+		}
+		if enabled {
+			a.totpChallenge(w, r, u)
+			return
+		}
+		a.finishLogin(w, r, u, "password")
 	}
+}
+
+// totpChallenge answers a passed password check for a 2FA user: stateless
+// handoff token, explicitly no session cookie.
+func (a *Auth) totpChallenge(w http.ResponseWriter, r *http.Request, u *store.User) {
+	token, err := a.issueTOTPToken(u.ID)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	audit.Record(r.Context(), a.Store.DB, u, audit.ActionTOTPChallenge, "", a.RequestIP(r))
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"requires_totp": true,
+		"totp_token":    token,
+	})
 }
 
 // HandleRegister POST /api/auth/register {email,password,name}, per the
@@ -81,13 +115,16 @@ func (a *Auth) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	case u.Role == store.RolePending:
 		httpx.JSON(w, http.StatusCreated, viewUser(u))
 	default:
-		a.finishLogin(w, r, u)
+		a.finishLogin(w, r, u, "register")
 	}
 }
 
 // HandleLogout POST /api/auth/logout — deletes the session row when attached,
 // always clears the cookie (tolerant of anonymous, contract §AuthPolicy).
 func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	if u, ok := a.UserFrom(r.Context()); ok {
+		audit.Record(r.Context(), a.Store.DB, u, audit.ActionLogout, "", a.RequestIP(r))
+	}
 	if s, ok := a.SessionFrom(r.Context()); ok {
 		if err := a.Store.Sessions.Delete(r.Context(), s.Token); err != nil {
 			httpx.InternalError(w, r, err)
@@ -172,13 +209,17 @@ func (a *Auth) HandleMe(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, viewUser(u))
 }
 
-// finishLogin issues a session, sets the cookie and returns the user.
-func (a *Auth) finishLogin(w http.ResponseWriter, r *http.Request, u *store.User) {
+// finishLogin issues a session, sets the cookie and returns the user. Every
+// successful local login funnels through here (password, TOTP-verified, and
+// open-registration auto-login), which is also where the login.success audit
+// row is written — method records which path issued the session.
+func (a *Auth) finishLogin(w http.ResponseWriter, r *http.Request, u *store.User, method string) {
 	sess, err := a.CreateSession(r.Context(), u.ID, r.UserAgent(), a.RequestIP(r))
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
+	audit.Record(r.Context(), a.Store.DB, u, audit.ActionLoginSuccess, "method="+method, a.RequestIP(r))
 	a.SetSessionCookie(w, r, sess.Token, time.Unix(sess.ExpiresAt, 0))
 	httpx.JSON(w, http.StatusOK, viewUser(u))
 }

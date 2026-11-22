@@ -16,10 +16,15 @@ import (
 	"chatgo/internal/api/httpx"
 	"chatgo/internal/apichat"
 	"chatgo/internal/apimgr"
+	"chatgo/internal/audit"
 	"chatgo/internal/auth"
 	"chatgo/internal/chat"
 	"chatgo/internal/config"
 	"chatgo/internal/files"
+	"chatgo/internal/imggen"
+	"chatgo/internal/kb"
+	"chatgo/internal/library"
+	"chatgo/internal/memory"
 	"chatgo/internal/providers"
 	"chatgo/internal/search"
 	"chatgo/internal/store"
@@ -46,7 +51,10 @@ type Server struct {
 // New builds the mux, mounts the route groups and wraps the middleware chain:
 //
 //	recover → requestLog → securityHeaders → capJSONBody → authPolicy → mux
-func New(d Deps) *Server {
+//
+// It returns an error when a feature plane's schema init fails (a broken
+// boot must not serve half a feature).
+func New(d Deps) (*Server, error) {
 	mux := http.NewServeMux()
 
 	// Public core routes.
@@ -64,6 +72,26 @@ func New(d Deps) *Server {
 		Search: d.Search, Files: d.Files, Providers: d.Providers,
 	})
 
+	// v2 feature planes (docs/FEATURES-V2.md), mounted after the core groups.
+	// Each owns its DDL (coordination law) and self-inits it here.
+	if err := library.Register(mux, &library.Deps{Store: d.Store, Auth: d.Auth}); err != nil {
+		return nil, err
+	}
+	// kb.Register runs its DDL and registers the "kb" chat enricher itself.
+	kb.Register(mux, &kb.Deps{Cfg: d.Cfg, Store: d.Store, Auth: d.Auth, Chat: d.Chat})
+	memory.Register(mux, &memory.Deps{Cfg: d.Cfg, Store: d.Store, Auth: d.Auth, Providers: d.Providers})
+	if d.Chat != nil {
+		// memory's enricher is a plain function; the integrator owns the
+		// binding into chat's Enricher registry (FEATURES-V2 §BE-MEMORY).
+		d.Chat.RegisterEnricher("memory", func(ctx context.Context, c *store.Chat, um providers.ChatMessage) ([]chat.SourceItem, string, error) {
+			_, extra, err := memory.Enrich(ctx, d.Store, c.UserID, um.Content)
+			return nil, extra, err
+		})
+	}
+	d.Auth.Register2FA(mux) // /api/auth/totp + /api/me/2fa/*
+	audit.Register(mux, &audit.Deps{DB: d.Store.DB, Auth: d.Auth})
+	imggen.Register(mux, &imggen.Deps{Cfg: d.Cfg, Store: d.Store, Auth: d.Auth, Files: d.Files})
+
 	// SPA fallback (must stay last; /api/* mistakes 404 as JSON below).
 	mux.HandleFunc("GET /", spaHandler(d.Auth))
 
@@ -77,7 +105,7 @@ func New(d Deps) *Server {
 		IdleTimeout:       120 * time.Second,
 		// No WriteTimeout: SSE streams are long-lived; per-handler ctx governs.
 	}
-	return &Server{HTTP: srv, mux: mux}
+	return &Server{HTTP: srv, mux: mux}, nil
 }
 
 // ListenAndServe starts the server; returns nil on graceful shutdown.

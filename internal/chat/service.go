@@ -121,6 +121,22 @@ type SendOpts struct {
 	From   string   // message id to regenerate from ("" = normal append)
 }
 
+// Enricher is the pluggable chat-grounding hook (FEATURES-V2 §BE-RAG
+// coordination law). Feature packages (internal/kb) register one at wiring
+// time via RegisterEnricher; run() calls each AFTER web search and BEFORE
+// the upstream call, merging returned SourceItems into the single `sources`
+// SSE event and extra into the SearchCtx grounding text (a trailing USER
+// turn — untrusted content never gets a system role, see
+// providers.buildMessages). Returning (nil, "", nil) means "nothing this
+// turn". An enricher error degrades gracefully: it is logged and the turn
+// proceeds without that enrichment.
+type Enricher func(ctx context.Context, chat *store.Chat, userMsg providers.ChatMessage) (sources []SourceItem, extra string, err error)
+
+type enricherEntry struct {
+	name string
+	fn   Enricher
+}
+
 // Service drives chat turns. Dependencies are interfaces/pointers wired in main.
 type Service struct {
 	Cfg    *config.Config
@@ -133,11 +149,41 @@ type Service struct {
 	turnsMu     sync.Mutex
 	activeUsers map[string]int
 	activeTotal atomic.Int64
+
+	// Enricher registry (see Enricher): registered at wiring time, read per
+	// turn via enricherSnapshot. enrichMu guards registration.
+	enrichMu  sync.Mutex
+	enrichers []enricherEntry
 }
 
 // New builds the chat service.
 func New(cfg *config.Config, st *store.Store, prov providers.Client, srch *search.Service) *Service {
 	return &Service{Cfg: cfg, Store: st, Prov: prov, Search: srch, activeUsers: map[string]int{}}
+}
+
+// RegisterEnricher appends a grounding enricher (wiring-time; called by
+// feature packages such as internal/kb). Registration order is execution
+// order.
+func (s *Service) RegisterEnricher(name string, fn Enricher) {
+	if fn == nil {
+		return
+	}
+	s.enrichMu.Lock()
+	defer s.enrichMu.Unlock()
+	s.enrichers = append(s.enrichers, enricherEntry{name: name, fn: fn})
+}
+
+// enricherSnapshot copies the registry so the request path never holds the
+// registration lock.
+func (s *Service) enricherSnapshot() []enricherEntry {
+	s.enrichMu.Lock()
+	defer s.enrichMu.Unlock()
+	if len(s.enrichers) == 0 {
+		return nil
+	}
+	out := make([]enricherEntry, len(s.enrichers))
+	copy(out, s.enrichers)
+	return out
 }
 
 // acquireTurn reserves one in-flight turn slot for userID under the per-user
@@ -298,29 +344,51 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	//nolint:contextcheck // fire-and-forget by design (contract §Chat service)
 	s.maybeSummarize(ctx, chatID, total, history, summary, compacted)
 
-	// 5. Web search → `sources` event + SearchCtx for the upstream call.
+	// 5. Web search + enrichers → ONE `sources` event + SearchCtx for the
+	// upstream call. Enrichment never aborts the turn: failures degrade to
+	// "no extra context" (logged), matching the web-search degradation.
 	var sourcesJSON, searchCtx string
+	var items []SourceItem
+	ranSearch := false
 	if opts.Search && s.Search != nil {
 		results, ran, err := s.searchWeb(ctx, userMsg.Content)
+		ranSearch = ran
 		if ran {
 			if err != nil {
 				// Degrade gracefully: empty sources, no SearchCtx, keep streaming.
 				slog.Warn("chat: web search failed", "chat_id", chatID, "error", err)
 				results = nil
 			}
-			items := make([]SourceItem, 0, len(results))
 			for _, r := range results {
 				items = append(items, SourceItem{Title: r.Title, URL: r.URL})
 			}
-			if len(items) > 0 {
-				if b, err := json.Marshal(items); err == nil {
-					sourcesJSON = string(b)
-				}
+			if len(results) > 0 {
 				searchCtx = search.ComposeContext(results)
 			}
-			if !emit(ctx, out, EventSources, SourcesData{Items: items}) {
-				return
+		}
+	}
+	for _, en := range s.enricherSnapshot() {
+		extraSources, extra, err := en.fn(ctx, chat, userMsg)
+		if err != nil {
+			slog.Warn("chat: enricher failed", "chat_id", chatID, "enricher", en.name, "error", err)
+			continue
+		}
+		items = append(items, extraSources...)
+		if extra != "" {
+			if searchCtx != "" {
+				searchCtx += "\n\n"
 			}
+			searchCtx += extra
+		}
+	}
+	if len(items) > 0 {
+		if b, err := json.Marshal(items); err == nil {
+			sourcesJSON = string(b)
+		}
+	}
+	if ranSearch || len(items) > 0 {
+		if !emit(ctx, out, EventSources, SourcesData{Items: items}) {
+			return
 		}
 	}
 
