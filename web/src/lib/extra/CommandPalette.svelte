@@ -12,7 +12,12 @@
   import { toggleTheme } from '$lib/theme.svelte.js';
   import { fuzzyScore } from './fuzzy';
   import { modelLabel, saveLastModel, dispatchPickModel } from '$lib/extra-api';
-  import { pickerModels } from '$lib/chat/state.svelte.js';
+  import {
+    models as modelStore,
+    loadModels,
+    pickerModels,
+    refreshModels,
+  } from '$lib/chat/state.svelte.js';
   import { ok as toastOk, fail as toastFail } from './toasts';
   import { Command, Search, Sparkles, SunMoon, LogOut, Settings, GitCompare, Images, X } from 'lucide-svelte';
 
@@ -27,7 +32,6 @@
   let open = $state(false);
   let query = $state('');
   let sel = $state(0);
-  let models = $state<api.ModelEntry[]>([]);
   let chats = $state<api.Chat[]>([]);
   let loading = $state(false);
 
@@ -50,13 +54,14 @@
 
   async function loadContext() {
     loading = true;
+    // Models live in the shared chat store — no palette-local cache. Fetch
+    // once if nobody loaded yet, otherwise a silent refresh so admin
+    // enable/disable changes show the moment the palette opens.
+    if (modelStore.loaded) void refreshModels();
+    else void loadModels();
     try {
-      const [chatPage, modelList] = await Promise.all([
-        api.listChats({ per: 8 }),
-        models.length ? Promise.resolve(models) : api.listModels(),
-      ]);
+      const chatPage = await api.listChats({ per: 8 });
       chats = [...chatPage.chats].sort((a, b) => b.updated_at - a.updated_at).slice(0, 8);
-      models = modelList;
     } catch (err) {
       toastFail(err instanceof api.ApiError ? err.message : 'Failed to load palette data');
     } finally {
@@ -125,7 +130,7 @@
         name: 'Models',
         // same hidden + chat-heuristic filtering as the model pickers; the
         // palette is a chat-model switcher, so no "show others" escape hatch
-        items: pickerModels(models).models.map((m) => ({
+        items: pickerModels(modelStore.items).models.map((m) => ({
           id: `m-${m.provider_id}:${m.model_id}`,
           section: 'Models',
           label: modelLabel(m),

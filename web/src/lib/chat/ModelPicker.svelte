@@ -16,6 +16,7 @@
     matchesQuery,
     modelKey,
     pickerModels,
+    refreshModels,
   } from '$lib/chat/state.svelte.js';
   import { modelPrefs, setDefault, hide } from '$lib/chat/model-prefs.svelte.js';
   import { formatContextLen } from '$lib/chatview-api';
@@ -50,7 +51,10 @@
         ) ?? models.items.find((m) => m.model_id === chat.model_id)
       : undefined,
   );
-  const label = $derived(current?.display || current?.model_id || 'no model');
+  // A chat pinned to a model the admin since disabled/removed has no entry
+  // (and no row) anymore — fall back to the chat's own model_id so the
+  // trigger still names what this chat talks to instead of "no model".
+  const label = $derived(current?.display || current?.model_id || chat?.model_id || 'no model');
   const defaultKey = $derived(modelPrefs.defaultModel);
 
   const groups = $derived.by(() => {
@@ -62,7 +66,6 @@
 
   $effect(() => {
     if (open) {
-      loadModels();
       const t = setTimeout(() => input?.focus(), 0);
       const onDoc = (e: MouseEvent) => {
         if (root && !root.contains(e.target as Node)) open = false;
@@ -82,6 +85,17 @@
       };
     }
   });
+
+  /** Trigger click: toggle menu + fresh-on-open model load. Initial fetch
+   *  when nobody loaded yet, else a silent re-GET so admin enable/disable
+   *  changes land without a reload. The list swap never closes the menu nor
+   *  clears the filter — {#each} keys (modelKey) are stable across refresh. */
+  function toggleOpen(): void {
+    open = !open;
+    if (!open) return;
+    if (models.loaded) void refreshModels();
+    else void loadModels();
+  }
 
   function pick(m: ModelEntry): void {
     open = false;
@@ -119,7 +133,7 @@
     aria-expanded={open}
     onclick={(e) => {
       e.stopPropagation();
-      open = !open;
+      toggleOpen();
     }}
   >
     <span class="max-w-[14rem] truncate">{label}</span>

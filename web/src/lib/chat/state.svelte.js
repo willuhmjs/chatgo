@@ -45,6 +45,42 @@ export function loadModels(force = false) {
   return modelsPromise;
 }
 
+/** Silent forced re-GET for freshness without a page reload (admin edits,
+ *  picker open). Never touches loading/error — no spinner, no flicker, an
+ *  open menu stays open with its filter text — and on failure the previously
+ *  loaded list is kept quietly. Consumers all read models.items, so their
+ *  $derived (pickerModels/modelsByProvider groups…) recompute on the swap.
+ *  Selection state is untouched. Safe to call fire-and-forget. */
+export function refreshModels() {
+  return listModels()
+    .then((items) => {
+      if (!items) return; // tolerate an older/odd server response
+      models.items = items;
+      models.loaded = true;
+      models.error = null;
+    })
+    .catch(() => {
+      /* offline / hiccup — keep the last known list */
+    });
+}
+
+// Admin→picker invalidation bus (same tab, no reload): ProvidersTab dispatches
+// `chatgo:models-changed` after any mutation that moves rows in/out of
+// GET /api/models (model toggles, syncs, provider enable/create/delete);
+// this module refreshes the shared list. Armed once at module load —
+// CommandPalette is mounted app-wide in App.svelte, so the listener exists
+// from app boot; the guard makes double-init unstackable.
+let modelsBusArmed = false;
+
+function armModelsBus() {
+  if (modelsBusArmed || typeof window === 'undefined') return;
+  modelsBusArmed = true;
+  window.addEventListener('chatgo:models-changed', () => {
+    void refreshModels();
+  });
+}
+armModelsBus();
+
 /** @returns {import('../api').ModelEntry | undefined} */
 export function findModel(providerId, modelId) {
   if (!modelId) return undefined;

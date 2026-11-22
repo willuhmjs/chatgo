@@ -34,6 +34,13 @@
 
   const totalModels = $derived(providers.reduce((n, p) => n + p.model_count, 0));
 
+  /** Chat pickers (chat/state.svelte.js listens app-wide) refresh their cached
+   *  GET /api/models list on this event — same tab, no page reload. Call only
+   *  AFTER the server write succeeded and local optimistic state settled. */
+  function broadcastModelsChanged() {
+    window.dispatchEvent(new Event('chatgo:models-changed'));
+  }
+
   const deleteMessage = $derived.by(() => {
     const t = deleteTarget;
     if (!t) return '';
@@ -88,8 +95,9 @@
     try {
       models[p.id] = await admin.setProviderModels(p.id, toggles);
       p.models_enabled = models[p.id].filter((m) => m.enabled).length;
+      broadcastModelsChanged(); // server truth settled → pickers re-GET
     } catch (e) {
-      models[p.id] = prev;
+      models[p.id] = prev; // reverted — nothing changed, no broadcast
       push(errMsg(e, 'Could not update models'), 'error');
     } finally {
       modelsBusy[p.id] = false;
@@ -108,6 +116,7 @@
       );
       if (expanded.has(p.id)) void loadModels(p);
       providers = await admin.listProvidersAdmin(); // refresh cached-model tallies
+      broadcastModelsChanged(); // sync can add rows to GET /api/models
     } catch (e) {
       push(`Sync failed for ${p.name}: ${errMsg(e)}`, 'error');
     } finally {
@@ -136,6 +145,7 @@
     syncingAll = false;
     providers = await admin.listProvidersAdmin().catch(() => providers);
     for (const p of providers) if (expanded.has(p.id)) void loadModels(p);
+    broadcastModelsChanged(); // partial failures are fine — pickers just re-GET
     const tail = failures.length ? ` (${failures.length} failed: ${failures.join(', ')})` : '';
     push(`${added > 0 ? `+${added} new model${added === 1 ? '' : 's'}` : 'No new models'} · ${total} cached total${tail}`, failures.length ? 'error' : 'success');
   }
@@ -150,9 +160,17 @@
       throw e; // keep dialog open for retry
     }
     providers = providers.filter((x) => x.id !== p.id);
-    expanded.delete(p.id);
+    expanded = new Set([...expanded].filter((x) => x !== p.id)); // raw Set: reassign, don't mutate
+    broadcastModelsChanged(); // every row of this provider leaves GET /api/models
     push(`Deleted ${p.name}`, 'success');
     deleteTarget = null;
+  }
+
+  /** ProviderModal create/edit success — reload the table, then tell pickers
+   *  (name/base_url/enabled changes all move rows or labels in /api/models). */
+  async function onProviderSaved() {
+    await load();
+    broadcastModelsChanged();
   }
 </script>
 
@@ -228,6 +246,7 @@
                     p.enabled = next; // optimistic; rolled back on failure
                     try {
                       await admin.updateProvider(p.id, { enabled: next });
+                      broadcastModelsChanged(); // whole provider appears/disappears
                     } catch (e) {
                       p.enabled = prev;
                       push(errMsg(e, 'Could not update provider'), 'error');
@@ -349,7 +368,7 @@
   {/if}
 </div>
 
-<ProviderModal bind:open={modalOpen} provider={editing} onsaved={load} />
+<ProviderModal bind:open={modalOpen} provider={editing} onsaved={onProviderSaved} />
 
 <Confirm
   bind:open={confirmDelete}

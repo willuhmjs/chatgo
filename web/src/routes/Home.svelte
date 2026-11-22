@@ -4,7 +4,6 @@
   // Sending creates a chat via api-shell.startChat, stashes the prompt
   // (takePendingPrompt) and navigates to /c/{id} for ChatView (FE-chat) to
   // auto-send. See docs/FE-SHELL-UI.md.
-  import * as api from '$lib/api';
   import type { ModelEntry } from '$lib/api';
   import { navigate } from '$lib/router.svelte.js';
   import { session } from '$lib/session.svelte.js';
@@ -28,7 +27,14 @@
     type PromptEntry,
   } from '$lib/chat-features-api';
   import { hueColor } from '$lib/hue';
-  import { isLikelyChatModel, matchesQuery, pickerModels } from '$lib/chat/state.svelte.js';
+  import {
+    isLikelyChatModel,
+    matchesQuery,
+    models as modelStore,
+    loadModels,
+    pickerModels,
+    refreshModels,
+  } from '$lib/chat/state.svelte.js';
   import {
     modelPrefs,
     load as loadModelPrefs,
@@ -41,8 +47,11 @@
 
   const keyOf = (m: ModelEntry) => `${m.provider_id}:${m.model_id}`;
 
-  let models = $state<ModelEntry[]>([]);
-  let modelsLoading = $state(true);
+  // Shared chat model store (GET /api/models) — same list ModelPicker and the
+  // ⌘K palette read; refreshed in place by the `chatgo:models-changed` bus
+  // and on menu open, so no local copy is kept.
+  const models = $derived(modelStore.items);
+  const modelsLoading = $derived(modelStore.loading && !modelStore.items.length);
   // localStorage fast-path/offline fallback; the server default_model (once
   // loaded) and the chat-heuristic first pick layer on top in the resolver.
   let selectedId = $state(getHomeModel());
@@ -87,26 +96,9 @@
   ];
 
   $effect(() => {
-    if (!user || pending) {
-      modelsLoading = false;
-      return;
-    }
+    if (!user || pending) return;
     void loadModelPrefs(); // idempotent; shares the app-boot fetch
-    let cancelled = false;
-    void api
-      .listModels()
-      .then((ms) => {
-        if (!cancelled) models = ms;
-      })
-      .catch(() => {
-        if (!cancelled) models = [];
-      })
-      .finally(() => {
-        if (!cancelled) modelsLoading = false;
-      });
-    return () => {
-      cancelled = true;
-    };
+    void loadModels(); // shared store; fresh via the event bus + open-refresh
   });
 
   // Default-model resolution chain: server default_model (once loaded and
@@ -335,6 +327,9 @@
                 <ChevronDown class="size-3.5 shrink-0" />
                 {#snippet items({ close })}
                   <div class="border-b px-1 pb-1.5 pt-0.5" style="border-color:var(--border)">
+                    <!-- Dropdown focuses [data-autofocus] on open ⇒ this doubles as the
+                         fresh-on-open hook: silent re-GET so admin model changes land
+                         without a reload (stable {#each} keys keep menu + filter text). -->
                     <input
                       type="text"
                       bind:value={modelFilter}
@@ -343,6 +338,7 @@
                       style="color:var(--text)"
                       placeholder="Filter models…"
                       aria-label="Filter models"
+                      onfocus={() => void refreshModels()}
                     />
                   </div>
                   {#if !pickerList.list.length}
