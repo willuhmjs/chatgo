@@ -331,6 +331,20 @@
 
   const displayName = $derived(user?.name || user?.email || 'Signed out');
 
+  // Live re-title: ChatView broadcasts chatgo:title when the server
+  // auto-names a chat. The sidebar holds its own fetched list, so patch the
+  // matching row in place — otherwise 'New chat' lingers until a reload.
+  $effect(() => {
+    const onTitle = (e: Event) => {
+      const d = (e as CustomEvent<{ chat_id?: string; title?: string }>).detail;
+      if (d?.chat_id && d.title) {
+        chats = chats.map((c) => (c.id === d.chat_id ? { ...c, title: d.title! } : c));
+      }
+    };
+    window.addEventListener('chatgo:title', onTitle);
+    return () => window.removeEventListener('chatgo:title', onTitle);
+  });
+
   const rowFocus =
     'focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[color-mix(in_srgb,var(--acc)_60%,transparent)]';
 </script>
