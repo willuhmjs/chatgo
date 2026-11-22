@@ -160,7 +160,7 @@ which runs the binary against a canned SSE mock provider).
 | Scenario | Go version | Platform | Idle RSS | Peak (1 streaming chat) |
 | --- | --- | --- | --- | --- |
 | Container (this repo's Dockerfile, distroless, `--read-only`) | 1.27.4 | linux/docker | **8.7 MiB** | — |
-| Host binary, v2 feature set (`make bench`) | 1.27.4 | darwin/arm64 | 17 MiB | 26 MiB |
+| Host binary, v2 feature set (`make bench`) | 1.27.4 | darwin/arm64 | 18 MiB | 20 MiB |
 
 Container idle = boot + one API request, cgroup RSS. Host row measured at the
 v2 build; the release-tagged binary is re-benched each release.

@@ -223,9 +223,13 @@ re-run bench/smoke_v2.sh, full gates, commit, SECURITY.md delta.
   fixed C7 test flake (35s → next-step formula) — C6's one-liner, 2 sites.)
 - DOC RE-LINKS ALL PASS (SECURITY.md: throttle sentence==C6 killstamp semantics, reset-
   2fa==C8, exports==C1 scrub, memories disabled pending approval==C2, OIDC gate==C7).
-- GAUNTLET RUNNING: gofmt/vet/build/go-test ./... + svelte-check + vite build.
-  Next: rebuild binary → restart :8080 (preserve SESSION_SECRET) → smoke_v2.sh → RAM
-  re-bench → README row v2-fix refresh → commit.
+- GAUNTLET: BACKEND GREEN (gofmt/vet/build + go test ./... 17/17 pkgs) · FE GREEN
+  (svelte-check 0 err, vite built) · smoke_v2 50/50 PASS on fixed tree · committed
+  7f781e1 · preview :8080 restarted on v0.3.1-fixround w/ SESSION_SECRET preserved
+  (user stays logged in) · RAM RE-BENCH DONE: 18.0 idle / 20.2 steady (ps-rss caveat,
+  ~1.5-2x vs linux) → README host row refreshed 17/26→18/20. LENS 5 CLOSED BY
+  REPLACEMENT: linux numbers from PUB-1 container audit (8.7 MiB cgroup idle), state-
+  eviction design verified by C6's map table. GAUNTLET COMPLETE.
 - C5 DONE (README v2 + SECURITY.md post-fix delta; refused premature claims; re-link
   deps on C1/C2/C6 at final verify; RAM row placeholder).
 - C7 DONE (oidc.go 2FA gate reusing issueTOTPToken — no wrapper needed; Login.svelte
