@@ -93,11 +93,14 @@ export const modelKey = (/** @type {import('../api').ModelEntry} */ m) =>
   `${m.provider_id}:${m.model_id}`;
 
 /** Case-insensitive substring search over display, model_id and provider
- *  (same haystack ModelPicker has always filtered on). Empty query ⇒ true. */
-export function matchesQuery(/** @type {import('../api').ModelEntry} */ m, /** @type {string} */ q) {
+ *  (same haystack ModelPicker has always filtered on). Empty query ⇒ true.
+ *  Typed to the minimal shape: admin provider/user model editors reuse this
+ *  for rows without a provider leg (provider-local lists), which then match
+ *  on display + model_id only. */
+export function matchesQuery(/** @type {{ display?: string, model_id: string, provider?: string, provider_id?: string }} */ m, /** @type {string} */ q) {
   const f = (q ?? '').trim().toLowerCase();
   if (!f) return true;
-  return `${m.display} ${m.model_id} ${m.provider || m.provider_id}`.toLowerCase().includes(f);
+  return `${m.display} ${m.model_id} ${m.provider || m.provider_id || ''}`.toLowerCase().includes(f);
 }
 
 // Non-chat model families (embedding / rerank / audio / image …), mirroring

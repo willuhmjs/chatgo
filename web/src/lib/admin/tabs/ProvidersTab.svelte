@@ -4,13 +4,14 @@
   import * as admin from '$lib/admin/api-admin';
   import type { ModelToggle, ProviderAdmin, ProviderModel } from '$lib/admin/api-admin';
   import { ctxLabel, errMsg } from '$lib/admin/format';
+  import { matchesQuery } from '$lib/chat/state.svelte.js';
   import Badge from '$lib/admin/ui/Badge.svelte';
   import Confirm from '$lib/admin/ui/Confirm.svelte';
   import EmptyState from '$lib/admin/ui/EmptyState.svelte';
   import ProviderModal from './ProviderModal.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
   import Toggle from '$lib/admin/ui/Toggle.svelte';
-  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, panel, panel2Style, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
+  import { btn, btnGhostStyle, btnPrimaryStyle, errorBannerStyle, inputStyle, panel, panel2Style, panelStyle, row, rowBorder, td, th } from '$lib/admin/ui/styles';
 
   let providers = $state<ProviderAdmin[]>([]);
   let loading = $state(true);
@@ -26,6 +27,11 @@
   let models = $state<Record<string, ProviderModel[]>>({});
   let modelsBusy = $state<Record<string, boolean>>({});
   let modelsError = $state<Record<string, string>>({});
+
+  // Inline filter for the expanded model editor. Also scopes Select all/none
+  // to the visible rows, so "type qwen → Select none" leaves only the typed
+  // models enabled — the whole point of filtering a 25-row wall of toggles.
+  let modelSearch = $state('');
 
   let modalOpen = $state(false);
   let editing = $state<ProviderAdmin | null>(null);
@@ -78,6 +84,7 @@
     const next = new Set(expanded);
     if (next.has(p.id)) {
       next.delete(p.id);
+      modelSearch = ''; // collapse clears the filter so the next expand shows everything
     } else {
       next.add(p.id);
       if (!models[p.id]) void loadModels(p);
@@ -320,22 +327,43 @@
                       No cached models — <button class="underline underline-offset-2 hover:text-[var(--text)]" onclick={() => syncOne(p)}>sync now</button>.
                     </p>
                   {:else}
-                    <div class="mb-1 flex items-center justify-between">
+                    {@const visible = rows.filter((m) => matchesQuery(m, modelSearch))}
+                    <div class="mb-1 flex items-center justify-between gap-2">
                       <p class="text-xs uppercase tracking-wider text-[var(--muted)]">
                         Models · {rows.filter((m) => m.enabled).length}/{rows.length} enabled
+                        {#if modelSearch.trim()}· {visible.length} match{/if}
                       </p>
                       <div class="flex items-center gap-2 text-[11px]">
-                        <button class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]" onclick={() => applyToggles(p, rows.map((m) => ({ model_id: m.model_id, enabled: true })))}>
+                        <input
+                          type="text"
+                          class="h-7 w-40 rounded-lg border px-2 text-[11px] outline-none placeholder:text-[var(--faint)] focus:border-[rgba(255,255,255,0.22)]"
+                          style={inputStyle}
+                          placeholder="Filter models…"
+                          aria-label="Filter models"
+                          bind:value={modelSearch}
+                        />
+                        <button
+                          class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]"
+                          title={modelSearch.trim() ? `Enable the ${visible.length} filtered model${visible.length === 1 ? '' : 's'}` : 'Enable every model'}
+                          onclick={() => applyToggles(p, visible.map((m) => ({ model_id: m.model_id, enabled: true })))}
+                        >
                           Select all
                         </button>
-                        <button class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]" onclick={() => applyToggles(p, rows.map((m) => ({ model_id: m.model_id, enabled: false })))}>
+                        <button
+                          class="text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)]"
+                          title={modelSearch.trim() ? `Disable the ${visible.length} filtered model${visible.length === 1 ? '' : 's'}` : 'Disable every model'}
+                          onclick={() => applyToggles(p, visible.map((m) => ({ model_id: m.model_id, enabled: false })))}
+                        >
                           Select none
                         </button>
                       </div>
                     </div>
+                    {#if visible.length === 0}
+                      <p class="py-2 text-xs text-[var(--muted)]">No models match “{modelSearch.trim()}”.</p>
+                    {:else}
                     <table class="w-full text-xs">
                       <tbody>
-                        {#each rows as m (m.model_id)}
+                        {#each visible as m (m.model_id)}
                           <tr class="transition-colors hover:bg-[var(--fill-hover)] {m.enabled ? '' : 'opacity-45'}" style={rowBorder}>
                             <td class="{td} w-10">
                               <Toggle
@@ -357,6 +385,7 @@
                         {/each}
                       </tbody>
                     </table>
+                    {/if}
                   {/if}
                 </td>
               </tr>

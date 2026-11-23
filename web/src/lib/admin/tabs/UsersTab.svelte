@@ -5,6 +5,7 @@
   import * as admin from '$lib/admin/api-admin';
   import type { User } from '$lib/admin/api-admin';
   import { errMsg, relTime } from '$lib/admin/format';
+  import { matchesQuery } from '$lib/chat/state.svelte.js';
   import Badge from '$lib/admin/ui/Badge.svelte';
   import Confirm from '$lib/admin/ui/Confirm.svelte';
   import EmptyState from '$lib/admin/ui/EmptyState.svelte';
@@ -158,6 +159,11 @@
   // semantics) — same $state.raw + copy-on-write idiom as ProvidersTab.
   let expanded = $state.raw(new Set<string>());
   let prefHidden = $state<Record<string, string[]>>({}); // decoded hidden lists
+
+  // Filter for the expanded per-user model editor (same haystack as the chat
+  // picker). Shared across expanded users — the editor is row-wise long, not
+  // row-wise many, so one filter keeps the header honest.
+  let modelSearch = $state('');
   let prefDefault = $state<Record<string, string>>({});
   let prefsBusy = $state<Record<string, boolean>>({});
   let prefsError = $state<Record<string, string>>({});
@@ -199,6 +205,7 @@
     const groups: { label: string; models: admin.ModelEntry[] }[] = [];
     const byLabel = new Map<string, admin.ModelEntry[]>();
     for (const m of catalog ?? []) {
+      if (!matchesQuery(m, modelSearch)) continue; // filter before grouping: empty groups vanish
       const label = m.provider || m.provider_id;
       let g = byLabel.get(label);
       if (!g) {
@@ -241,6 +248,7 @@
     const next = new Set(expanded);
     if (next.has(u.id)) {
       next.delete(u.id);
+      modelSearch = ''; // collapse clears the filter so the next expand shows everything
     } else {
       next.add(u.id);
       if (!prefHidden[u.id]) void loadPrefs(u);
@@ -472,14 +480,24 @@
                             Visible to {u.email} · {visibleCount(u)}/{catalog.length}
                             {#if prefsBusy[u.id]}<Spinner size={12} />{/if}
                           </p>
-                          <button
-                            class="text-[11px] text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-40"
-                            disabled={prefsBusy[u.id]}
-                            title="Show every instance-enabled model to this user (clears their hidden list)"
-                            onclick={() => applyHidden(u, [])}
-                          >
-                            Reset to all visible
-                          </button>
+                          <div class="flex items-center gap-2">
+                            <input
+                              type="text"
+                              class="h-7 w-40 rounded-lg border px-2 text-[11px] outline-none placeholder:text-[var(--faint)] focus:border-[rgba(255,255,255,0.22)]"
+                              style={inputStyle}
+                              placeholder="Filter models…"
+                              aria-label="Filter models"
+                              bind:value={modelSearch}
+                            />
+                            <button
+                              class="text-[11px] text-[var(--muted)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-40"
+                              disabled={prefsBusy[u.id]}
+                              title="Show every instance-enabled model to this user — always clears the whole hidden list, even rows hidden by the filter box"
+                              onclick={() => applyHidden(u, [])}
+                            >
+                              Reset to all visible
+                            </button>
+                          </div>
                         </div>
                         <p class="mb-2 text-xs leading-relaxed text-[var(--muted)]">
                           {#if prefDefault[u.id]}
@@ -539,6 +557,9 @@
                             </tbody>
                           </table>
                         {/each}
+                        {#if modelSearch.trim() && catalogGroups.length === 0}
+                          <p class="py-2 text-xs text-[var(--muted)]">No models match “{modelSearch.trim()}”.</p>
+                        {/if}
                         {#if staleHiddenCount(u) > 0}
                           <p class="mt-2 text-[11px] text-[var(--muted)]">
                             +{staleHiddenCount(u)} hidden {staleHiddenCount(u) === 1 ? 'entry points' : 'entries point'}
