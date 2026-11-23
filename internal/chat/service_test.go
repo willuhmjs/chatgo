@@ -947,3 +947,38 @@ func chatLeafID(t *testing.T, st *store.Store, chatID string) string {
 	}
 	return c.LeafID
 }
+
+// TestContinueResponse pins the OWUI continue flow: a branch regenerate
+// anchored on an assistant row replays that answer in the prompt and follows
+// it with the directive as prompt-only turns — no user row is persisted and
+// the replacement lands as a sibling of the anchor.
+func TestContinueResponse(t *testing.T) {
+	fc := &fakeClient{chunks: append(sayChunks(" — continued"), stopChunk(4, 3))}
+	svc, st, chatID := newEnv(t, fc, 4096, "")
+	ctx := context.Background()
+	seed(t, st, chatID, [2]string{"user", "tell me more"}, [2]string{"assistant", "once upon a"})
+	msgs, _ := st.Messages.List(ctx, chatID, 500, "")
+	a := msgs[1]
+
+	collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "continue please"},
+		SendOpts{From: a.ID, Branch: true}))
+
+	opts, _, _, _ := fc.snapshot()
+	n := len(opts.Messages)
+	if n < 3 || opts.Messages[n-2].Role != "assistant" || opts.Messages[n-2].Content != "once upon a" ||
+		opts.Messages[n-1].Role != "user" || opts.Messages[n-1].Content != "continue please" {
+		t.Fatalf("prompt does not replay the anchor + directive: %+v", opts.Messages)
+	}
+
+	msgs, _ = st.Messages.List(ctx, chatID, 500, "")
+	if len(msgs) != 3 {
+		t.Fatalf("rows=%d, want 3 (sibling answer only, no user row)", len(msgs))
+	}
+	a2 := msgs[2]
+	if a2.Role != "assistant" || a2.ParentID != a.ParentID || a2.Content != " — continued" {
+		t.Fatalf("replacement = %+v, want sibling assistant under %q", a2, a.ParentID)
+	}
+	if leaf := chatLeafID(t, st, chatID); leaf != a2.ID {
+		t.Fatalf("leaf=%q, want %q", leaf, a2.ID)
+	}
+}

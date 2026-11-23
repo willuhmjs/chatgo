@@ -141,9 +141,12 @@ type SendOpts struct {
 
 	// branchParent is the parent the replacement message gets — the anchor's
 	// own parent, resolved by Send. branchUser marks an edited user anchor
-	// whose new content is persisted as the sibling user row.
+	// whose new content is persisted as the sibling user row. branchAnchor
+	// keeps the assistant anchor itself so Continue-response can replay its
+	// partial text into the prompt (prompt-only, never persisted).
 	branchParent string
 	branchUser   bool
+	branchAnchor *store.Message
 }
 
 // Enricher is the pluggable chat-grounding hook (FEATURES-V2 §BE-RAG
@@ -297,6 +300,9 @@ func (s *Service) Send(ctx context.Context, userID, chatID string, userMsg provi
 		}
 		opts.branchParent = anchor.ParentID
 		opts.branchUser = opts.Branch && anchor.Role == "user"
+		if opts.Branch && anchor.Role == "assistant" {
+			opts.branchAnchor = anchor // continue-response replays it in-prompt
+		}
 		if !opts.Branch {
 			if err := s.Store.Messages.DeleteFrom(ctx, chatID, opts.From); err != nil {
 				release()
@@ -423,9 +429,18 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 		// sibling row, so that path already carries it.
 		history = append(history, &store.Message{Role: "user", Content: userMsg.Content})
 	}
+	promptHist := history
+	if opts.branchAnchor != nil {
+		// Continue-response (OWUI): replay the anchor's partial answer and
+		// follow it with the directive as prompt-only turns — the sibling
+		// replacement continues from exactly where the text stopped.
+		promptHist = append(append([]*store.Message{}, history...),
+			&store.Message{Role: "assistant", Content: opts.branchAnchor.Content},
+			&store.Message{Role: "user", Content: userMsg.Content})
+	}
 	system := s.systemPrompt(ctx)
 	contextLen := s.modelContextLen(ctx, chat)
-	msgs, compacted := assemblePrompt(system, summary, history, contextLen, userMsgID, opts.Images)
+	msgs, compacted := assemblePrompt(system, summary, promptHist, contextLen, userMsgID, opts.Images)
 
 	// Summarize fires async; it must never block the stream. maybeSummarize
 	// detaches its worker context itself (see fireCtx).

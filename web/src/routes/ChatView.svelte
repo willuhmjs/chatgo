@@ -536,6 +536,29 @@
     void runStream(regenerate(id, m.id, { content, branch: true }, makeHandlers(nu)), nu);
   }
 
+  /** OWUI "Continue Response": a sibling answer that picks up exactly where
+   *  this one stopped. Branch-regenerate from the assistant anchor — the
+   *  server replays the partial text in-prompt and persists the replacement
+   *  beside the original. Older rows without branch metadata fall back to a
+   *  plain retry. */
+  function continueMsg(m: UIMessage): void {
+    if (!id || stream.active || streamMsg) return;
+    if (isLocalId(m.id) || !m.parent_id) {
+      retry(m);
+      return;
+    }
+    const ph = appendPlaceholder();
+    ph.parent_id = m.parent_id; // sibling beside the truncated answer
+    leafId = ph.id;
+    void runStream(
+      regenerate(id, m.id, {
+        branch: true,
+        content:
+          'Continue your previous response from exactly where it stopped. Do not repeat anything already written.',
+      }, makeHandlers()),
+    );
+  }
+
   function stop(): void {
     aborted = true;
     abort();
@@ -665,6 +688,7 @@
               {ratings}
               busy={stream.active}
               onretry={retry}
+              oncontinue={continueMsg}
               onedit={edit}
               onrate={ratingsOk ? rate : undefined}
               onratecomment={ratingsOk ? saveRatingComment : undefined}

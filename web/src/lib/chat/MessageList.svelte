@@ -19,6 +19,7 @@
     ratings,
     wordmark = 'ChatGo',
     onretry,
+    oncontinue,
     onedit,
     onrate,
     onratecomment,
@@ -33,6 +34,7 @@
     ratings?: RatingsMap;
     wordmark?: string;
     onretry?: (m: UIMessage) => void;
+    oncontinue?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
     onrate?: (m: UIMessage, value: 1 | -1) => void;
     onratecomment?: (m: UIMessage, comment: string) => void;
@@ -213,6 +215,7 @@
                 rating={ratings?.[m.id] ?? null}
                 versions={versionsOf(m)}
                 {onretry}
+                {oncontinue}
                 {onedit}
                 oneditopen={(msg) => (editingId = msg.id)}
                 oneditclose={closeEditor}
@@ -235,6 +238,7 @@
                 rating={ratings?.[m.id] ?? null}
                 versions={versionsOf(m)}
                 {onretry}
+                {oncontinue}
                 {onedit}
                 {onrate}
                 {onratecomment}

@@ -25,6 +25,7 @@
   import ThumbsUp from 'lucide-svelte/icons/thumbs-up';
   import ThumbsDown from 'lucide-svelte/icons/thumbs-down';
   import GitBranch from 'lucide-svelte/icons/git-branch';
+  import TextCursorInput from 'lucide-svelte/icons/text-cursor-input';
   import { copyText, domainOf, fmtClock, fmtDateTime } from '$lib/chatview-api';
   import { safeHref } from '$lib/safe-url';
   import { speechSupported, speech, toggleSpeak } from '$lib/chat/state.svelte.js';
@@ -45,6 +46,7 @@
     onratecomment,
     onfork,
     onversion,
+    oncontinue,
   }: {
     message: UIMessage;
     busy?: boolean;
@@ -64,6 +66,8 @@
     onratecomment?: (m: UIMessage, comment: string) => void;
     onfork?: (m: UIMessage) => void;
     onversion?: (m: UIMessage, dir: -1 | 1) => void;
+    /** continue an assistant answer (OWUI "Continue Response") */
+    oncontinue?: (m: UIMessage) => void;
   } = $props();
 
   let editText = $state('');
@@ -322,6 +326,11 @@
             <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
               <RefreshCw size={15} />
             </IconButton>
+            {#if oncontinue && message.parent_id && !isLocalId(message.id)}
+              <IconButton title="Continue response" onclick={() => oncontinue?.(message)}>
+                <TextCursorInput size={15} />
+              </IconButton>
+            {/if}
           {/if}
           {#if speechSupported}
             <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
