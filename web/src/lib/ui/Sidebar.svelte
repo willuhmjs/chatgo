@@ -429,7 +429,10 @@
 
 <aside
   class="chat-sidebar {mobileOpen ? 'is-open' : ''}"
-  style="background:var(--bg-deep); width:{rail ? 72 : 260}px"
+  <!-- OWUI parity: sidebar shares the canvas background with a hairline
+       divider. The old --bg-deep two-tone read as a misaligned floating
+       panel at near-black dark values (user-reported "ghost strip"). -->
+  style="background:var(--bg); border-right:1px solid var(--border); width:{rail ? 72 : 260}px"
   aria-label="Sidebar"
 >
   <!-- top row: toggle + new chat + brand glyph (§3) -->
