@@ -1,0 +1,89 @@
+# Three Ingresses on the same host on purpose: Traefik's k8s provider attaches
+# router.middlewares per-Ingress, so the per-path rate limits need their own
+# routers. The specific-prefix routers get priority:100 so /api/auth/* and
+# /s/* win over the catch-all / (all default to 0 otherwise — undefined winner).
+# HSTS rides on every router.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatgo
+  namespace: chatgo
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: chatgo-redirect-https@kubernetescrd,chatgo-hsts@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: chat.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: chatgo
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - chat.example.com
+    secretName: chatgo-tls
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatgo-auth
+  namespace: chatgo
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: chatgo-redirect-https@kubernetescrd,chatgo-ratelimit-auth@kubernetescrd,chatgo-hsts@kubernetescrd
+    traefik.ingress.kubernetes.io/router.priority: "100"
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: chat.example.com
+    http:
+      paths:
+      - path: /api/auth
+        pathType: Prefix
+        backend:
+          service:
+            name: chatgo
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - chat.example.com
+    secretName: chatgo-tls
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatgo-share
+  namespace: chatgo
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: chatgo-redirect-https@kubernetescrd,chatgo-ratelimit-share@kubernetescrd,chatgo-hsts@kubernetescrd
+    traefik.ingress.kubernetes.io/router.priority: "100"
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: chat.example.com
+    http:
+      paths:
+      # "/s/" (with slash) — Prefix "/s" would also capture /settings*
+      - path: /api/share
+        pathType: Prefix
+        backend:
+          service:
+            name: chatgo
+            port:
+              number: 8080
+      - path: /s/
+        pathType: Prefix
+        backend:
+          service:
+            name: chatgo
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - chat.example.com
+    secretName: chatgo-tls

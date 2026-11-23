@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: chatgo
+
+resources:
+- namespace.yaml
+- certificate.yaml
+- middleware.yaml
+- configmap.yaml
+- service.yaml
+- deployment.yaml
+- ingress.yaml
+
+# Applied manually, intentionally NOT in this kustomization (same policy as apps/open-webui):
+#   secret.example.yaml  → copy to secret.yaml, fill, apply once
+#   pvc.yaml             → local-path PVC, apply once (Flux must not own/prune either)
