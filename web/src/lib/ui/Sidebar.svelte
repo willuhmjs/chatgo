@@ -622,8 +622,6 @@
         {/if}
       {/if}
     </nav>
-  {:else}
-    <div class="min-h-0 flex-1"></div>
   {/if}
 
   <!-- rail: recent chats as icons -->
