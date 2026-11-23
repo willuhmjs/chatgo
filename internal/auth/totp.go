@@ -47,7 +47,7 @@ const (
 	// Domain separators inside HKDF so these keys can never collide with the
 	// provider-key or OIDC-state keys derived from the same secret.
 	totpAtRestKeyInfo = "chatgo:totp-atrest/v1"
-	totpTokenKeyInfo  = "chatgo:totp-token/v1"
+	totpTokenKeyInfo  = "chatgo:totp-token/v1" // #nosec G101 -- HKDF domain separator, not a credential
 
 	totpPendingTTL = 10 * time.Minute // setup → enable grace
 	totpTokenTTL   = 10 * time.Minute // login → verify grace

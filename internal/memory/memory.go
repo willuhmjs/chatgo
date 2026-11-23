@@ -324,6 +324,9 @@ func updateMemory(ctx context.Context, db *sql.DB, userID, id string, content *s
 		args = append(args, boolInt(*enabled))
 	}
 	args = append(args, userID, id)
+	// #nosec G701 -- SET fragments are static literals (hard-coded column names);
+	// only placeholder ORDINALS are computed via Itoa. User data reaches SQL
+	// exclusively as bound arguments — taint analysis conflates the concatenation.
 	_, err := db.ExecContext(ctx,
 		`UPDATE memories SET `+strings.Join(sets, ", ")+` WHERE user_id = ?`+strconv.Itoa(len(args)-1)+` AND id = ?`+strconv.Itoa(len(args)),
 		args...)

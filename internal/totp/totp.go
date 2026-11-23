@@ -75,6 +75,8 @@ func DecodeSecret(secret string) ([]byte, error) {
 // hotp is the RFC 4226 dynamic-truncation code for one counter value.
 func hotp(key []byte, counter int64) string {
 	var buf [8]byte
+	// #nosec G115 -- counter is unixSeconds/30 (RFC 6238): non-negative for every
+	// real timestamp; negative input would signal a clock before 1970.
 	binary.BigEndian.PutUint64(buf[:], uint64(counter))
 	mac := hmac.New(sha1.New, key)
 	mac.Write(buf[:])
