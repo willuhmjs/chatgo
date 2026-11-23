@@ -30,6 +30,11 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
   per-chat model & params.
 - **SSE streaming** with token-by-token render, sources/citations, usage, and
   regenerate; heartbeats survive proxies.
+- **Message branching** — ChatGPT/Open WebUI-style version tree: edit or
+  regenerate lands as a *sibling* (history never truncates), a `‹1/2›` pager
+  switches versions, and switching lands on the newest continuation of that
+  branch (`POST /api/chats/{id}/branch`). Truncated answers can be continued
+  in place; queued sends drain automatically after a stream settles.
 - **Vision** — attach png/jpg/webp/gif images, sent as data-URL image parts.
 - **Web search** — optional [SearXNG](https://docs.searxng.org/) backend;
   per-message toggle injects cited context and shows source chips.
