@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: chatgo-tls
+  namespace: chatgo
+spec:
+  secretName: chatgo-tls
+  issuerRef:
+    name: my-ca-issuer # <- your ClusterIssuer (e.g. a step-ca / ACME issuer in your cluster)
+    kind: ClusterIssuer
+  dnsNames:
+  - chat.example.com
+  duration: 2160h
+  renewBefore: 360h

@@ -1,0 +1,196 @@
+@import "tailwindcss";
+
+/* Design tokens — Open WebUI gray ramp (their tailwind.css @theme: gray-50
+   oklch(0.98) → gray-950 oklch(0.16)) mapped onto ChatGo's existing token
+   names. Monochrome, quiet, spacious. --accent is WHITE (primary buttons) with
+   --accent-fg as its label; the "quiet signal" roles (focus rings, active nav,
+   menu hovers, links) use --accent-soft, now derived from the active --acc so
+   nothing reads as leftover purple when the default is blue. */
+:root {
+  /* system-first per docs/DESIGN-REF.md §4: SF/Segoe render before Inter,
+     which is used only when locally installed (never fetched over the wire) */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Inter', ui-sans-serif, system-ui,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* light theme: white canvas (OWUI surfaces are white in light mode),
+     gray-50 sidebar, gray-100/200 fills, gray-900 text */
+  --bg: #ffffff;
+  --bg-deep: oklch(0.98 0 0); /* gray-50 — sidebar/mobile bar recede a step */
+  --panel: oklch(0.94 0 0); /* gray-100 */
+  --panel-2: oklch(0.92 0 0); /* gray-200 */
+  --fill-hover: rgba(0, 0, 0, 0.05);
+  --border: rgba(0, 0, 0, 0.08);
+  --text: oklch(0.2 0 0); /* gray-900 — strong body text */
+  --muted: oklch(0.51 0 0); /* gray-600 */
+  --faint: oklch(0.69 0 0); /* gray-500 */
+  --accent: oklch(0.2 0 0); /* primary button fill = gray-900 (OWUI) */
+  --accent-fg: oklch(0.98 0 0);
+  /* "quiet signal" soft fill (focus rings, menu hovers) — follows the active
+     accent via --acc; the old fixed indigo (rgba(99,102,241,.18)) read as
+     leftover purple once blue became the default. */
+  --accent-soft: color-mix(in srgb, var(--acc) 18%, transparent);
+  /* @deprecated alias — some views still reference --indigo; it now simply
+     tracks the accent so nothing renders off-palette violet. */
+  --indigo: var(--acc);
+  --danger: #ef4444;
+  --ok: #10a37f;
+  --shadow-menu: 0 8px 28px rgba(0, 0, 0, 0.14);
+  --shadow-composer: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --scroll-thumb: rgba(0, 0, 0, 0.16);
+  --sidebar-w: 260px;
+}
+
+html.dark {
+  /* OWUI dark direction: chat canvas is the darkest surface (gray-950), the
+     sidebar sits a step lighter (gray-900), fills climb gray-850/800. Text
+     rides gray-100, secondary gray-500, tertiary gray-600. */
+  --bg: oklch(0.16 0 0); /* gray-950 */
+  --bg-deep: oklch(0.2 0 0); /* gray-900 — sidebar, a step above the canvas */
+  --panel: oklch(0.27 0 0); /* gray-850 */
+  --panel-2: oklch(0.32 0 0); /* gray-800 */
+  --fill-hover: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: oklch(0.94 0 0); /* gray-100 */
+  --muted: oklch(0.69 0 0); /* gray-500 */
+  --faint: oklch(0.51 0 0); /* gray-600 */
+  --accent: oklch(0.98 0 0);
+  --accent-fg: oklch(0.16 0 0);
+  --accent-soft: color-mix(in srgb, var(--acc) 18%, transparent);
+  --indigo: var(--acc);
+  --danger: #ef4444;
+  --ok: #10a37f;
+  --shadow-menu: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-composer: 0 2px 12px rgba(0, 0, 0, 0.25);
+  --scroll-thumb: rgba(255, 255, 255, 0.12);
+  --sidebar-w: 260px;
+}
+
+/* ── Accent system (docs/FEATURES-V2.md · Frontend wave-1) ────────────────
+   Quiet color = signal. html[data-accent='violet|blue|teal|green|orange|pink']
+   picks the hue; lib/accent.svelte.js always sets the attribute (default
+   blue) from localStorage/server. The derived tokens are computed once here
+   from --acc via color-mix so each hue only needs its base tuned. Light mode
+   uses deeper --acc (tints sit on #ffffff/gray-100); dark uses pastels for the
+   gray-950/gray-850 canvas. :not(.dark) keeps the light blocks from outranking
+   the html.dark fallback at equal specificity. */
+html {
+  /* fallback = blue (the default accent) if JS never ran */
+  --acc: #2563eb;
+  --acc-strong: color-mix(in srgb, var(--acc) 82%, #000);
+  --acc-tint: color-mix(in srgb, var(--acc) 16%, transparent);
+  --acc-tint-strong: color-mix(in srgb, var(--acc) 28%, transparent);
+  --acc-grad: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--acc) 88%, #000),
+    var(--acc)
+  );
+}
+html.dark {
+  /* fallback = blue (the default accent) if JS never ran */
+  --acc: #60a5fa;
+  --acc-strong: color-mix(in srgb, var(--acc) 82%, #fff);
+  --acc-grad: linear-gradient(
+    135deg,
+    var(--acc),
+    color-mix(in srgb, var(--acc) 76%, #fff)
+  );
+}
+
+/* light hues — deep enough for tinted fills + text on white/#f4f4f4 */
+html[data-accent='violet']:not(.dark) { --acc: #7c3aed; }
+html[data-accent='blue']:not(.dark)   { --acc: #2563eb; }
+html[data-accent='teal']:not(.dark)   { --acc: #0d9488; }
+html[data-accent='green']:not(.dark)  { --acc: #15803d; }
+html[data-accent='orange']:not(.dark) { --acc: #d97706; }
+html[data-accent='pink']:not(.dark)   { --acc: #db2777; }
+
+/* dark hues — tuned for contrast on gray-950/gray-850 */
+html.dark[data-accent='violet'] { --acc: #a78bfa; }
+html.dark[data-accent='blue']   { --acc: #60a5fa; }
+html.dark[data-accent='teal']   { --acc: #2dd4bf; }
+html.dark[data-accent='green']  { --acc: #4ade80; }
+html.dark[data-accent='orange'] { --acc: #fbbf24; }
+html.dark[data-accent='pink']   { --acc: #f472b6; }
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+/* thin scrollbars (§3): 8px, quiet thumb, invisible until hover/focus */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover,
+*:focus-within {
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+}
+*:hover::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--scroll-thumb), var(--text) 30%);
+}
+
+/* subtle selection — accent, quiet */
+::selection {
+  background: var(--acc-tint-strong);
+}
+
+/* Shared floating-layer entrance (§7): 120ms fade + 2px rise.
+   Components (Dropdown/Modal/user menus) reference this global class. */
+@keyframes pop-rise {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.pop {
+  animation: pop-rise 120ms ease-out;
+}
+
+/* §9 kill-switch: nothing moves when the user asked us not to move */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
