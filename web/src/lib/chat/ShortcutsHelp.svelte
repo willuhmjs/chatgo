@@ -22,7 +22,7 @@
         { keys: ['⌘↵'], desc: 'Send message (always)' },
         { keys: ['/'], desc: 'Focus the composer' },
         { keys: ['↑'], desc: 'Edit last message (empty composer)' },
-        { keys: ['Esc', 'Esc'], sep: 'then', desc: 'Stop & edit last prompt (while streaming)' },
+        { keys: ['Esc', 'Esc'], sep: 'then', desc: 'Stop, delete the cancelled exchange & edit your prompt' },
         { keys: ['?'], desc: 'Open this help' },
       ],
     },

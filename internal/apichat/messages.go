@@ -235,6 +235,13 @@ func (d *Deps) streamSend(w http.ResponseWriter, r *http.Request, userID, chatID
 		httpx.InternalError(w, r, err)
 		return
 	}
+	// Retract guard (see trackChatTurn in chats.go): the chat stays marked busy
+	// until the drain defer below completes — a canceled client's partial is
+	// persisted on a detached context AFTER r.Context() is done, and retract
+	// must not delete the exchange underneath that late write. Deferred first,
+	// so LIFO it releases last.
+	releaseTurn := trackChatTurn(chatID)
+	defer releaseTurn()
 	sse, err := httpx.NewSSE(r, w)
 	if err != nil {
 		httpx.InternalError(w, r, err)

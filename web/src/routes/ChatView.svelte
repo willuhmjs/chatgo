@@ -60,6 +60,12 @@
   let rafId = 0;
   let aborted = false;
 
+  // Esc-Esc retract request from the Composer (armed for the CURRENT stream
+  // only; the stop button never sets it). retractChat pins the chat that
+  // armed it — the settle handler may run after a route switch.
+  let retractPending = false;
+  let retractChat = '';
+
   // ---------------- load ----------------
 
   let loadSeq = 0;
@@ -128,6 +134,21 @@
       aborted = false;
       stopSpeaking();
     };
+  });
+
+  // Esc-Esc in the Composer: stop AND retract the cancelled exchange once the
+  // stream settles. Deliberately NOT fired from the keypress itself — the
+  // server persists the partial as the stream dies, so the delete must wait
+  // for the local settle (runStream's finally) and rides the endpoint's 409
+  // retry for the server-side persist to finish. The stop button dispatches
+  // nothing: stop-and-keep-the-partial stays ChatGPT parity.
+  $effect(() => {
+    const onRetract = () => {
+      retractPending = true;
+      retractChat = id;
+    };
+    window.addEventListener('chatgo:retract-request', onRetract);
+    return () => window.removeEventListener('chatgo:retract-request', onRetract);
   });
 
   // title → document.title (shell mirrors the tab; sidebar listens on the
@@ -237,8 +258,54 @@
     try {
       await p;
     } finally {
+      // Settle point: the SSE pump is fully done (stream.active false, tokens
+      // flushed). If Esc-Esc armed a retract for THIS stream, consume the
+      // request here — after finishStream, so the local rows exist in their
+      // final shape before the endpoint call deletes them.
+      const cid = retractPending ? retractChat : '';
+      retractPending = false;
+      const target = cid ? streamMsg : null;
       finishStream(userMsg);
+      if (cid && target) void retractExchange(cid, target, cid === id ? userMsg : undefined);
     }
+  }
+
+  /**
+   * Delete the cancelled exchange (Esc-Esc). `assistant` carries the server id
+   * from the SSE `meta` event; without one (abort before meta) there is nothing
+   * to key the delete on, so skip silently. The endpoint answers 409 until the
+   * server has finished persisting the partial of the just-killed stream —
+   * back off a few times rather than silently losing the retract. Only on a
+   * confirmed 2xx do we drop the rows locally (identity-based, never a blind
+   * tail splice, so a fast resend during the await survives); failures stay
+   * honest: console.warn and keep the rows.
+   */
+  async function retractExchange(cid: string, assistant: UIMessage, userMsg?: UIMessage): Promise<void> {
+    const mid = assistant.id;
+    if (isLocalId(mid)) return;
+    // Small grace for the server to finish draining the canceled turn: its
+    // persist runs detached and lands a beat after our abort, during which the
+    // endpoint answers 409 (and Chrome logs any 409 fetch as a console error).
+    // The retry loop below stays as the honest guard, not the normal path.
+    await new Promise((r) => setTimeout(r, 250));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await api.retractMessage(cid, mid);
+        break;
+      } catch (err) {
+        const status = (err as api.ApiError)?.status;
+        if (status === 409 && attempt < 4) {
+          await new Promise((r) => setTimeout(r, 120 * (attempt + 1)));
+          continue;
+        }
+        console.warn('chatgo: retract failed', err);
+        return;
+      }
+    }
+    const ai = messages.indexOf(assistant);
+    if (ai >= 0) messages.splice(ai, 1);
+    const ui = userMsg ? messages.indexOf(userMsg) : -1;
+    if (ui >= 0) messages.splice(ui, 1);
   }
 
   function submit(body: SendMessageBody): void {

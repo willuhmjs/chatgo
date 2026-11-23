@@ -275,6 +275,19 @@ export const streamRegenerate = (
   return streamPost(`/api/chats/${encodeURIComponent(chatID)}/regenerate${q}`, body, onEvent, signal);
 };
 
+/**
+ * POST /api/chats/{id}/messages/{msgID}/retract — delete a cancelled exchange
+ * (the assistant message, the user turn it answered, and the tail) without
+ * re-sending. `msgID` is the ASSISTANT message id from the SSE `meta` event —
+ * the server walks back over the user prompt itself. 409 while the chat's
+ * stream is still settling; 404 when unknown/foreign (never leaks existence).
+ */
+export const retractMessage = (chatID: string, msgID: string) =>
+  req<{ deleted: number }>(
+    'POST',
+    `/api/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(msgID)}/retract`,
+  );
+
 export const listMessages = (chatID: string, before?: string, limit = 200) => {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (before) qs.set('before', before);

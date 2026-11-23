@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"chatgo/internal/api/httpx"
 	"chatgo/internal/store"
@@ -261,13 +262,17 @@ func wantsPinned(r *http.Request) bool {
 
 // --- registration -------------------------------------------------------------
 
-// registerChats mounts chat CRUD on the shared mux.
+// registerChats mounts chat CRUD on the shared mux. The retract sub-resource
+// rides along here (rather than in registerMessages) because its delete/404/
+// ownership semantics are the chat-CRUD family, and its busy guard shares the
+// tracker below with the stream pump in messages.go.
 func registerChats(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/chats", d.handleListChats)
 	mux.HandleFunc("POST /api/chats", d.handleCreateChat)
 	mux.HandleFunc("GET /api/chats/{id}", d.handleGetChat)
 	mux.HandleFunc("PATCH /api/chats/{id}", d.handlePatchChat)
 	mux.HandleFunc("DELETE /api/chats/{id}", d.handleDeleteChat)
+	mux.HandleFunc("POST /api/chats/{id}/messages/{msgId}/retract", d.handleRetractMessage)
 }
 
 // --- handlers -------------------------------------------------------------------
@@ -500,4 +505,118 @@ func marshalParams(m map[string]any) (string, error) {
 		return "", httpErr(http.StatusBadRequest, "params too large")
 	}
 	return string(b), nil
+}
+
+// --- retract (Esc-Esc cancelled-exchange cleanup) -----------------------------
+
+// chatTurns marks chats whose streamed turn has not fully settled server-side.
+// The chat service persists the assistant row on a context DETACHED from the
+// request (fireCtx, internal/chat/service.go), so an aborted client can see
+// its partial appended moments AFTER the SSE request died. A retract landing
+// inside that window would delete the exchange only for the late partial to
+// re-litter the chat underneath, so retract refuses (409) while the turn is
+// live. apichat-local by necessity: Deps is a frozen field set and the
+// service's own turn accounting is per-user and unexported (and internal/chat
+// is off-limits here).
+var chatTurns = struct {
+	mu   sync.Mutex
+	live map[string]int
+}{live: map[string]int{}}
+
+// trackChatTurn marks chatID busy until the returned release runs. streamSend
+// releases only after the service event channel has fully drained — i.e. once
+// run() has persisted any partial — so the guard spans the whole late-write
+// window, not just the live HTTP request. Reference-counted like the service's
+// per-user tally: same-chat overlap is theoretical (per-user cap) but cheap.
+func trackChatTurn(chatID string) (release func()) {
+	chatTurns.mu.Lock()
+	chatTurns.live[chatID]++
+	chatTurns.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			chatTurns.mu.Lock()
+			if n := chatTurns.live[chatID] - 1; n > 0 {
+				chatTurns.live[chatID] = n
+			} else {
+				delete(chatTurns.live, chatID)
+			}
+			chatTurns.mu.Unlock()
+		})
+	}
+}
+
+func chatTurnLive(chatID string) bool {
+	chatTurns.mu.Lock()
+	defer chatTurns.mu.Unlock()
+	return chatTurns.live[chatID] > 0
+}
+
+// handleRetractMessage deletes a cancelled exchange: the target message, the
+// user turn it answered and everything after it — the server half of the
+// composer's Esc-Esc gesture (stop, delete, edit, resend). Internals mirror
+// regenerate's ?from= contract: ownChat ownership (foreign/unknown chat → 404,
+// never 403), tail truncate via Messages.DeleteFrom INCLUSIVE, 404 for an
+// unknown/foreign message — but nothing is re-sent, the turn just vanishes.
+//
+// Keyed by the ASSISTANT message id, because that is the only server id the
+// SSE `meta` event exposes: the user row's id never crosses the wire. When the
+// id names an assistant row, the user row directly before it (if any) is
+// retracted with it; any other role truncates from the row itself, which
+// generalizes regenerate's anchor semantics for free.
+//
+// Ordering: auth 401 → chat ownership 404 → live-stream guard 409 (checked
+// BEFORE touching rows: a delete during the late-persist window is the exact
+// corruption this guard exists to prevent) → message 404. The response counts
+// what actually vanished ({deleted: N}) from before/after totals.
+func (d *Deps) handleRetractMessage(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	c, err := d.ownChat(r.Context(), u.ID, r.PathValue("id"))
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	msgID := r.PathValue("msgId")
+	if msgID == "" {
+		httpx.ErrorJSON(w, http.StatusNotFound, "not found")
+		return
+	}
+	if chatTurnLive(c.ID) {
+		httpx.ErrorJSON(w, http.StatusConflict, "stream still running for this chat")
+		return
+	}
+	m, err := d.Store.Messages.Get(r.Context(), c.ID, msgID)
+	if err != nil {
+		d.fail(w, r, err) // unknown id or a row from another chat → 404 (Get is chat-scoped)
+		return
+	}
+	from := msgID
+	if m.Role == "assistant" {
+		// Walk back over the cancelled reply's prompt. List(limit 1, before=id)
+		// yields exactly the row before the anchor (chronological page of one);
+		// only a user row qualifies as the exchange head — anything else means
+		// the assistant row stands alone, so truncate from the row itself.
+		if prev, err := d.Store.Messages.List(r.Context(), c.ID, 1, msgID); err == nil &&
+			len(prev) == 1 && prev[0].Role == "user" {
+			from = prev[0].ID
+		}
+	}
+	before, err := d.Store.Messages.Count(r.Context(), c.ID)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	if err := d.Store.Messages.DeleteFrom(r.Context(), c.ID, from); err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	after, err := d.Store.Messages.Count(r.Context(), c.ID)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]int{"deleted": before - after})
 }

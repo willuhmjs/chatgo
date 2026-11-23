@@ -133,7 +133,9 @@
   // 1st Esc arms (never stops) — shows an accent chip on the hint strip for
   // ESC_ARM_MS and hands the LAST USER MESSAGE back into the textarea (caret
   // at end, focused) so the prompt is ready to tweak and re-send later.
-  // 2nd Esc inside the arm window fires the real stop (existing onstop path).
+  // 2nd Esc inside the arm window fires the real stop (existing onstop path)
+  // AND marks the stream for retract (chatgo:retract-request → ChatView
+  // deletes the cancelled exchange once the stream settles).
   // Honest tradeoff: if a draft is already in the textarea we still arm/show
   // the hint but NEVER clobber unsaved input — recall only into an empty box.
   // Own guards win first: the slash popover consumes Esc in handleSlashKey
@@ -163,6 +165,11 @@
     if (!busy) return; // not streaming → plain no-op
     if (escHint && Date.now() - escArmedAt <= ESC_ARM_MS) {
       clearEscArm();
+      // Esc-Esc means RETRACT, a stop-button press does not (button = stop &
+      // keep the partial, ChatGPT parity). ChatView listens, waits for the
+      // stream to settle, then deletes the cancelled exchange server-side —
+      // the recalled prompt stays in the textarea for the edit+resend.
+      window.dispatchEvent(new CustomEvent('chatgo:retract-request'));
       onstop(); // second consecutive Esc → the real stop
       return;
     }
