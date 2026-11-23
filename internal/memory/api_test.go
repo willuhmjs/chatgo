@@ -394,7 +394,7 @@ func TestBuildTranscriptTruncatesRows(t *testing.T) {
 	e.msg(chatID, "user", strings.Repeat("あ", extractRowMaxBytes/3+4000))
 	e.msg(chatID, "assistant", "short reply")
 
-	tr := buildTranscript(context.Background(), e.store, chatID)
+	tr := buildTranscript(context.Background(), e.store, chatID, "")
 	lines := strings.Split(tr, "\n")
 	if len(lines) != 2 {
 		t.Fatalf("want 2 chronological turns, got:\n%q", tr)

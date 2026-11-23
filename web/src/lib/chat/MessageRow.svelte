@@ -18,6 +18,8 @@
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import LinkIcon from 'lucide-svelte/icons/link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ChevronLeft from 'lucide-svelte/icons/chevron-left';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import ThumbsUp from 'lucide-svelte/icons/thumbs-up';
   import ThumbsDown from 'lucide-svelte/icons/thumbs-down';
   import GitBranch from 'lucide-svelte/icons/git-branch';
@@ -31,6 +33,7 @@
     busy = false,
     rating = null,
     editing = false,
+    versions = null,
     onretry,
     onedit,
     oneditopen,
@@ -38,6 +41,7 @@
     onrate,
     onratecomment,
     onfork,
+    onversion,
   }: {
     message: UIMessage;
     busy?: boolean;
@@ -45,6 +49,8 @@
     /** Controlled by MessageList so at most one row editor is open at a
         time and the ↑/↓ "edit last message" walk can move it between rows. */
     editing?: boolean;
+    /** branch pager slot (i = 0-based position among sibling versions) */
+    versions?: { i: number; n: number } | null;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
     oneditopen?: (m: UIMessage) => void;
@@ -52,6 +58,7 @@
     onrate?: (m: UIMessage, value: 1 | -1) => void;
     onratecomment?: (m: UIMessage, comment: string) => void;
     onfork?: (m: UIMessage) => void;
+    onversion?: (m: UIMessage, dir: -1 | 1) => void;
   } = $props();
 
   let editText = $state('');
@@ -128,7 +135,29 @@
     oneditclose?.();
     if (t && t !== message.content) onedit?.(message, t);
   }
+
+  // ‹ n/m › branch pager (Open WebUI style). Only shown when this message has
+  // sibling versions; pages the chat's active branch to prev/next.
+  const canPrev = $derived(!!versions && versions.i > 0);
+  const canNext = $derived(!!versions && versions.i < versions.n - 1);
+  function pager(dir: -1 | 1): void {
+    onversion?.(message, dir);
+  }
 </script>
+
+{#snippet pagerUI()}
+  {#if versions && versions.n > 1}
+    <div class="pager" role="group" aria-label="Response version">
+      <IconButton title="Previous version" disabled={!canPrev || busy} onclick={() => pager(-1)}>
+        <ChevronLeft size={15} />
+      </IconButton>
+      <span class="pagerlabel" aria-live="polite">{versions.i + 1}/{versions.n}</span>
+      <IconButton title="Next version" disabled={!canNext || busy} onclick={() => pager(1)}>
+        <ChevronRight size={15} />
+      </IconButton>
+    </div>
+  {/if}
+{/snippet}
 
 {#if message.role === 'user'}
   <div class="msg-row group relative flex flex-col items-end gap-1" role="article" aria-label="Your message">
@@ -184,6 +213,7 @@
     {/if}
     {#if !editing}
       <div class="flex items-center gap-1 pr-1">
+        {@render pagerUI()}
         <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
         <div class="hoverbar">
           <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
@@ -273,8 +303,9 @@
     {/if}
 
     {#if !message.streaming}
-      <!-- hover action bar BELOW the text: copy · regenerate · read-aloud (§5) -->
-      <div class="acts" class:rated={!!rating || commentOpen}>
+      <!-- hover action bar BELOW the text: pager · copy · regenerate · read-aloud (§5) -->
+      <div class="acts" class:rated={!!rating || commentOpen} class:hasver={!!versions}>
+        {@render pagerUI()}
         <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
         {#if !busy}
           <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
@@ -416,6 +447,29 @@
     margin-top: 4px;
     opacity: 0;
     transition: opacity 120ms ease;
+  }
+  /* a versioned message keeps its bar quietly visible (pager discoverability) */
+  .acts.hasver {
+    opacity: 0.55;
+  }
+  .acts.hasver:hover {
+    opacity: 1;
+  }
+
+  /* ‹ n/m › branch pager (quiet until hovered, OWUI parity) */
+  .pager {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    margin-right: 4px;
+  }
+  .pagerlabel {
+    min-width: 2.1rem;
+    text-align: center;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted, #a8a8a8);
+    user-select: none;
   }
   .hoverbar {
     display: flex;

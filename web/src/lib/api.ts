@@ -92,6 +92,10 @@ export interface Message {
   id: string;
   chat_id: string;
   role: 'user' | 'assistant' | 'system';
+  /** branch tree parent ('' = root); sibling ids share a parent = versions */
+  parent_id?: string;
+  /** true on the leaf of the chat's active branch (set by the server) */
+  is_current?: boolean;
   content: string;
   sources?: SourceRef[];
   error?: string | null;
@@ -188,6 +192,9 @@ export interface SendMessageBody {
   content: string;
   images?: { file_id: string }[];
   search?: boolean;
+  /** regenerate only: insert the new version beside the anchor instead of
+   *  deleting it and the tail (Open WebUI-style branch history) */
+  branch?: boolean;
 }
 
 export type SSEEventName = 'meta' | 'title' | 'sources' | 'token' | 'done' | 'error';
@@ -198,6 +205,8 @@ export interface SSEEvent {
 export interface StreamMeta {
   message_id: string;
   chat_id: string;
+  /** user row persisted for this turn (send / branch-edit); "" on regenerate */
+  user_message_id?: string;
 }
 export interface StreamDone {
   usage: { in: number; out: number } | null;
@@ -293,6 +302,19 @@ export const listMessages = (chatID: string, before?: string, limit = 200) => {
   if (before) qs.set('before', before);
   return req<Message[]>('GET', `/api/chats/${chatID}/messages?${qs}`);
 };
+
+/**
+ * POST /api/chats/{id}/branch {message_id} → {leaf_id} — move the chat's active
+ * branch to the version named by message_id, landing on that version's newest
+ * continuation. Returns the new leaf so the caller recomputes the visible path
+ * from the message tree it already holds (no refetch).
+ */
+export const switchBranch = (chatID: string, messageID: string) =>
+  req<{ leaf_id: string }>(
+    'POST',
+    `/api/chats/${encodeURIComponent(chatID)}/branch`,
+    { message_id: messageID },
+  );
 
 // ---------- files ----------
 

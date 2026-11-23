@@ -30,6 +30,7 @@ func registerMessages(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/chats/{id}/messages", d.handleListMessages)
 	mux.HandleFunc("POST /api/chats/{id}/messages", d.handleSendMessage)
 	mux.HandleFunc("POST /api/chats/{id}/regenerate", d.handleRegenerate)
+	mux.HandleFunc("POST /api/chats/{id}/branch", d.handleSwitchBranch)
 }
 
 // messageStreamer is the chat.Service.Send surface used by the SSE handlers.
@@ -45,6 +46,8 @@ type messageJSON struct {
 	ID        string       `json:"id"`
 	ChatID    string       `json:"chat_id"`
 	Role      string       `json:"role"`
+	ParentID  string       `json:"parent_id,omitempty"`
+	IsCurrent bool         `json:"is_current,omitempty"` // on the active branch (leaf chain)
 	Content   string       `json:"content"`
 	Sources   []sourceJSON `json:"sources,omitempty"`
 	Error     *string      `json:"error,omitempty"`
@@ -60,8 +63,9 @@ type sourceJSON struct {
 
 func toMessageJSON(m *store.Message) *messageJSON {
 	j := &messageJSON{
-		ID: m.ID, ChatID: m.ChatID, Role: m.Role, Content: m.Content,
-		Error: m.Error, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
+		ID: m.ID, ChatID: m.ChatID, Role: m.Role, ParentID: m.ParentID,
+		Content: m.Content,
+		Error:   m.Error, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
 		CreatedAt: m.CreatedAt,
 	}
 	if m.SourcesJSON != "" {
@@ -97,7 +101,9 @@ func (d *Deps) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]*messageJSON, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, toMessageJSON(m))
+		j := toMessageJSON(m)
+		j.IsCurrent = c.LeafID != "" && m.ID == c.LeafID
+		out = append(out, j)
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
@@ -107,6 +113,7 @@ type sendMessageReq struct {
 	Content string             `json:"content"`
 	Images  []sendMessageImage `json:"images"`
 	Search  bool               `json:"search"`
+	Branch  bool               `json:"branch"` // regenerate: insert as sibling, keep the tail
 }
 
 type sendMessageImage struct {
@@ -189,8 +196,11 @@ func (d *Deps) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		chat.SendOpts{Search: body.Search, Images: images})
 }
 
-// handleRegenerate re-runs the turn; ?from={msgID} deletes that message and
-// everything after it (chat.Service semantics via SendOpts.From).
+// handleRegenerate re-runs the turn. Default mode: ?from={msgID} deletes that
+// message and everything after it (chat.Service semantics via SendOpts.From).
+// Branch mode (body {"branch":true} or ?branch=1): the anchor and its tail
+// stay — the new version is appended beside the anchor and the chat's leaf
+// advances onto it (version pager semantics; see handleSwitchBranch).
 func (d *Deps) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	u, ok := d.requireUser(w, r)
 	if !ok {
@@ -218,10 +228,48 @@ func (d *Deps) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, err)
 		return
 	}
+	branch := body.Branch || r.URL.Query().Get("branch") == "1"
 
 	d.streamSend(w, r, u.ID, c.ID,
 		providers.ChatMessage{Role: "user", Content: body.Content + imgMD, Images: images},
-		chat.SendOpts{Search: body.Search, Images: images, From: from})
+		chat.SendOpts{Search: body.Search, Images: images, From: from, Branch: branch})
+}
+
+// switchBranchReq is the POST /api/chats/{id}/branch body.
+type switchBranchReq struct {
+	MessageID string `json:"message_id"`
+}
+
+// handleSwitchBranch moves the chat's active branch to the version named by
+// message_id — landing on that version's newest continuation, mirroring Open
+// WebUI's getDeepestChildId: paging ‹1/2› mid-conversation keeps everything
+// below the paged message. Response carries the new leaf so the client can
+// recompute the visible path from the message tree it already holds.
+func (d *Deps) handleSwitchBranch(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	c, err := d.ownChat(r.Context(), u.ID, r.PathValue("id"))
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	var body switchBranchReq
+	if err := httpx.Decode(r, &body); err != nil || body.MessageID == "" {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "message_id required")
+		return
+	}
+	leaf, err := d.Store.Messages.DeepestChild(r.Context(), c.ID, body.MessageID)
+	if err != nil {
+		d.fail(w, r, err) // unknown/foreign message → 404
+		return
+	}
+	if err := d.Store.Chats.SetLeaf(r.Context(), c.ID, leaf); err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"leaf_id": leaf})
 }
 
 // streamSend starts the upstream turn and pumps chat.Service events onto the

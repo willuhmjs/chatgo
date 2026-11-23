@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const chatCols = "id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, deleted_at, created_at, updated_at"
+const chatCols = "id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, leaf_id, deleted_at, created_at, updated_at"
 
 func scanChat(scan func(...any) error) (*Chat, error) {
 	c := &Chat{}
@@ -18,7 +18,7 @@ func scanChat(scan func(...any) error) (*Chat, error) {
 	var deleted sql.NullInt64
 	var pinned int
 	if err := scan(&c.ID, &c.UserID, &folder, &c.Title, &c.ProviderID, &c.ModelID,
-		&c.ParamsJSON, &pinned, &share, &deleted, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&c.ParamsJSON, &pinned, &share, &c.LeafID, &deleted, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if folder.Valid {
@@ -53,10 +53,10 @@ func (r *ChatsRepo) Create(ctx context.Context, c *Chat) error {
 		c.ParamsJSON = "{}"
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO chats (id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, deleted_at, created_at, updated_at)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)`,
+		`INSERT INTO chats (id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, leaf_id, deleted_at, created_at, updated_at)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12)`,
 		c.ID, c.UserID, nullStr(c.FolderID), c.Title, c.ProviderID, c.ModelID, c.ParamsJSON,
-		boolInt(c.Pinned), nullStr(c.ShareToken), c.CreatedAt, c.UpdatedAt)
+		boolInt(c.Pinned), nullStr(c.ShareToken), c.LeafID, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
@@ -201,5 +201,13 @@ func (r *ChatsRepo) SetFolder(ctx context.Context, id string, folderID string) e
 		f = folderID
 	}
 	res, err := r.db.ExecContext(ctx, `UPDATE chats SET folder_id = ?2 WHERE id = ?1 AND deleted_at IS NULL`, id, f)
+	return affected(res, err)
+}
+
+// SetLeaf points the chat's active branch at leafID ("" resets to legacy
+// linear semantics). Unknown chats and deleted chats are no-ops (ErrNotFound).
+func (r *ChatsRepo) SetLeaf(ctx context.Context, id, leafID string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE chats SET leaf_id = ?2 WHERE id = ?1 AND deleted_at IS NULL`, id, leafID)
 	return affected(res, err)
 }

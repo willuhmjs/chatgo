@@ -130,7 +130,7 @@ func (d *Deps) handleSharePublic(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msgs, err := d.Store.Messages.List(r.Context(), c.ID, 500, "")
+	msgs, err := d.Store.Messages.CurrentPath(r.Context(), c.ID, c.LeafID, 500)
 	if err != nil {
 		d.fail(w, r, err)
 		return

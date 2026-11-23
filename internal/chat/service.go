@@ -89,10 +89,13 @@ const (
 // Event payloads, JSON shapes frozen by contract §SSE protocol.
 type (
 	// MetaData is the `meta` payload: the assistant message id that will be
-	// persisted plus the chat it belongs to.
+	// persisted plus the chat it belongs to. UserMessageID names the user
+	// row persisted for this turn (normal send + branch edit); "" when the
+	// turn re-uses an existing user row (regenerate).
 	MetaData struct {
-		MessageID string `json:"message_id"`
-		ChatID    string `json:"chat_id"`
+		MessageID     string `json:"message_id"`
+		ChatID        string `json:"chat_id"`
+		UserMessageID string `json:"user_message_id,omitempty"`
 	}
 	// TitleData is the `title` payload.
 	TitleData struct {
@@ -131,6 +134,16 @@ type SendOpts struct {
 	Search bool     // enable SearXNG web search
 	Images []string // data: URLs attached to the user message
 	From   string   // message id to regenerate from ("" = normal append)
+	// Branch makes From an insert-beside instead of a truncate-and-redo: the
+	// anchor and everything after it stay, the new version lands as its
+	// sibling (Open WebUI's ‹1/2› version model). Only meaningful with From.
+	Branch bool
+
+	// branchParent is the parent the replacement message gets — the anchor's
+	// own parent, resolved by Send. branchUser marks an edited user anchor
+	// whose new content is persisted as the sibling user row.
+	branchParent string
+	branchUser   bool
 }
 
 // Enricher is the pluggable chat-grounding hook (FEATURES-V2 §BE-RAG
@@ -269,14 +282,34 @@ func (s *Service) Send(ctx context.Context, userID, chatID string, userMsg provi
 		return out, nil
 	}
 
-	// Regenerate: drop the tail BEFORE building the prompt; no new user row.
+	// Regenerate anchor resolution. Legacy flow (Branch=false): the tail is
+	// dropped BEFORE building the prompt; no new user row. Branch flow: the
+	// anchor stays in place — the replacement lands as its sibling under the
+	// same parent, so older versions and their continuations survive.
 	if opts.From != "" {
-		if err := s.Store.Messages.DeleteFrom(ctx, chatID, opts.From); err != nil {
+		anchor, err := s.Store.Messages.Get(ctx, chatID, opts.From)
+		if err != nil {
 			release()
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, ErrMessageNotFound
 			}
 			return nil, err
+		}
+		opts.branchParent = anchor.ParentID
+		opts.branchUser = opts.Branch && anchor.Role == "user"
+		if !opts.Branch {
+			if err := s.Store.Messages.DeleteFrom(ctx, chatID, opts.From); err != nil {
+				release()
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, ErrMessageNotFound
+				}
+				return nil, err
+			}
+			// The deleted tail may have held the leaf — pull it back to the
+			// anchor's parent so the next turn continues from what survived.
+			if err := s.Store.Chats.SetLeaf(ctx, chatID, opts.branchParent); err != nil {
+				slog.Warn("chat: rewind leaf failed", "chat_id", chatID, "error", err)
+			}
 		}
 	}
 
@@ -336,41 +369,58 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	chatID := chat.ID
 	assistantID := uuid.NewString()
 
-	// 1. Persist the user message first (normal turns only).
+	// 1. Persist the user message (normal turns, and branch edits which land
+	// as a sibling of the edited user row). pathLeaf is the branch tip the
+	// prompt is built from.
 	firstExchange := false
 	var userMsgID string
-	if opts.From == "" {
+	persistUser := opts.From == "" || opts.branchUser
+	var pathLeaf string
+	if persistUser {
+		parent := chat.LeafID
+		if opts.From != "" {
+			parent = opts.branchParent // edit: sibling slot beside the anchor
+		}
 		before, err := s.Store.Messages.Count(ctx, chatID)
 		if err != nil {
 			s.fail(ctx, out, "chat: load failed", err)
 			return
 		}
 		firstExchange = before == 0
-		m := &store.Message{ChatID: chatID, Role: "user", Content: userMsg.Content}
+		m := &store.Message{ChatID: chatID, Role: "user", ParentID: parent, Content: userMsg.Content}
 		if err := s.Store.Messages.Append(ctx, m); err != nil {
 			s.fail(ctx, out, "chat: persist user message failed", err)
 			return
 		}
 		userMsgID = m.ID
+		pathLeaf = m.ID
+		if err := s.Store.Chats.SetLeaf(ctx, chatID, m.ID); err != nil {
+			slog.Warn("chat: set leaf failed", "chat_id", chatID, "error", err)
+		}
+	} else if opts.Branch {
+		pathLeaf = opts.branchParent // regenerate: path stops beside the anchor
 	}
+	// legacy truncate flow keeps pathLeaf == "": history() falls back to the
+	// linear List, which is exactly what the rowid-based tail delete implies.
 
 	// 2. meta carries the (not yet persisted) assistant message id.
-	if !emit(ctx, out, EventMeta, MetaData{MessageID: assistantID, ChatID: chatID}) {
+	if !emit(ctx, out, EventMeta, MetaData{MessageID: assistantID, ChatID: chatID, UserMessageID: userMsgID}) {
 		return
 	}
 
 	// 3. Kick off title generation early so it overlaps compaction/search.
 	titleCh, titleStart := s.startTitle(ctx, chat, firstExchange, userMsg)
 
-	// 4. History (summary + tail), system prompt, compaction.
-	total, history, summary, err := s.history(ctx, chatID)
+	// 4. History (summary + branch path), system prompt, compaction.
+	total, history, summary, err := s.history(ctx, chatID, pathLeaf)
 	if err != nil {
 		s.fail(ctx, out, "chat: load history failed", err)
 		return
 	}
-	if opts.From != "" && (len(history) == 0 || history[len(history)-1].Role != "user") {
-		// Regenerate anchor was itself the user message: re-add its content
-		// to the prompt only (never persisted).
+	if opts.From != "" && !opts.Branch && (len(history) == 0 || history[len(history)-1].Role != "user") {
+		// Legacy regenerate anchored on the user message: re-add its content
+		// to the prompt only (never persisted). Branch edits persist the
+		// sibling row, so that path already carries it.
 		history = append(history, &store.Message{Role: "user", Content: userMsg.Content})
 	}
 	system := s.systemPrompt(ctx)
@@ -564,10 +614,15 @@ streamLoop:
 	// it fires when run returns (right after the terminal event).
 	pctx, cancelPersist := fireCtx(ctx)
 	defer cancelPersist()
+	amParent := userMsgID
+	if amParent == "" {
+		amParent = opts.branchParent // regenerate (both modes): sibling of the anchor
+	}
 	am := &store.Message{
 		ID:          assistantID,
 		ChatID:      chatID,
 		Role:        "assistant",
+		ParentID:    amParent,
 		Content:     content.String(),
 		SourcesJSON: sourcesJSON,
 	}
@@ -580,6 +635,8 @@ streamLoop:
 	}
 	if err := s.Store.Messages.Append(pctx, am); err != nil {
 		slog.Error("chat: persist assistant message failed", "chat_id", chatID, "error", err)
+	} else if err := s.Store.Chats.SetLeaf(pctx, chatID, assistantID); err != nil {
+		slog.Warn("chat: advance leaf failed", "chat_id", chatID, "error", err)
 	}
 	if err := s.Store.Chats.TouchUpdatedAt(pctx, chatID, time.Now().Unix()); err != nil {
 		slog.Warn("chat: touch chat failed", "chat_id", chatID, "error", err)

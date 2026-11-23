@@ -553,22 +553,27 @@ func chatTurnLive(chatID string) bool {
 }
 
 // handleRetractMessage deletes a cancelled exchange: the target message, the
-// user turn it answered and everything after it — the server half of the
-// composer's Esc-Esc gesture (stop, delete, edit, resend). Internals mirror
-// regenerate's ?from= contract: ownChat ownership (foreign/unknown chat → 404,
-// never 403), tail truncate via Messages.DeleteFrom INCLUSIVE, 404 for an
-// unknown/foreign message — but nothing is re-sent, the turn just vanishes.
+// user turn it answered and everything hanging below them — the server half
+// of the composer's Esc-Esc gesture (stop, delete, edit, resend). Internals
+// mirror regenerate's ?from= contract: ownChat ownership (foreign/unknown
+// chat → 404, never 403), 404 for an unknown/foreign message — but nothing is
+// re-sent, the turn just vanishes.
+//
+// Branch-aware: the whole version slot vanishes — every sibling version of
+// the cancelled user turn (and each version's continuations) is deleted as a
+// subtree, and the chat's leaf lands on the deepest child of the surviving
+// parent, so an untouched sibling branch keeps the conversation intact.
 //
 // Keyed by the ASSISTANT message id, because that is the only server id the
-// SSE `meta` event exposes: the user row's id never crosses the wire. When the
-// id names an assistant row, the user row directly before it (if any) is
-// retracted with it; any other role truncates from the row itself, which
-// generalizes regenerate's anchor semantics for free.
+// SSE `meta` event exposes: the user row's id never crosses the wire. When
+// the id names an assistant row, its parent (or the row directly before it,
+// legacy chats) is the exchange head; any other role retracts from the row
+// itself.
 //
 // Ordering: auth 401 → chat ownership 404 → live-stream guard 409 (checked
 // BEFORE touching rows: a delete during the late-persist window is the exact
 // corruption this guard exists to prevent) → message 404. The response counts
-// what actually vanished ({deleted: N}) from before/after totals.
+// what actually vanished ({deleted: N}).
 func (d *Deps) handleRetractMessage(w http.ResponseWriter, r *http.Request) {
 	u, ok := d.requireUser(w, r)
 	if !ok {
@@ -593,30 +598,80 @@ func (d *Deps) handleRetractMessage(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, err) // unknown id or a row from another chat → 404 (Get is chat-scoped)
 		return
 	}
-	from := msgID
+
+	// Exchange head: the user row of the cancelled pair.
+	head := m
 	if m.Role == "assistant" {
-		// Walk back over the cancelled reply's prompt. List(limit 1, before=id)
-		// yields exactly the row before the anchor (chronological page of one);
-		// only a user row qualifies as the exchange head — anything else means
-		// the assistant row stands alone, so truncate from the row itself.
-		if prev, err := d.Store.Messages.List(r.Context(), c.ID, 1, msgID); err == nil &&
+		if p, perr := d.Store.Messages.Get(r.Context(), c.ID, m.ParentID); perr == nil && p.Role == "user" {
+			head = p
+		} else if prev, lerr := d.Store.Messages.List(r.Context(), c.ID, 1, m.ID); lerr == nil &&
 			len(prev) == 1 && prev[0].Role == "user" {
-			from = prev[0].ID
+			head = prev[0] // legacy row without a parent pointer
 		}
 	}
+
+	// Everything from the retracted turn forward goes. Branch data: every
+	// sibling version of the turn plus its continuations (later turns live
+	// inside the sub-tree). Legacy linear rows: truncate inclusive.
 	before, err := d.Store.Messages.Count(r.Context(), c.ID)
 	if err != nil {
 		d.fail(w, r, err)
 		return
 	}
-	if err := d.Store.Messages.DeleteFrom(r.Context(), c.ID, from); err != nil {
-		d.fail(w, r, err)
-		return
+	if head.ParentID == "" {
+		if err := d.Store.Messages.DeleteFrom(r.Context(), c.ID, head.ID); err != nil &&
+			!errors.Is(err, store.ErrNotFound) {
+			d.fail(w, r, err)
+			return
+		}
+	} else {
+		var targets []*store.Message
+		siblings, err := d.Store.Messages.Children(r.Context(), c.ID, head.ParentID)
+		if err != nil {
+			d.fail(w, r, err)
+			return
+		}
+		headSeen := false
+		for _, s := range siblings {
+			if s.Role != head.Role {
+				continue // only versions of the retracted turn itself vanish
+			}
+			if s.ID == head.ID {
+				headSeen = true
+			}
+			targets = append(targets, s)
+		}
+		if !headSeen { // head not among siblings (stale parent pointer)
+			targets = append(targets, head)
+		}
+		for _, s := range targets {
+			if _, derr := d.Store.Messages.DeleteSubtree(r.Context(), c.ID, s.ID); derr != nil {
+				d.fail(w, r, derr)
+				return
+			}
+		}
 	}
 	after, err := d.Store.Messages.Count(r.Context(), c.ID)
 	if err != nil {
 		d.fail(w, r, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]int{"deleted": before - after})
+	deleted := before - after
+
+	// Leaf: newest surviving continuation of the parent turn (or the parent
+	// itself once its whole version slot is gone), else an empty chat.
+	newLeaf := ""
+	if after > 0 && head.ParentID != "" {
+		if leaf, lerr := d.Store.Messages.DeepestChild(r.Context(), c.ID, head.ParentID); lerr == nil {
+			newLeaf = leaf
+		}
+		if newLeaf == "" {
+			newLeaf = head.ParentID
+		}
+	}
+	if err := d.Store.Chats.SetLeaf(r.Context(), c.ID, newLeaf); err != nil && !errors.Is(err, store.ErrNotFound) {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]int{"deleted": deleted})
 }

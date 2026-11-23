@@ -87,7 +87,7 @@ func (d *Deps) handleExtract(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusNotFound, "chat not found")
 		return
 	}
-	transcript := buildTranscript(r.Context(), d.Store, chat.ID)
+	transcript := buildTranscript(r.Context(), d.Store, chat.ID, chat.LeafID)
 	prov, modelID, err := d.taskTarget(r.Context())
 	if err != nil {
 		d.fail(w, r, err)
@@ -204,50 +204,92 @@ const extractRowMaxBytes = 4 << 10
 
 // buildTranscript renders the chat's latest extractMaxMessages user/assistant
 // turns as "Role: content" lines, keeping the newest tail that fits within
-// extractTranscriptMaxBytes (the latest turn is always kept). Errored turns
-// carry no real content and are skipped. Rows stream newest-first straight
-// from SQL — role/error filtering and per-row content truncation happen at
-// the database, never as whole-row materialization — and the byte budget is
-// applied while streaming, so at most the kept tail (~24 KiB + one row) is
-// ever assembled in memory.
-func buildTranscript(ctx context.Context, st *store.Store, chatID string) string {
-	rows, err := st.DB.QueryContext(ctx,
-		`SELECT role, substr(CAST(content AS BLOB), ?1, ?2) FROM messages
-		  WHERE chat_id = ?3 AND error IS NULL AND role IN ('user', 'assistant')
-		  ORDER BY rowid DESC LIMIT ?4`,
-		1, extractRowMaxBytes, chatID, extractMaxMessages)
-	if err != nil {
-		slog.Warn("memory: load transcript failed", "chat_id", chatID, "err", err)
-		return ""
+// extractTranscriptMaxBytes (the latest turn is always kept). The transcript
+// follows the ACTIVE BRANCH (root→leaf) when leafID names a live row, so
+// sibling versions never interleave into the extractor's view; otherwise it
+// falls back to the linear rowid walk. Errored turns carry no real content
+// and are skipped.
+func buildTranscript(ctx context.Context, st *store.Store, chatID, leafID string) string {
+	linear := func() (*sql.Rows, error) {
+		return st.DB.QueryContext(ctx,
+			`SELECT role, substr(CAST(content AS BLOB), ?1, ?2) FROM messages
+			  WHERE chat_id = ?3 AND error IS NULL AND role IN ('user', 'assistant')
+			  ORDER BY rowid DESC LIMIT ?4`,
+			1, extractRowMaxBytes, chatID, extractMaxMessages)
 	}
-	defer rows.Close()
-	kept := []string{} // newest-first; restored to chronological order below
-	used := 0
-	for rows.Next() {
-		var role, content string
-		if err := rows.Scan(&role, &content); err != nil {
-			slog.Warn("memory: read transcript row failed", "chat_id", chatID, "err", err)
+	// stream drains a newest-first rowset into transcript lines under the
+	// byte budget; rows (ids only) stream from SQL and per-row content is
+	// substr-capped at the database, so at most the kept tail (~24 KiB + one
+	// row) is ever assembled in memory.
+	stream := func(rows *sql.Rows) (kept []string, seen int, err error) {
+		defer rows.Close()
+		kept = []string{}
+		used := 0
+		for rows.Next() {
+			var role, content string
+			if err := rows.Scan(&role, &content); err != nil {
+				return nil, seen, err
+			}
+			seen++
+			content = strings.TrimSpace(trimPartialRune(content))
+			if content == "" {
+				continue
+			}
+			if role == "user" {
+				role = "User"
+			} else {
+				role = "Assistant"
+			}
+			line := role + ": " + content
+			if len(kept) > 0 && used+len(line)+1 > extractTranscriptMaxBytes {
+				break
+			}
+			used += len(line) + 1
+			kept = append(kept, line)
+		}
+		return kept, seen, rows.Err()
+	}
+
+	var kept []string
+	if leafID != "" {
+		rows, err := st.DB.QueryContext(ctx,
+			`WITH RECURSIVE chain(id, parent, depth) AS (
+			   SELECT id, parent_id, 0 FROM messages WHERE chat_id = ?3 AND id = ?4
+			   UNION ALL
+			   SELECT m.id, m.parent_id, c.depth+1 FROM messages m
+			     JOIN chain c ON m.chat_id = ?3 AND m.id = c.parent
+			  WHERE c.depth < 100000
+			 )
+			 SELECT m.role, substr(CAST(m.content AS BLOB), ?1, ?2)
+			   FROM messages m JOIN chain c ON m.id = c.id
+			  WHERE m.error IS NULL AND m.role IN ('user', 'assistant')
+			  ORDER BY c.depth DESC LIMIT ?5`,
+			1, extractRowMaxBytes, chatID, leafID, extractMaxMessages)
+		if err != nil {
+			slog.Warn("memory: load transcript failed", "chat_id", chatID, "err", err)
 			return ""
 		}
-		content = strings.TrimSpace(trimPartialRune(content))
-		if content == "" {
-			continue
+		var seen int
+		kept, seen, err = stream(rows)
+		if err != nil {
+			slog.Warn("memory: stream transcript failed", "chat_id", chatID, "err", err)
+			return ""
 		}
-		if role == "user" {
-			role = "User"
-		} else {
-			role = "Assistant"
+		if seen == 0 { // leaf row is gone — the linear walk is the honest fallback
+			leafID = ""
 		}
-		line := role + ": " + content
-		if len(kept) > 0 && used+len(line)+1 > extractTranscriptMaxBytes {
-			break
-		}
-		used += len(line) + 1
-		kept = append(kept, line)
 	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("memory: stream transcript failed", "chat_id", chatID, "err", err)
-		return ""
+	if leafID == "" {
+		rows, err := linear()
+		if err != nil {
+			slog.Warn("memory: load transcript failed", "chat_id", chatID, "err", err)
+			return ""
+		}
+		kept, _, err = stream(rows)
+		if err != nil {
+			slog.Warn("memory: stream transcript failed", "chat_id", chatID, "err", err)
+			return ""
+		}
 	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]

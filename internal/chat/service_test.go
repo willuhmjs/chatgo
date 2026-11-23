@@ -155,15 +155,24 @@ func newEnv(t *testing.T, fc *fakeClient, contextLen int, taskModel string) (*Se
 	return svc, st, "c1"
 }
 
+// seed appends messages exactly the way production writes them: each row
+// parents the previous one and the chat's leaf lands on the newest row.
 func seed(t *testing.T, st *store.Store, chatID string, msgs ...[2]string) []*store.Message {
 	t.Helper()
 	var out []*store.Message
+	var prev string
 	for _, p := range msgs {
-		m := &store.Message{ChatID: chatID, Role: p[0], Content: p[1]}
+		m := &store.Message{ChatID: chatID, Role: p[0], Content: p[1], ParentID: prev}
 		if err := st.Messages.Append(context.Background(), m); err != nil {
 			t.Fatal(err)
 		}
+		prev = m.ID
 		out = append(out, m)
+	}
+	if prev != "" {
+		if err := st.Chats.SetLeaf(context.Background(), chatID, prev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return out
 }
@@ -838,4 +847,103 @@ func TestTurnWorkersReleaseGoroutines(t *testing.T) {
 	if n := runtime.NumGoroutine(); n > base+8 {
 		t.Fatalf("goroutine count grew by %d across 10 turns (retention leak?)", n-base)
 	}
+}
+
+// TestSendBranching pins the ChatGPT-style version tree: regenerate lands as
+// a SIBLING (nothing is deleted), the leaf follows the newest turn, and
+// DeepestChild re-lands a branch switch on its newest continuation (OWUI's
+// getDeepestChildId).
+func TestSendBranching(t *testing.T) {
+	fc := &fakeClient{chunks: append(sayChunks("answer two v2"), stopChunk(5, 2))}
+	svc, st, chatID := newEnv(t, fc, 4096, "")
+	ctx := context.Background()
+	seed(t, st, chatID,
+		[2]string{"user", "one"}, [2]string{"assistant", "reply1"},
+		[2]string{"user", "two"}, [2]string{"assistant", "reply2"})
+	msgs, err := st.Messages.List(ctx, chatID, 500, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u2, a2 := msgs[2], msgs[3]
+
+	// OWUI-style assistant regeneration (branch): a sibling answer under the
+	// same user row; the old version and everything else survive.
+	collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "two"},
+		SendOpts{From: a2.ID, Branch: true}))
+	msgs, _ = st.Messages.List(ctx, chatID, 500, "")
+	if len(msgs) != 5 {
+		t.Fatalf("rows after sibling regen = %d, want 5 (nothing deleted)", len(msgs))
+	}
+	a3 := msgs[4]
+	if a3.ParentID != u2.ID || a3.Content != "answer two v2" {
+		t.Fatalf("sibling answer = %+v (parent %q, want %q)", a3, a3.ParentID, u2.ID)
+	}
+	if leaf := chatLeafID(t, st, chatID); leaf != a3.ID {
+		t.Fatalf("leaf after regen = %q, want %q", leaf, a3.ID)
+	}
+	path, err := st.Messages.Path(ctx, chatID, a3.ID)
+	if err != nil || len(path) != 4 || path[3].ID != a3.ID || path[2].ID != u2.ID {
+		t.Fatalf("branch path wrong: len=%d err=%v", len(path), err)
+	}
+	if _, err := st.Messages.Get(ctx, chatID, a2.ID); err != nil {
+		t.Fatalf("old version deleted: %v", err)
+	}
+
+	// User-message edit (branch): the replacement siblings the edited user row
+	// and carries a fresh answer; the old exchange stays intact.
+	fc.chunks = append(sayChunks("replied"), stopChunk(1, 1))
+	collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "two (edited)"},
+		SendOpts{From: u2.ID, Branch: true}))
+	msgs, _ = st.Messages.List(ctx, chatID, 500, "")
+	if len(msgs) != 7 {
+		t.Fatalf("rows after user edit = %d, want 7", len(msgs))
+	}
+	u2b, a2b := msgs[5], msgs[6]
+	if u2b.ParentID != u2.ParentID || u2b.Role != "user" {
+		t.Fatalf("edited user not a sibling of the original: %+v", u2b)
+	}
+	if a2b.ParentID != u2b.ID {
+		t.Fatalf("answer parent = %q, want %q", a2b.ParentID, u2b.ID)
+	}
+
+	// Switching versions moves the chat leaf; OWUI's getDeepestChildId means
+	// landing on a user version continues into its NEWEST answer (a3 under
+	// u2), so a switch first resolves the sibling's deepest continuation.
+	switchTo, err := st.Messages.DeepestChild(ctx, chatID, u2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchTo != a3.ID {
+		t.Fatalf("DeepestChild(u2) = %q, want %q (newest answer under v1 user row)", switchTo, a3.ID)
+	}
+	if err := st.Chats.SetLeaf(ctx, chatID, switchTo); err != nil {
+		t.Fatal(err)
+	}
+	path, err = st.Messages.Path(ctx, chatID, switchTo)
+	if err != nil || len(path) != 4 || path[3].ID != a3.ID || path[2].ID != u2.ID {
+		t.Fatalf("switched path wrong: len=%d err=%v", len(path), err)
+	}
+
+	// Continuing from the switched leaf hangs the new turn under a3 and
+	// leaves the other branch untouched.
+	collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "three"}, SendOpts{}))
+	msgs, _ = st.Messages.List(ctx, chatID, 500, "")
+	if len(msgs) != 9 {
+		t.Fatalf("rows = %d, want 9", len(msgs))
+	}
+	if msgs[7].ParentID != a3.ID {
+		t.Fatalf("continuation parent = %q, want %q", msgs[7].ParentID, a3.ID)
+	}
+	if leaf := chatLeafID(t, st, chatID); leaf != msgs[8].ID {
+		t.Fatalf("leaf = %q, want %q", leaf, msgs[8].ID)
+	}
+}
+
+func chatLeafID(t *testing.T, st *store.Store, chatID string) string {
+	t.Helper()
+	c, err := st.Chats.Get(context.Background(), chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.LeafID
 }

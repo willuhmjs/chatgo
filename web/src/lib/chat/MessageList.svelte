@@ -14,6 +14,7 @@
 
   let {
     messages,
+    versionInfo,
     busy = false,
     ratings,
     wordmark = 'ChatGo',
@@ -22,8 +23,12 @@
     onrate,
     onratecomment,
     onfork,
+    onversion,
   }: {
     messages: UIMessage[];
+    /** id → version slot of the message among its (parent, role) siblings
+     *  (computed from the FULL branch tree by the owner of that state) */
+    versionInfo?: Map<string, { i: number; n: number; ids: string[] }>;
     busy?: boolean;
     ratings?: RatingsMap;
     wordmark?: string;
@@ -32,7 +37,13 @@
     onrate?: (m: UIMessage, value: 1 | -1) => void;
     onratecomment?: (m: UIMessage, comment: string) => void;
     onfork?: (m: UIMessage) => void;
+    onversion?: (m: UIMessage, dir: -1 | 1) => void;
   } = $props();
+
+  const versionsOf = (m: UIMessage): { i: number; n: number } | null => {
+    const v = versionInfo?.get(m.id);
+    return v && v.n > 1 ? { i: v.i, n: v.n } : null;
+  };
 
   const groups = $derived(groupMessages(messages));
 
@@ -200,6 +211,7 @@
                 {busy}
                 editing={editingId === m.id}
                 rating={ratings?.[m.id] ?? null}
+                versions={versionsOf(m)}
                 {onretry}
                 {onedit}
                 oneditopen={(msg) => (editingId = msg.id)}
@@ -207,6 +219,7 @@
                 {onrate}
                 {onratecomment}
                 {onfork}
+                {onversion}
               />
             </div>
           {/each}
@@ -220,11 +233,13 @@
                 message={m}
                 {busy}
                 rating={ratings?.[m.id] ?? null}
+                versions={versionsOf(m)}
                 {onretry}
                 {onedit}
                 {onrate}
                 {onratecomment}
                 {onfork}
+                {onversion}
               />
             </div>
           {/each}

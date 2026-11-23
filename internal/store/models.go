@@ -85,7 +85,8 @@ type ModelRow struct {
 	Enabled    bool
 }
 
-// Chat is a row in `chats`.
+// Chat is a row in `chats`. LeafID is the id of the active branch's newest
+// message ("" on legacy chats whose history is still rowid-linear).
 type Chat struct {
 	ID         string
 	UserID     string
@@ -96,17 +97,20 @@ type Chat struct {
 	ParamsJSON string // default "{}"
 	Pinned     bool
 	ShareToken *string
+	LeafID     string
 	DeletedAt  *int64
 	CreatedAt  int64
 	UpdatedAt  int64
 }
 
 // Message is a row in `messages`. SourcesJSON is a JSON array of
-// {title,url} (SSE `sources` items); "" when none.
+// {title,url} (SSE `sources` items); "" when none. ParentID links the
+// message into the chat's branch tree ("" = root/legacy-linear).
 type Message struct {
 	ID          string
 	ChatID      string
 	Role        string // user|assistant|system
+	ParentID    string
 	Content     string
 	SourcesJSON string
 	Error       *string

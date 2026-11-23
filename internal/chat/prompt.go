@@ -73,11 +73,16 @@ func (s *Service) modelContextLen(ctx context.Context, chat *store.Chat) int {
 	return defaultContextLen
 }
 
-// history returns every message of the chat (total, ascending), the effective
-// history (everything after the newest summary's up_to_message_id) and that
-// summary (nil when none).
-func (s *Service) history(ctx context.Context, chatID string) (total, effective []*store.Message, summary *store.Summary, err error) {
-	total, err = s.Store.Messages.List(ctx, chatID, 500, "")
+// history returns the conversation the next turn is built on. With leafID set
+// it is the branch chain root→leaf (Open WebUI parentId-tree semantics); with
+// leafID == "" it degrades to the newest 500 rows (linear legacy reads and
+// truncate-mode flows whose leaf was just deleted). The returned `total` is
+// that same list; `effective` is everything after the newest summary's
+// up_to_message_id — or the whole list when no summary is on this branch
+// (a summary from a sibling branch describes content this path doesn't have,
+// so it is dropped rather than duplicated).
+func (s *Service) history(ctx context.Context, chatID, leafID string) (total, effective []*store.Message, summary *store.Summary, err error) {
+	total, err = s.Store.Messages.CurrentPath(ctx, chatID, leafID, 500)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -89,6 +94,8 @@ func (s *Service) history(ctx context.Context, chatID string) (total, effective 
 	if summary != nil && summary.UpToMessageID != "" {
 		if idx := indexOfMessage(total, summary.UpToMessageID); idx >= 0 {
 			effective = total[idx+1:]
+		} else {
+			summary = nil // summary belongs to another branch — don't inject or duplicate
 		}
 	}
 	return total, effective, summary, nil

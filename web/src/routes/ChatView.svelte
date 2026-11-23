@@ -44,9 +44,51 @@
 
   let chat = $state<Chat | null>(null);
   let messages = $state<UIMessage[]>([]);
+  // Branch tree cursor: id of the active branch's newest message. The visible
+  // conversation is the parent chain ending here (Open WebUI model); sibling
+  // versions stay in `messages` and are reached via the version pager.
+  let leafId = $state('');
   let phase = $state<'loading' | 'ready' | 'notfound' | 'error'>('loading');
   let loadError = $state('');
   let drawerOpen = $state(false);
+
+  const byId = $derived(new Map(messages.map((m) => [m.id, m])));
+
+  /** The active branch root→leaf; falls back to the raw list for chats whose
+   *  rows carry no branch metadata (old server build / test fixtures). */
+  const visible = $derived.by((): UIMessage[] => {
+    if (!messages.length) return messages;
+    if (!leafId || !byId.has(leafId)) return messages;
+    const chain: UIMessage[] = [];
+    const seen = new Set<string>();
+    let cur: UIMessage | undefined = byId.get(leafId);
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      chain.push(cur);
+      const p = cur.parent_id || '';
+      cur = p ? byId.get(p) : undefined;
+    }
+    chain.reverse();
+    return chain;
+  });
+
+  function setLeafFromList(ms: UIMessage[]): void {
+    const cur = ms.find((m) => m.is_current);
+    leafId = cur?.id ?? (ms.length && ms.some((m) => m.parent_id) ? ms[ms.length - 1].id : '');
+  }
+
+  /** Light refetch (no loading phase): tree truth after subtree deletes. */
+  async function resync(): Promise<void> {
+    try {
+      const ms = await api.listMessages(id, undefined, 500);
+      if (id) {
+        messages = ms.map((m) => ({ ...m }));
+        setLeafFromList(messages);
+      }
+    } catch {
+      /* keep the current view; the next load will catch up */
+    }
+  }
 
   // wave-2 features (FE-CHATTER): 👍/👎 map hydrated per chat; affordances
   // hide quietly when their endpoint 404s on this server build
@@ -76,6 +118,7 @@
     loadError = '';
     chat = null;
     messages = [];
+    leafId = '';
     ratings = {};
     ratingsOk = true;
     // Ratings hydrate in parallel — never gates the chat from opening.
@@ -87,10 +130,11 @@
         if (seq === loadSeq && (err as api.ApiError)?.status === 404) ratingsOk = false;
       });
     try {
-      const [c, ms] = await Promise.all([api.getChat(id), api.listMessages(id)]);
+      const [c, ms] = await Promise.all([api.getChat(id), api.listMessages(id, undefined, 500)]);
       if (seq !== loadSeq) return;
       chat = c;
       messages = ms.map((m) => ({ ...m }));
+      setLeafFromList(messages);
       phase = 'ready';
       // First-run handoff: sidebar/new-chat stages a prompt for this chat
       // (takePendingPrompt, see docs/FE-SHELL-UI.md).
@@ -195,12 +239,20 @@
     return streamMsg;
   }
 
-  function makeHandlers() {
+  function makeHandlers(userMsg?: UIMessage) {
     return {
       meta: (data: unknown) => {
         const d = data as Partial<StreamMeta> | null;
         if (streamMsg && d?.message_id) {
+          const oldId = streamMsg.id;
+          if (d.user_message_id) {
+            // reconcile the optimistic user row with its persisted twin so the
+            // branch tree (parent_id links + pager siblings) is exact.
+            if (userMsg) userMsg.id = d.user_message_id;
+            streamMsg.parent_id = d.user_message_id;
+          }
           streamMsg.id = d.message_id;
+          if (leafId === oldId) leafId = d.message_id;
           if (d.chat_id) streamMsg.chat_id = d.chat_id;
         }
       },
@@ -266,7 +318,7 @@
       retractPending = false;
       const target = cid ? streamMsg : null;
       finishStream(userMsg);
-      if (cid && target) void retractExchange(cid, target, cid === id ? userMsg : undefined);
+      if (cid && target) void retractExchange(cid, target);
     }
   }
 
@@ -280,7 +332,7 @@
    * tail splice, so a fast resend during the await survives); failures stay
    * honest: console.warn and keep the rows.
    */
-  async function retractExchange(cid: string, assistant: UIMessage, userMsg?: UIMessage): Promise<void> {
+  async function retractExchange(cid: string, assistant: UIMessage): Promise<void> {
     const mid = assistant.id;
     if (isLocalId(mid)) return;
     // Small grace for the server to finish draining the canceled turn: its
@@ -302,53 +354,132 @@
         return;
       }
     }
-    const ai = messages.indexOf(assistant);
-    if (ai >= 0) messages.splice(ai, 1);
-    const ui = userMsg ? messages.indexOf(userMsg) : -1;
-    if (ui >= 0) messages.splice(ui, 1);
+    // The server retracts the whole version slot (every sibling version of the
+    // cancelled exchange + their subtrees) and re-lands the leaf beside it —
+    // a superset of these two local rows, so refetch the tree instead of a
+    // hand splice.
+    if (cid === id) void resync();
+  }
+
+  // Branch tree helpers ----------------------------------------------------
+  // sibling pagers: versions sharing (parent_id, role), newest last.
+  const versionInfo = $derived.by(() => {
+    const groups = new Map<string, string[]>();
+    for (const m of messages) {
+      if (!m.parent_id) continue;
+      const k = `${m.parent_id}|${m.role}`;
+      const arr = groups.get(k);
+      if (arr) arr.push(m.id);
+      else groups.set(k, [m.id]);
+    }
+    const info = new Map<string, { i: number; n: number; ids: string[] }>();
+    for (const ids of groups.values()) {
+      ids.forEach((mid, i) => info.set(mid, { i, n: ids.length, ids }));
+    }
+    return info;
+  });
+
+  /** Page to the ‹ prev / next › sibling version of `m` (Open WebUI model):
+   *  server lands on that version's deepest continuation and returns the new
+   *  leaf, so a mid-conversation switch keeps everything below intact. */
+  function pageVersion(m: UIMessage, dir: -1 | 1): void {
+    if (!id || stream.active || streamMsg) return;
+    const info = versionInfo.get(m.id);
+    if (!info || info.n < 2) return;
+    const target = info.ids[info.i + dir];
+    if (!target || target === m.id) return;
+    api
+      .switchBranch(id, target)
+      .then((r) => {
+        if (r?.leaf_id) leafId = r.leaf_id;
+      })
+      .catch(() => void resync());
   }
 
   function submit(body: SendMessageBody): void {
     // streamMsg stays set until the previous stream settles (abort race guard)
     if (!id || !chat || stream.active || streamMsg) return;
     const now = Math.floor(Date.now() / 1000);
+    const parent = leafId || (messages.length ? messages[messages.length - 1].id : '');
     messages.push({
       id: uid(),
       chat_id: id,
       role: 'user',
+      parent_id: parent,
       content: body.content,
       created_at: now,
       pending: true,
     });
     const userMsg = messages[messages.length - 1];
-    appendPlaceholder();
-    void runStream(send(id, body, makeHandlers()), userMsg);
-  }
-
-  /** Regenerate starting at this assistant message (drops it + the tail). */
-  function retry(m: UIMessage): void {
-    if (!id || stream.active || streamMsg) return;
-    const i = messages.indexOf(m);
-    if (i < 0) return;
-    messages.splice(i);
-    appendPlaceholder();
-    const search = (m.sources?.length ?? 0) > 0 ? true : undefined;
-    void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, { search }, makeHandlers()));
+    const ph = appendPlaceholder();
+    ph.parent_id = userMsg.id; // local id; `meta` reconciles to the server id
+    leafId = ph.id;
+    void runStream(send(id, body, makeHandlers(userMsg)), userMsg);
   }
 
   /**
-   * Edit a user message: optimistic replace, drop everything after it, then
-   * POST /regenerate?from=<userMsgId> with the new content (see
-   * docs/FE-CHAT-UI.md “regenerate semantics”).
+   * Regenerate this assistant message. `branch` mode keeps the old answer as a
+   * sibling version (paged with ‹ n/m ›); the tail after it is dropped from
+   * the visible chain but retained in the tree. Falls back to the legacy
+   * truncate-and-redo when the branch insert can't apply (e.g. an un-persisted
+   * local message, or an older server without branch support).
+   */
+  function retry(m: UIMessage): void {
+    if (!id || stream.active || streamMsg) return;
+    const search = (m.sources?.length ?? 0) > 0 ? true : undefined;
+    const canBranch = !isLocalId(m.id) && !!m.parent_id;
+    if (!canBranch) {
+      const i = messages.indexOf(m);
+      if (i < 0) return;
+      messages.splice(i);
+      const ph = appendPlaceholder();
+      ph.parent_id = i > 0 ? messages[i - 1].id : '';
+      leafId = ph.id;
+      void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, { search }, makeHandlers()));
+      return;
+    }
+    const ph = appendPlaceholder();
+    ph.parent_id = m.parent_id; // sibling beside the old answer
+    leafId = ph.id;
+    void runStream(regenerate(id, m.id, { search, branch: true }, makeHandlers()));
+  }
+
+  /**
+   * Edit a user message → branch. The old user turn and its descendants stay
+   * in the tree; a new sibling user turn is persisted (via regenerate from the
+   * user anchor with branch) and the assistant regenerates under it. Legacy
+   * fallback (no parent / older server): the original optimistic-replace +
+   * truncate-and-redo.
    */
   function edit(m: UIMessage, content: string): void {
     if (!id || stream.active || streamMsg) return;
-    const i = messages.indexOf(m);
-    if (i < 0) return;
-    m.content = content;
-    messages.splice(i + 1);
-    appendPlaceholder();
-    void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, { content }, makeHandlers()));
+    const canBranch = !isLocalId(m.id) && !!m.parent_id;
+    if (!canBranch) {
+      const i = messages.indexOf(m);
+      if (i < 0) return;
+      m.content = content;
+      messages.splice(i + 1);
+      const ph = appendPlaceholder();
+      ph.parent_id = m.id;
+      leafId = ph.id;
+      void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, { content }, makeHandlers(m)), m);
+      return;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const nu: UIMessage = {
+      id: uid(),
+      chat_id: id,
+      role: 'user',
+      parent_id: m.parent_id,
+      content,
+      created_at: now,
+      pending: true,
+    };
+    messages.push(nu);
+    const ph = appendPlaceholder();
+    ph.parent_id = nu.id; // `meta` renames nu to the server id + reparents ph
+    leafId = ph.id;
+    void runStream(regenerate(id, m.id, { content, branch: true }, makeHandlers(nu)), nu);
   }
 
   function stop(): void {
@@ -471,9 +602,11 @@
             >
           </div>
         {:else}
-          {#if messages.length}
+          {#if visible.length}
             <MessageList
-              {messages}
+              messages={visible}
+              {versionInfo}
+              onversion={pageVersion}
               wordmark={(() => {
                 const mid = chat?.model_id;
                 if (!mid) return 'ChatGo';

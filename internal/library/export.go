@@ -178,7 +178,7 @@ func (d *Deps) writeChatMarkdown(w io.Writer, ctx context.Context, c *store.Chat
 	if _, err := fmt.Fprintf(w, "- Exported: %s\n\n", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
-	return d.streamMessages(ctx, c.ID, func(m *store.Message) error {
+	return d.streamMessages(ctx, c.ID, c.LeafID, func(m *store.Message) error {
 		if _, err := fmt.Fprintf(w, "## %s · %s\n\n", m.Role,
 			time.Unix(m.CreatedAt, 0).UTC().Format(time.RFC3339)); err != nil {
 			return err
@@ -222,7 +222,7 @@ func (d *Deps) writeChatJSON(w io.Writer, ctx context.Context, c *store.Chat) er
 		return err
 	}
 	first := true
-	err = d.streamMessages(ctx, c.ID, func(m *store.Message) error {
+	err = d.streamMessages(ctx, c.ID, c.LeafID, func(m *store.Message) error {
 		blob, err := json.Marshal(toMessageJSON(m))
 		if err != nil {
 			return err
@@ -244,9 +244,40 @@ func (d *Deps) writeChatJSON(w io.Writer, ctx context.Context, c *store.Chat) er
 	return err
 }
 
-// streamMessages walks one chat's messages in rowid order (same order the
-// message API uses), scanning straight from the driver — one row resident.
-func (d *Deps) streamMessages(ctx context.Context, chatID string, fn func(*store.Message) error) error {
+// streamMessages walks one chat's messages in display order — the active
+// branch root→leaf when leafID is set, rowid-linear otherwise (and linear
+// again when the leaf row no longer exists) — scanning straight from the
+// driver, one row resident.
+func (d *Deps) streamMessages(ctx context.Context, chatID, leafID string, fn func(*store.Message) error) error {
+	if leafID != "" {
+		rows, err := d.Store.DB.QueryContext(ctx,
+			`WITH RECURSIVE chain(id, parent, depth) AS (
+			   SELECT id, parent_id, 0 FROM messages WHERE chat_id = ?1 AND id = ?2
+			   UNION ALL
+			   SELECT m.id, m.parent_id, c.depth+1 FROM messages m
+			     JOIN chain c ON m.chat_id = ?1 AND m.id = c.parent
+			  WHERE c.depth < 100000
+			 )
+			 SELECT m.id, m.chat_id, m.role, m.content, m.sources_json, m.error, m.tokens_in, m.tokens_out, m.created_at
+			   FROM messages m JOIN chain c ON m.id = c.id ORDER BY c.depth DESC`,
+			chatID, leafID)
+		if err != nil {
+			return err
+		}
+		empty := true
+		err = d.scanMessages(rows, func(m *store.Message) error {
+			empty = false
+			return fn(m)
+		})
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if !empty {
+			return nil
+		}
+		// leaf gone → fall through to the linear walk below.
+	}
 	rows, err := d.Store.DB.QueryContext(ctx,
 		`SELECT id, chat_id, role, content, sources_json, error, tokens_in, tokens_out, created_at
 		 FROM messages WHERE chat_id = ?1 ORDER BY rowid`, chatID)
@@ -254,6 +285,11 @@ func (d *Deps) streamMessages(ctx context.Context, chatID string, fn func(*store
 		return err
 	}
 	defer rows.Close()
+	return d.scanMessages(rows, fn)
+}
+
+// scanMessages drains a message rowset, one row at a time, into fn.
+func (d *Deps) scanMessages(rows *sql.Rows, fn func(*store.Message) error) error {
 	for rows.Next() {
 		var m store.Message
 		var e sql.NullString
