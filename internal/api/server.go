@@ -50,7 +50,7 @@ type Server struct {
 
 // New builds the mux, mounts the route groups and wraps the middleware chain:
 //
-//	recover → requestLog → securityHeaders → capJSONBody → authPolicy → mux
+//	recover → requestLog → securityHeaders → capJSONBody → originGuard → authPolicy → mux
 //
 // It returns an error when a feature plane's schema init fails (a broken
 // boot must not serve half a feature).
@@ -95,7 +95,7 @@ func New(d Deps) (*Server, error) {
 	// SPA fallback (must stay last; /api/* mistakes 404 as JSON below).
 	mux.HandleFunc("GET /", spaHandler(d.Auth))
 
-	handler := Recover(RequestLog(SecurityHeaders(CapJSONBody(httpx.MaxJSONBody)(AuthPolicy(d.Auth, mux)))))
+	handler := Recover(RequestLog(SecurityHeaders(CapJSONBody(httpx.MaxJSONBody)(OriginGuard(AuthPolicy(d.Auth, mux))))))
 
 	addr := d.Cfg.Addr()
 	srv := &http.Server{

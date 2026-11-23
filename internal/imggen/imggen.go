@@ -238,6 +238,13 @@ func isImageModel(modelID string) bool {
 	return false
 }
 
+// errMsgKeyUnreadable mirrors the chat send-path sentinel (SECREV4 M3b): a
+// row whose sealed key won't decrypt would otherwise dial the upstream
+// WITHOUT an Authorization header, and the provider's 401 would then be
+// blamed on the admin's API key ("check this provider's API key") when the
+// real fault is our unreadable seal. Refuse before any dial instead.
+const errMsgKeyUnreadable = "the stored provider key can't be decrypted — the server secret changed after it was saved; re-enter the API key in Admin → Providers"
+
 // pickProvider resolves the provider (+ best model id, "" = let the
 // upstream default). Returns (client-safe message, HTTP status) on failure.
 func (h *handler) pickProvider(ctx context.Context, explicitID string) (*store.Provider, string, string, int) {
@@ -251,6 +258,9 @@ func (h *handler) pickProvider(ctx context.Context, explicitID string) (*store.P
 		}
 		if !p.Enabled {
 			return nil, "", "provider is disabled", http.StatusBadRequest
+		}
+		if p.KeyUnreadable {
+			return nil, "", errMsgKeyUnreadable, http.StatusServiceUnavailable
 		}
 		return p, h.bestImageModelFor(ctx, p.ID), "", 0
 	}
@@ -266,8 +276,8 @@ func (h *handler) pickProvider(ctx context.Context, explicitID string) (*store.P
 			continue
 		}
 		p, err := h.d.Store.Providers.Get(ctx, m.ProviderID)
-		if err != nil || !p.Enabled {
-			continue
+		if err != nil || !p.Enabled || p.KeyUnreadable {
+			continue // unreadable seals are skipped, never dialed empty (M3b)
 		}
 		return p, m.ModelID, "", 0
 	}

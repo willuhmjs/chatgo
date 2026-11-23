@@ -69,7 +69,12 @@ jobs:
 
       - name: govulncheck (Go deps against the official vuln DB)
         # Blocking: reachability-based, no false positives in practice.
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # Pinned to a released tag (supply-chain, matches this workflow's SHA
+        # policy): @latest is an unreviewed moving target that could ship a
+        # broken scanner (or worse) into a blocking gate.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: gosec (Go static security analysis)
         # Installed ad-hoc instead of via an action to avoid pinning a

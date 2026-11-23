@@ -35,11 +35,14 @@ func (r *ProvidersRepo) Insert(ctx context.Context, p *Provider) error {
 // Get fetches a provider with its APIKey decrypted in memory. A row whose
 // sealed key cannot be decrypted is returned with APIKey == "" and
 // KeyUnreadable == true (no error), so a rotated SESSION_SECRET never bricks
-// the admin UI; chat callers that need the key treat the flag like "no key
-// configured" and send the upstream request unauthenticated.
+// the admin UI. Callers that dispatch upstream must treat the flag as a hard
+// refusal (SECREV4 M3b), NOT as "no key configured".
 func (r *ProvidersRepo) Get(ctx context.Context, id string) (*Provider, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+providerCols+` FROM providers WHERE id = ?1`, id)
-	p, _, err := r.scanWithKey(row)
+	p, enc, err := r.scanWithKey(row)
+	if p != nil {
+		p.sealedKey = enc
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -56,10 +59,11 @@ func (r *ProvidersRepo) List(ctx context.Context) ([]*Provider, error) {
 	defer rows.Close()
 	var out []*Provider
 	for rows.Next() {
-		p, _, err := r.scanWithKey(rows)
+		p, enc, err := r.scanWithKey(rows)
 		if err != nil {
 			return nil, err
 		}
+		p.sealedKey = enc
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -68,10 +72,21 @@ func (r *ProvidersRepo) List(ctx context.Context) ([]*Provider, error) {
 // Update overwrites name/base_url/api_key_enc/enabled/is_default/sort.
 // An empty APIKey means "clear the stored key"; set it from Get() output
 // when you want to keep the existing key.
+//
+// Exception (SECREV4 M1): a row read via Get/List whose sealed key is
+// currently UNREADABLE (rotated SESSION_SECRET) keeps its stored blob
+// verbatim whenever no new key was supplied — re-sealing the empty
+// in-memory key would NULL the column and destroy the only copy forever,
+// making the documented recovery (rotate the secret back) impossible. Such
+// a row can only ever gain a NEW key (repair) or be deleted; "clear" has no
+// meaning for a key the server cannot read anyway.
 func (r *ProvidersRepo) Update(ctx context.Context, p *Provider) error {
 	enc, err := r.seal(p.APIKey)
 	if err != nil {
 		return err
+	}
+	if enc == nil && p.KeyUnreadable && len(p.sealedKey) > 0 {
+		enc = p.sealedKey // carry the existing ciphertext through untouched
 	}
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE providers SET name = ?2, base_url = ?3, api_key_enc = ?4, enabled = ?5, is_default = ?6, sort = ?7

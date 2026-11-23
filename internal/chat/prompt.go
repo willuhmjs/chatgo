@@ -172,16 +172,42 @@ func splitTaskModel(spec string) (providerID, modelID string, ok bool) {
 	return spec[:i], spec[i+1:], true
 }
 
-// taskProvider fetches + decrypts the TaskModel's provider row.
-func (s *Service) taskProvider(ctx context.Context, providerID string) (providers.Provider, error) {
+// taskProvider fetches + decrypts the TaskModel's provider row and applies
+// the SAME kill-switch policy the send path enforces (service.go step 7/7b):
+// an admin's provider disable or per-model disable must stop ALL traffic
+// immediately (SECREV4 F-1/M3; the S2-1 send-path fix never reached these
+// utility paths, so every new chat kept spending a disabled task model's
+// key on titles, and long chats on summaries).
+//
+// Callers (title.go, summarize.go) treat every error exactly like the
+// KeyUnreadable one already does — log a warning, fall back to the plain
+// title / skip the summary. A background utility never fails the user's
+// turn.
+func (s *Service) taskProvider(ctx context.Context, providerID, modelID string) (providers.Provider, error) {
 	row, err := s.Store.Providers.Get(ctx, providerID)
 	if err != nil {
 		return providers.Provider{}, err
+	}
+	if !row.Enabled {
+		return providers.Provider{}, errors.New(errMsgProviderDisabled)
 	}
 	if row.KeyUnreadable {
 		// Same law as the send path: never fire upstream with an empty key
 		// and blame the provider for the resulting 401.
 		return providers.Provider{}, errors.New(errMsgKeyUnreadable)
+	}
+	// Per-model kill: gate only when the models cache carries an explicit
+	// disabled row for the task model. Task models are pinned by id in
+	// admin settings and may legitimately never appear in a synced catalog
+	// (sync may also drop rows later), so an UNCACHED pair is no verdict —
+	// only enabled = 0 means "the admin killed this model".
+	found, enabled, err := s.Store.Models.ModelState(ctx, providerID, modelID)
+	if err != nil {
+		slog.Warn("chat: task model cache lookup failed", "provider_id", providerID, "model_id", modelID, "error", err)
+		return providers.Provider{}, err // fail-closed: never dispatch blind
+	}
+	if found && !enabled {
+		return providers.Provider{}, errors.New(errMsgModelDisabled)
 	}
 	return providerFromRow(row), nil
 }

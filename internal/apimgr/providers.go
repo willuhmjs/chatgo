@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"chatgo/internal/api/httpx"
@@ -313,23 +314,48 @@ func (h *providersH) del(w http.ResponseWriter, r *http.Request, id string) {
 // new to the cache start enabled=true. Models that vanished upstream are
 // dropped (the whole cache row-set is replaced).
 func (h *providersH) handleSync(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.d.requireAdmin(w, r); !ok {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
 		return
 	}
-	h.sync(w, r, r.PathValue("id"))
+	h.sync(w, r, r.PathValue("id"), actor)
 }
 
-func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string) {
+// syncTimeout bounds the upstream ListModels call (SECREV4 M4): a hung
+// provider used to hold the request — and its goroutine — open indefinitely.
+// Var so tests can shrink it. Streaming paths are deliberately NOT bounded
+// this way (a slow stream is healthy); only these non-streaming admin pings.
+var syncTimeout = 60 * time.Second
+
+// errMsgKeyUnreadable mirrors the chat send-path sentinel (SECREV4 M3b): a
+// stored seal that won't decrypt must be reported honestly, not dialed with
+// an empty bearer.
+const errMsgKeyUnreadable = "the stored provider key can't be decrypted — the server secret changed after it was saved; re-enter the API key in Admin → Providers"
+
+func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string, actor *store.User) {
 	p, err := h.d.Store.Providers.Get(r.Context(), id)
 	if err != nil {
 		providerLookupFail(w, r, err)
 		return
 	}
-	models, err := h.d.Providers.ListModels(r.Context(), p.BaseURL, p.APIKey)
+	if p.KeyUnreadable {
+		httpx.ErrorJSON(w, http.StatusServiceUnavailable, errMsgKeyUnreadable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), syncTimeout)
+	defer cancel()
+	models, err := h.d.Providers.ListModels(ctx, p.BaseURL, p.APIKey)
 	if err != nil {
 		// Log server-side only (upstream errors may embed URLs); client gets a
 		// generic, safe message (contract: internals never leak).
 		slog.Error("providers: sync failed", "provider_id", p.ID, "err", err)
+		audit.Record(r.Context(), h.d.Store.DB, actor, "provider.sync",
+			p.Name+" · sync failed", h.d.Auth.RequestIP(r))
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && r.Context().Err() == nil {
+			httpx.ErrorJSON(w, http.StatusGatewayTimeout,
+				"provider did not answer within "+strconv.Itoa(int(syncTimeout.Seconds()))+"s — try again or check the base_url")
+			return
+		}
 		httpx.ErrorJSON(w, http.StatusBadGateway, "could not fetch models from provider")
 		return
 	}
@@ -361,6 +387,11 @@ func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string) {
 		httpx.InternalError(w, r, err)
 		return
 	}
+	// SECREV4 L2: syncing is an admin action that changes what every user can
+	// select — it belongs in the audit trail like create/update/delete. The
+	// detail carries counts only, never upstream payload text.
+	audit.Record(r.Context(), h.d.Store.DB, actor, "provider.sync",
+		p.Name+" · "+strconv.Itoa(len(rows))+" models ("+strconv.Itoa(added)+" new)", h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, map[string]int{"count": len(rows), "added": added})
 }
 

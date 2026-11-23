@@ -178,12 +178,11 @@ func (a *Auth) Register(ctx context.Context, ip, email, password, name string) (
 		return nil, err
 	}
 
-	// ADMIN_EMAIL bootstraps its owner deterministically: no first-wins race,
-	// works even when the policy is "approve" or other users already exist.
-	if a.Cfg.AdminEmail != "" && email == a.Cfg.AdminEmail {
-		role = store.RoleAdmin
-	}
-
+	// Promotion is bootstrap-only: insertUserBootstrap (inside the same insert
+	// transaction) grants admin iff this is the first account ever. ADMIN_EMAIL
+	// deliberately does NOT grant admin here — otherwise whoever registers that
+	// address first (self-registration, or an OIDC provisioning auto-create) owns
+	// the instance.
 	release, err := a.AcquireBcrypt(ctx)
 	if err != nil {
 		return nil, err

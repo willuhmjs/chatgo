@@ -62,9 +62,18 @@ type Provider struct {
 	// KeyUnreadable is true when the stored api_key_enc blob fails to
 	// decrypt (SESSION_SECRET rotated or blob corrupted): APIKey is "" but
 	// the row stays listable so the admin UI can still render it, set a new
-	// key, or delete it. Callers that actually need the key should treat
-	// this like "no key configured" (send the request without auth).
+	// key, or delete it. Callers that actually need the key must refuse the
+	// dispatch outright (SECREV4 M3b) — never send unauthenticated and
+	// blame the provider for its 401.
 	KeyUnreadable bool
+
+	// sealedKey carries the raw api_key_enc blob exactly as Get/List read
+	// it. Update rewrites it verbatim when the caller holds no new key to
+	// seal for a KeyUnreadable row, so an unrelated admin edit (rename,
+	// enable, sort, default flip) can never NULL the column and destroy the
+	// only copy of a key the current SESSION_SECRET merely can't decrypt
+	// (SECREV4 M1). Never log, serialize, or send it anywhere.
+	sealedKey []byte
 }
 
 // ModelRow is a row in `models` (cache of a provider's /v1/models).

@@ -43,7 +43,7 @@ type Config struct {
 	TrustedURLNets []string // CIDRs allowed for provider/SearXNG URLs beyond public internet
 	AllowLoopback  bool     // for in-cluster SearXNG; default true
 	TrustedProxies []string // reverse-proxy CIDRs whose X-Forwarded-For may be believed
-	AdminEmail     string   // optional: accounts with this email are created as admin (bootstrap without first-wins race)
+	AdminEmail     string   // deprecated: ignored. Promotion to admin is bootstrap-only (first account ever); see internal/auth/local.go
 	SecureCookie   string   // SECURE_COOKIE: "true"=always Secure, "false"=never, ""=auto (PUBLIC_URL https or X-Forwarded-Proto https)
 
 	Version string

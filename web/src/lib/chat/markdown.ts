@@ -170,6 +170,13 @@ export const PURIFY_CFG: NonNullable<Parameters<typeof DOMPurify.sanitize>[1]> =
     'dynsrc',
     'lowsrc',
   ],
+  // Keep an attribute mirror (data-named-* for id/name) so re-sanitising an
+  // already-sanitised string is lossless. Without it DOMPurify's first pass
+  // moves id → data-ps-md-0 and deletes the id attribute, so a second pass
+  // (share/compare re-renders chat markdown) can no longer see them. This does
+  // NOT weaken the profile: FORBID_TAGS still drops svg/script/etc outright,
+  // and the data-named-* mirrors are inert attributes.
+  SANITIZE_NAMED_PROPS: true,
 };
 
 // ---------- post-processing (tables scroll-x, safe external links) ----------

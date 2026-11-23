@@ -326,11 +326,10 @@ func (a *Auth) oidcUser(ctx context.Context, email string, claims oidcClaims) (*
 	default:
 		return nil, ErrRegistrationClosed
 	}
-	// ADMIN_EMAIL provisions its owner as admin deterministically (mirrors
-	// local.go); no first-wins race either way.
-	if a.Cfg.AdminEmail != "" && email == a.Cfg.AdminEmail {
-		role = store.RoleAdmin
-	}
+	// Promotion is bootstrap-only (insertUserBootstrap grants admin iff this is
+	// the first account ever). ADMIN_EMAIL deliberately does NOT grant admin
+	// here: an attacker who can complete an SSO round trip with the owner's
+	// address would otherwise get admin on a running instance.
 
 	name := claims.Name
 	if name == "" {

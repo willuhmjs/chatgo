@@ -38,6 +38,8 @@ type env struct {
 	upstreamURL string
 	dataDir     string
 	cookie      string
+	deps        *Deps // the live Deps (Store swapped in key-unreadable tests)
+	dsn         string
 	mu          sync.Mutex
 	reqBody     string // raw body of the last upstream request
 	body        string // canned response body
@@ -76,7 +78,9 @@ func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
 		t.Fatalf("auth.New: %v", err)
 	}
 
-	e := &env{t: t, st: st, status: 200, dataDir: cfg.DataDir}
+	e := &env{t: t, st: st, status: 200, dataDir: cfg.DataDir,
+		dsn: "file:mem_img_" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()) +
+			"?mode=memory&cache=shared"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/images/generations" {
 			http.NotFound(w, r)
@@ -124,7 +128,9 @@ func newEnvWith(t *testing.T, nilDepsCfg bool) *env {
 	if nilDepsCfg {
 		depsCfg = nil
 	}
-	Register(mux, &Deps{Cfg: depsCfg, Store: st, Auth: a, Files: files.New(cfg, st)})
+	d := &Deps{Cfg: depsCfg, Store: st, Auth: a, Files: files.New(cfg, st)}
+	e.deps = d
+	Register(mux, d)
 	srv := httptest.NewServer(a.Require(mux)) // mirrors AuthPolicy's /api/* branch
 	t.Cleanup(srv.Close)
 	e.srv = srv
@@ -735,5 +741,39 @@ func TestNoProviderConfiguredCleanError(t *testing.T) {
 	lr.Body.Close()
 	if lr.StatusCode != http.StatusOK {
 		t.Errorf("server unhealthy after config-gap 400: list = %d", lr.StatusCode)
+	}
+}
+
+// SECREV4 M3b (imggen half): an explicit provider_id whose stored key can no
+// longer be decrypted (rotated SESSION_SECRET) must be refused pre-dial with
+// the honest 503 — never dialed with an empty bearer.
+func TestGenerateUnreadableExplicitProvider503(t *testing.T) {
+	e := newEnv(t)
+	e.seedProvider(t, "prov-1", e.upstreamURL+"/v1", "dall-e-3")
+
+	st2, err := store.Open(e.dsn, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatalf("reopen with foreign secret: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+	e.deps.Store = st2 // handler reads the store through Deps at request time
+
+	resp := e.post("/api/images/generate", `{"prompt":"x","provider_id":"prov-1"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	decodeBody(t, resp, &body)
+	if !strings.Contains(body.Error, "can't be decrypted") {
+		t.Fatalf("error = %q, want the honest key-unreadable verdict", body.Error)
+	}
+	e.mu.Lock()
+	leaked := e.reqBody != ""
+	e.mu.Unlock()
+	if leaked {
+		t.Fatal("unreadable-key provider was dialed anyway")
 	}
 }

@@ -234,3 +234,92 @@ func (s *Store) mustEncrypt(t *testing.T, plaintext string) []byte {
 	}
 	return blob
 }
+
+// TestUpdatePreservesUnreadableSealedKey covers SECREV4 M1: a PUT through a
+// store whose secret can no longer decrypt the row must carry the ciphertext
+// VERBATIM, never re-seal the empty in-memory key (which would NULL the column
+// and destroy the only copy). Recovery stays possible: rotate the secret back
+// and the key is intact; or repair with a new key; or delete.
+func TestUpdatePreservesUnreadableSealedKey(t *testing.T) {
+	ctx := context.Background()
+
+	// testStore's DSN is the test name — open a second handle on the SAME
+	// shared-cache DB with a foreign secret to simulate a rotated secret.
+	dsn := "file:mem_" + strings.ReplaceAll(t.Name()+"/inner", "/", "_") + "?mode=memory&cache=shared"
+	s1, err := Open(dsn, testSecret())
+	if err != nil {
+		t.Fatalf("Open s1: %v", err)
+	}
+	defer s1.Close()
+
+	const id = "keepme"
+	if err := s1.Providers.Insert(ctx, &Provider{ID: id, Name: "orig", APIKey: "sk-original"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	foreign := make([]byte, 32)
+	for i := range foreign {
+		foreign[i] = byte(i*7 + 3)
+	}
+	s2, err := Open(dsn, foreign)
+	if err != nil {
+		t.Fatalf("Open s2: %v", err)
+	}
+	defer s2.Close()
+
+	p, err := s2.Providers.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get via foreign store: %v", err)
+	}
+	if !p.KeyUnreadable || p.APIKey != "" {
+		t.Fatalf("foreign read: key=%q unreadable=%v, want \"\" + true", p.APIKey, p.KeyUnreadable)
+	}
+
+	// Admin edits the row through the foreign store (masked-PUT shape: empty
+	// APIKey means "keep"). The ciphertext must survive byte-identical.
+	p.Name = "renamed-under-rotation"
+	p.Enabled = true
+	if err := s2.Providers.Update(ctx, p); err != nil {
+		t.Fatalf("Update under unreadable key: %v", err)
+	}
+
+	// A clearing Update (fresh struct, no sealedKey carried) on a row whose
+	// blob is unreadable must ALSO not destroy the blob when the repo reads
+	// through Get first; here the raw column is what matters:
+	var sealedAfter []byte
+	if err := s1.DB.QueryRowContext(ctx, `SELECT api_key_enc FROM providers WHERE id = ?1`, id).Scan(&sealedAfter); err != nil {
+		t.Fatalf("raw select after: %v", err)
+	}
+	if len(sealedAfter) == 0 {
+		t.Fatal("unreadable sealed key was NULLed by a masked PUT — blob destroyed")
+	}
+
+	// Recovery path 1: the ORIGINAL secret still decrypts the carried blob.
+	back, err := s1.Providers.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get via original store: %v", err)
+	}
+	if back.APIKey != "sk-original" || back.KeyUnreadable {
+		t.Fatalf("after rotate-back: key=%q unreadable=%v, want sk-original + false", back.APIKey, back.KeyUnreadable)
+	}
+	if back.Name != "renamed-under-rotation" {
+		t.Errorf("metadata edit lost: name=%q", back.Name)
+	}
+
+	// Recovery path 2: repair with a new key through the foreign store.
+	fresh, err := s2.Providers.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get for repair: %v", err)
+	}
+	fresh.APIKey = "sk-repaired"
+	if err := s2.Providers.Update(ctx, fresh); err != nil {
+		t.Fatalf("repair Update: %v", err)
+	}
+	repaired, err := s2.Providers.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get after repair: %v", err)
+	}
+	if repaired.APIKey != "sk-repaired" || repaired.KeyUnreadable {
+		t.Errorf("repaired: key=%q unreadable=%v", repaired.APIKey, repaired.KeyUnreadable)
+	}
+}

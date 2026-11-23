@@ -207,7 +207,7 @@ func TestProviderSyncPreservesEnablement(t *testing.T) {
 				providers.Model{ID: id, ContextLen: 1000 + i})
 		}
 		rec := httptest.NewRecorder()
-		h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID)
+		h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, admin)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("sync status = %d, body %s", rec.Code, rec.Body)
 		}

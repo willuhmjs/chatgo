@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 )
 
 // NOTE: file named models_cache.go; the ModelRow struct lives in models.go.
@@ -39,6 +41,27 @@ func (r *ModelsRepo) ReplaceForProvider(ctx context.Context, providerID string, 
 func (r *ModelsRepo) ForProvider(ctx context.Context, providerID string) ([]ModelRow, error) {
 	return r.queryModels(ctx, `SELECT provider_id, model_id, display, context_len, enabled
 		FROM models WHERE provider_id = ?1 ORDER BY model_id`, providerID)
+}
+
+// ModelState reports whether (providerID, modelID) has a row in the admin
+// models cache and whether that row is enabled. found == false means the
+// pair was never synced — the cache has no verdict, and the CALLER decides
+// what that means for its path (send refuses; task-model dispatches only
+// gate on an explicit enabled = 0 row, because task models are pinned by id
+// in settings and may legitimately never appear in a synced catalog).
+// Single indexed read; shared by every kill-switch enforcement point
+// (SECREV4 F-1) so the paths cannot drift apart.
+func (r *ModelsRepo) ModelState(ctx context.Context, providerID, modelID string) (found, enabled bool, err error) {
+	var en int
+	err = r.db.QueryRowContext(ctx,
+		`SELECT enabled FROM models WHERE provider_id = ?1 AND model_id = ?2`, providerID, modelID).Scan(&en)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return true, en != 0, nil
 }
 
 // EnabledModels returns every enabled model of an enabled provider,

@@ -441,9 +441,13 @@ func TestOIDCInvalidEmailDenied403(t *testing.T) {
 	}
 }
 
-// ADMIN_EMAIL is provisioned as admin on the OIDC path too, deterministically
-// even though other users already exist and the policy is "approve".
-func TestOIDCAdminEmailPromotion(t *testing.T) {
+// ADMIN_EMAIL grants NOTHING on the OIDC path either (SECREV4 F-4): before
+// this it was provisioned as admin deterministically, so anyone able to finish
+// an SSO round trip with the owner's address got admin on a running instance.
+// The OIDC-provisioned account now follows the plain policy (pending here);
+// admin is only ever the first account ever created (empty DB), promoted
+// inside the provisioning transaction.
+func TestOIDCAdminEmailNeverPromotes(t *testing.T) {
 	fake := newFakeOIDC(t)
 	env := newOIDCEnv(t, fake, "approve")
 	env.seedFirstUser(t) // existing non-admin: first-user bootstrap is NOT why this passes
@@ -460,7 +464,29 @@ func TestOIDCAdminEmailPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin email user missing: %v", err)
 	}
+	if u.Role != store.RolePending {
+		t.Errorf("ADMIN_EMAIL user role = %q, want pending (no promotion)", u.Role)
+	}
+}
+
+// The surviving grant on this path: provisioning the FIRST account (empty DB)
+// yields admin, policy notwithstanding.
+func TestOIDCFirstAccountIsAdminBootstrap(t *testing.T) {
+	fake := newFakeOIDC(t)
+	env := newOIDCEnv(t, fake, "approve") // no seedFirstUser → this is the first account
+
+	state, nonce, _ := oidcStart(t, env, fake)
+	fake.setNonce(nonce)
+	cb := oidcCallback(env, "good-code", state)
+	if cb.Status != http.StatusFound || cb.Location != "/" {
+		t.Fatalf("callback = %d %q", cb.Status, cb.Location)
+	}
+
+	u, err := env.Store.Users.GetByEmail(context.Background(), oidcUserEmail)
+	if err != nil {
+		t.Fatalf("first account missing: %v", err)
+	}
 	if u.Role != store.RoleAdmin {
-		t.Errorf("ADMIN_EMAIL user role = %q, want admin", u.Role)
+		t.Errorf("first account role = %q, want admin", u.Role)
 	}
 }

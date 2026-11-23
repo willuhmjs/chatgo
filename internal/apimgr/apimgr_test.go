@@ -3,11 +3,13 @@ package apimgr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"chatgo/internal/auth"
 	"chatgo/internal/config"
@@ -18,8 +20,10 @@ import (
 // ---------- fixtures ----------
 
 type fakeClient struct {
-	modelsResp []providers.Model
-	modelsErr  error
+	modelsResp  []providers.Model
+	modelsErr   error
+	modelsCalls int
+	modelsWait  <-chan struct{} // when non-nil, ListModels blocks until it closes
 
 	completeResp string
 	completeErr  error
@@ -32,6 +36,14 @@ type fakeClient struct {
 }
 
 func (f *fakeClient) ListModels(ctx context.Context, baseURL, apiKey string) ([]providers.Model, error) {
+	f.modelsCalls++
+	if f.modelsWait != nil {
+		select {
+		case <-f.modelsWait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return f.modelsResp, f.modelsErr
 }
 
@@ -376,7 +388,8 @@ func TestProviderSyncPersistsContextLen(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h := &providersH{d: d}
-	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID)
+	syncActor := mustUser(t, d.Store, "sync@example.com", store.RoleAdmin)
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, syncActor)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("sync status = %d body %s", rec.Code, rec.Body)
 	}
@@ -406,7 +419,7 @@ func TestProviderSyncPersistsContextLen(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
-	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID)
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, syncActor)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("failed sync status = %d", rec.Code)
 	}
@@ -415,7 +428,139 @@ func TestProviderSyncPersistsContextLen(t *testing.T) {
 	}
 }
 
-// ---------- settings ----------
+// SECREV4 L2: sync is an admin action that changes what every user can select
+// — it must land in the audit trail (action "provider.sync", counts only).
+func TestProviderSyncAudits(t *testing.T) {
+	d, fake := testDeps(t)
+	p := seedProvider(t, d, "audited")
+	fake.modelsResp = []providers.Model{{ID: "m-a"}, {ID: "m-b"}}
+	actor := mustUser(t, d.Store, "audit-sync@example.com", store.RoleAdmin)
+
+	rec := httptest.NewRecorder()
+	h := &providersH{d: d}
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, actor)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync = %d %s", rec.Code, rec.Body)
+	}
+	var action, detail string
+	if err := d.Store.DB.QueryRow(
+		`SELECT action, detail FROM audit_log WHERE action = 'provider.sync' ORDER BY id DESC LIMIT 1`).
+		Scan(&action, &detail); err != nil {
+		t.Fatalf("no provider.sync audit row: %v", err)
+	}
+	if detail != "audited · 2 models (2 new)" {
+		t.Errorf("audit detail = %q", detail)
+	}
+
+	// Upstream failure is audited too — and never carries upstream detail text.
+	fake.modelsErr = errors.New("upstream said: secret-token leaked in error")
+	rec = httptest.NewRecorder()
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, actor)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("failed sync = %d", rec.Code)
+	}
+	if err := d.Store.DB.QueryRow(
+		`SELECT detail FROM audit_log WHERE action = 'provider.sync' ORDER BY id DESC LIMIT 1`).
+		Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail != "audited · sync failed" {
+		t.Errorf("failure audit detail = %q", detail)
+	}
+}
+
+// SECREV4 M3b: a provider whose stored key can no longer be decrypted must be
+// refused BEFORE the upstream dial — sync may not fire with an empty bearer.
+func TestProviderSyncUnreadableKeyRefused(t *testing.T) {
+	d, fake := testDeps(t)
+	p := seedProvider(t, d, "broken-key")
+	actor := mustUser(t, d.Store, "rot@example.com", store.RoleAdmin)
+	fake.modelsResp = []providers.Model{{ID: "m-a"}} // would succeed if dialed
+
+	name := "file:mem_apimgr_" + t.Name() + "?mode=memory&cache=shared"
+	st2, err := store.Open(name, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatalf("reopen foreign secret: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+	d.Store = st2 // handler reads the store through Deps at request time
+
+	rec := httptest.NewRecorder()
+	h := &providersH{d: d}
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, actor)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("sync with unreadable key = %d, want 503 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "can't be decrypted") {
+		t.Errorf("body = %s, want the honest key-unreadable verdict", rec.Body)
+	}
+	if fake.modelsCalls != 0 {
+		t.Fatal("unreadable-key provider was dialed")
+	}
+}
+
+// SECREV4 M4: sync's upstream call is bounded — a hung provider answers 504
+// instead of holding the request open forever.
+func TestProviderSyncTimesOut(t *testing.T) {
+	d, fake := testDeps(t)
+	p := seedProvider(t, d, "sleeper")
+	actor := mustUser(t, d.Store, "tmo@example.com", store.RoleAdmin)
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	fake.modelsWait = block
+
+	old := syncTimeout
+	syncTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { syncTimeout = old })
+
+	rec := httptest.NewRecorder()
+	h := &providersH{d: d}
+	h.sync(rec, httptest.NewRequest("POST", "/api/providers/"+p.ID+"/sync", nil), p.ID, actor)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("hung sync status = %d, want 504 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "did not answer") {
+		t.Errorf("body = %s, want honest timeout wording", rec.Body)
+	}
+}
+
+// SECREV4 M1 (handler half): a masked PUT against a provider whose key is
+// unreadable must keep the stored ciphertext; the store-level carry must hold
+// all the way through the admin surface.
+func TestProviderUpdateKeepsUnreadableSeal(t *testing.T) {
+	d, _ := testDeps(t)
+	p := seedProvider(t, d, "masked")
+	actor := mustUser(t, d.Store, "masked@example.com", store.RoleAdmin)
+
+	name := "file:mem_apimgr_" + t.Name() + "?mode=memory&cache=shared"
+	st2, err := store.Open(name, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+	orig := d.Store
+	d.Store = st2
+	t.Cleanup(func() { d.Store = orig })
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/providers/"+p.ID, strings.NewReader(`{"name":"renamed"}`))
+	(&providersH{d: d}).update(rec, req, p.ID, actor)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d %s", rec.Code, rec.Body)
+	}
+
+	// The original store (real secret) still decrypts the key.
+	back, err := orig.Providers.Get(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.APIKey != "sk-x" {
+		t.Fatalf("stored key lost by masked PUT: api_key=%q", back.APIKey)
+	}
+	if back.Name != "renamed" {
+		t.Errorf("name change not persisted: %q", back.Name)
+	}
+}
 
 func TestSettingsAllowlistRejects(t *testing.T) {
 	d, _ := testDeps(t)

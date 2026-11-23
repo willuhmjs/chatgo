@@ -287,26 +287,26 @@ func TestOversizedPasswordRejected(t *testing.T) {
 	assertJSONErr(t, ok80, http.StatusBadRequest)
 }
 
-// ADMIN_EMAIL pins the owner role deterministically: it becomes admin even
-// though another (non-admin) account already exists and the policy is
-// "approve" — no first-wins race needed.
-func TestAdminEmailPromotion(t *testing.T) {
+// Promotion is bootstrap-only: ADMIN_EMAIL grants NOTHING (SECREV4 F-4 — before
+// this it pinned the owner deterministically, which meant whoever registered
+// that address first owned the instance). Under "approve" both accounts come up
+// pending; the owner is only ever the first account ever created, promoted
+// inside the insert transaction (see TestFirstAccountIsAdmin).
+func TestAdminEmailNeverPromotes(t *testing.T) {
 	env := newTestEnv(t, nil) // approve policy
 	env.seedFirstUser(t)      // existing account is NOT admin
 	env.Cfg.AdminEmail = "boss@example.com"
 
 	r := env.register("BOSS@example.com", "secretpass-1", "Boss") // case-folds to AdminEmail
-	// Role is admin (not pending), so HandleRegister logs the owner straight
-	// in (200 + session) instead of the 201 pending answer.
-	if r.Status != http.StatusOK {
-		t.Fatalf("register = %d %q", r.Status, r.Body)
+	if r.Status != http.StatusCreated {
+		t.Fatalf("register = %d %q, want 201 pending", r.Status, r.Body)
 	}
 	u, err := env.Store.Users.GetByEmail(context.Background(), "boss@example.com")
 	if err != nil {
 		t.Fatalf("admin email user missing: %v", err)
 	}
-	if u.Role != store.RoleAdmin {
-		t.Errorf("ADMIN_EMAIL role = %q, want admin", u.Role)
+	if u.Role != store.RolePending {
+		t.Errorf("ADMIN_EMAIL role = %q, want pending (no promotion)", u.Role)
 	}
 
 	// Everyone else still follows the policy.
@@ -317,6 +317,37 @@ func TestAdminEmailPromotion(t *testing.T) {
 	}
 	if pleb.Role != store.RolePending {
 		t.Errorf("non-admin-email role = %q, want pending", pleb.Role)
+	}
+}
+
+// The one admin grant that remains: the FIRST account ever created (id 1) is
+// promoted inside the registration transaction, regardless of policy. Every
+// later account — including a later one with the same address — is ordinary.
+func TestFirstAccountIsAdminBootstrap(t *testing.T) {
+	env := newTestEnv(t, nil) // approve policy: everyone else lands pending
+
+	r := env.register("owner@example.com", "secretpass-1", "Owner")
+	// Role is admin, so HandleRegister logs the owner straight in (200 +
+	// session) instead of the 201 pending answer — first account only.
+	if r.Status != http.StatusOK {
+		t.Fatalf("first register = %d %q", r.Status, r.Body)
+	}
+	u, err := env.Store.Users.GetByEmail(context.Background(), "owner@example.com")
+	if err != nil {
+		t.Fatalf("first account missing: %v", err)
+	}
+	if u.Role != store.RoleAdmin {
+		t.Errorf("first account role = %q, want admin", u.Role)
+	}
+
+	// A second account — same instance, later — is never admin.
+	env.register("late@example.com", "secretpass-1", "Late")
+	later, err := env.Store.Users.GetByEmail(context.Background(), "late@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later.Role != store.RolePending {
+		t.Errorf("second account role = %q, want pending", later.Role)
 	}
 }
 

@@ -124,9 +124,19 @@ func (d *Deps) handleExtract(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, extractedResponse{Created: created})
 }
 
+// errMsgKeyUnreadable mirrors internal/chat's send-path sentinel: when the
+// stored seal won't decrypt, say so honestly instead of dialing unauthenticated
+// and blaming the task model's credentials for the 401 that follows
+// (SECREV4 M3b — extract used to ship the whole transcript out that way).
+const errMsgKeyUnreadable = "the stored provider key can't be decrypted — the server secret changed after it was saved; re-enter the API key in Admin → Providers"
+
 // taskTarget resolves the extractor model exactly like internal/chat does:
 // settings "task_model" ("providerID:modelID") overrides Cfg.TaskModel; the
-// provider row comes back with its key decrypted.
+// provider row comes back with its key decrypted. Enforces the same
+// kill-switch matrix as chat's taskProvider (SECREV4 F-1: provider AND model
+// disable) plus the KeyUnreadable refusal (SECREV4 M3b) — all BEFORE the
+// upstream dial. Unlike the fire-and-forget title/summary paths, extract is
+// a user-triggered action, so every refusal answers with an honest error.
 func (d *Deps) taskTarget(ctx context.Context) (providers.Provider, string, error) {
 	spec := ""
 	if d.Cfg != nil {
@@ -153,6 +163,24 @@ func (d *Deps) taskTarget(ctx context.Context) (providers.Provider, string, erro
 	if !row.Enabled {
 		return providers.Provider{}, "", httpErr(http.StatusServiceUnavailable,
 			"task model provider is disabled — enable it or point task_model at another provider")
+	}
+	if row.KeyUnreadable {
+		return providers.Provider{}, "", httpErr(http.StatusServiceUnavailable, errMsgKeyUnreadable)
+	}
+	// Per-model kill (SECREV4 F-1): the provider check above never looked at
+	// the cached model row, so an admin's model-level disable kept spending.
+	// Same policy as chat.taskProvider: only an explicit enabled = 0 row
+	// blocks; an uncached task model is no verdict (task models are pinned by
+	// id and need not appear in any synced catalog).
+	found, enabled, err := d.Store.Models.ModelState(ctx, providerID, modelID)
+	if err != nil {
+		return providers.Provider{}, "", err
+	}
+	if found && !enabled {
+		// Same honest verdict the chat send path answers (errMsgModelDisabled),
+		// in this endpoint's 503 + "task model" wording.
+		return providers.Provider{}, "", httpErr(http.StatusServiceUnavailable,
+			"task model has been disabled by an admin — enable it or point task_model at another model")
 	}
 	return providers.Provider{ID: row.ID, Name: row.Name, BaseURL: row.BaseURL, APIKey: row.APIKey}, modelID, nil
 }

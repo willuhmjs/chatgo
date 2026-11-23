@@ -95,8 +95,8 @@ docker run -d --name chatgo \
 - The first visit redirects to `/login`; on a brand-new instance `/welcome`
   then offers the create-admin form — the first account becomes admin under
   any `REGISTRATION` policy (later signups follow it, landing as `pending`
-  under the default `REGISTRATION=approve`), or set `ADMIN_EMAIL` to pin admin
-  to a specific account. First sign-in continues into the `/onboarding` admin
+  under the default `REGISTRATION=approve`). First sign-in continues into the
+  `/onboarding` admin
   wizard (provider → task model → invites / approvals).
 
 Then open <http://localhost:8080>.
@@ -119,7 +119,7 @@ copy at [docs/CONFIG.md](docs/CONFIG.md)):
 | `OIDC_CLIENT_SECRET` | *(none)* | OIDC client secret |
 | `OIDC_DISPLAY_NAME` | `SSO` | Login-button label |
 | `REGISTRATION` | `approve` | `open` \| `approve` \| `closed` |
-| `ADMIN_EMAIL` | *(none)* | Accounts with this email are created/promoted as **admin** (deterministic bootstrap instead of first-signup-wins) |
+| `ADMIN_EMAIL` | *(none)* | **Deprecated, ignored** — promotion to admin is bootstrap-only: the first account ever created (self-registration never promotes by email address) |
 | `SECURE_COOKIE` | *(auto)* | `true`/`false` forces the session cookie `Secure` flag; unset = auto (Secure when `PUBLIC_URL` is https or the trusted proxy sends `X-Forwarded-Proto: https`) |
 | `TRUSTED_PROXIES` | *(none)* | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For`/`-Proto` may be believed (client IP for rate limits/logs). Set only when behind a proxy, e.g. `127.0.0.1/32` (host-network Traefik) or `10.42.0.0/16` (k3s pod CIDR) |
 | `TASK_MODEL` | *(none)* | `providerID:modelID` for chat titles/summaries |

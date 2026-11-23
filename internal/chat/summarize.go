@@ -108,7 +108,7 @@ func (s *Service) summarizeTurn(ctx context.Context, chatID string, effective []
 	if !ok {
 		return // no TaskModel → no summarize (fallback per spawn contract)
 	}
-	prov, err := s.taskProvider(ctx, providerID)
+	prov, err := s.taskProvider(ctx, providerID, modelID)
 	if err != nil {
 		slog.Warn("chat: summarize provider unavailable", "error", err)
 		return

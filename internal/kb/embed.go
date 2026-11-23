@@ -69,16 +69,27 @@ func (d *Deps) findEmbedModel(ctx context.Context, providerID string) string {
 // pickEmbedModel resolves the embeddings target per the priority order
 // documented at the top of this file.
 func (d *Deps) pickEmbedModel(ctx context.Context) (*embedTarget, error) {
-	// 1. explicit admin override.
+	// 1. explicit admin override. An override that points at a provider that
+	// is gone/disabled must not dial: fall through like the pre-fix `if
+	// err == nil && row.Enabled` did, but a stored key the server can no
+	// longer decrypt (rotated SESSION_SECRET) answers honestly — the vector
+	// space pins the model, so there is nothing to fall back to.
 	if v, err := d.Store.Settings.Get(ctx, settingEmbedModel); err == nil && v != nil {
 		if provID, modelID, ok := splitSpec(strings.TrimSpace(*v)); ok {
 			row, err := d.Store.Providers.Get(ctx, provID)
-			if err == nil && row.Enabled {
-				return &embedTarget{prov: *row, model: modelID}, nil
+			if err == nil {
+				if row.KeyUnreadable {
+					return nil, httpErr(http.StatusServiceUnavailable,
+						"the kb embed model's stored provider key can't be decrypted — the server secret changed after it was saved; re-enter the API key in Admin → Providers")
+				}
+				if row.Enabled {
+					return &embedTarget{prov: *row, model: modelID}, nil
+				}
 			}
 		}
 	}
-	// 2. task_model's provider.
+	// 2. task_model's provider (rows whose key is unreadable are skipped like
+	// disabled ones — an empty bearer is never better than no provider).
 	spec := ""
 	if v, err := d.Store.Settings.Get(ctx, settingTaskModel); err == nil && v != nil {
 		spec = strings.TrimSpace(*v)
@@ -87,7 +98,7 @@ func (d *Deps) pickEmbedModel(ctx context.Context) (*embedTarget, error) {
 		spec = strings.TrimSpace(d.Cfg.TaskModel)
 	}
 	if provID, _, ok := splitSpec(spec); ok {
-		if row, err := d.Store.Providers.Get(ctx, provID); err == nil && row.Enabled {
+		if row, err := d.Store.Providers.Get(ctx, provID); err == nil && row.Enabled && !row.KeyUnreadable {
 			if m := d.findEmbedModel(ctx, row.ID); m != "" {
 				return &embedTarget{prov: *row, model: m}, nil
 			}
@@ -99,7 +110,7 @@ func (d *Deps) pickEmbedModel(ctx context.Context) (*embedTarget, error) {
 		return nil, err
 	}
 	for _, row := range provs {
-		if !row.Enabled {
+		if !row.Enabled || row.KeyUnreadable {
 			continue
 		}
 		if m := d.findEmbedModel(ctx, row.ID); m != "" {

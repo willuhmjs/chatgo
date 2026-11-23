@@ -249,6 +249,65 @@ func TestExtractMisconfigAndUpstreamFailure(t *testing.T) {
 	}
 }
 
+// SECREV4 F-1 (extract half): an admin's per-MODEL disable must stop the
+// extractor too — the provider row alone was checked before, so a killed
+// model kept burning tokens through this endpoint. Refusal is pre-dial.
+func TestExtractRefusesDisabledTaskModelRow(t *testing.T) {
+	e := newEnv(t)
+	uid, a := e.user("alice@example.com", store.RoleUser)
+	chatID := e.chat(uid)
+	e.msg(chatID, "user", "hello")
+
+	call := e.setTaskModel("- likes nothing")
+	provs, err := e.store.Providers.List(context.Background())
+	if err != nil || len(provs) != 1 {
+		t.Fatalf("providers: %v %v", provs, err)
+	}
+	if err := e.store.Models.ReplaceForProvider(context.Background(), provs[0].ID,
+		[]store.ModelRow{{ModelID: "task-model-1", Display: "T", ContextLen: 4096, Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := e.do(a, "POST", "/api/me/memories/extract", `{"chat_id":"`+chatID+`"}`)
+	mustStatus(t, w, http.StatusServiceUnavailable)
+	if !strings.Contains(w.Body.String(), "disabled by an admin") {
+		t.Fatalf("body = %s, want the honest model-disabled verdict", w.Body)
+	}
+	if call.hits != 0 {
+		t.Fatalf("disabled model reached upstream (%d hits)", call.hits)
+	}
+}
+
+// SECREV4 M3b (extract half): with a rotated SESSION_SECRET the stored key
+// won't decrypt — extraction must refuse instead of shipping the whole
+// transcript upstream unauthenticated.
+func TestExtractRefusesUnreadableTaskKey(t *testing.T) {
+	e := newEnv(t)
+	uid, a := e.user("alice@example.com", store.RoleUser)
+	chatID := e.chat(uid)
+	e.msg(chatID, "user", "hello")
+	call := e.setTaskModel("- likes nothing")
+
+	// Reopen the SAME shared-cache DB with a foreign secret and point the
+	// deps at it: the provider row now reads KeyUnreadable.
+	name := "file:mem_test_" + t.Name() + "?mode=memory&cache=shared"
+	st2, err := store.Open(name, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatalf("reopen with foreign secret: %v", err)
+	}
+	t.Cleanup(func() { st2.Close() })
+	e.d.Store = st2
+
+	w := e.do(a, "POST", "/api/me/memories/extract", `{"chat_id":"`+chatID+`"}`)
+	mustStatus(t, w, http.StatusServiceUnavailable)
+	if !strings.Contains(w.Body.String(), "can't be decrypted") {
+		t.Fatalf("body = %s, want the honest key-unreadable verdict", w.Body)
+	}
+	if call.hits != 0 {
+		t.Fatalf("unreadable key reached upstream (%d hits) — transcript leaked", call.hits)
+	}
+}
+
 func TestExtractRespectsPerUserCap(t *testing.T) {
 	e := newEnv(t)
 	uid, a := e.user("alice@example.com", store.RoleUser)

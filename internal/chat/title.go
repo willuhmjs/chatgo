@@ -69,7 +69,7 @@ func waitTitle(res <-chan string, start time.Time) (string, bool) {
 // first 48 runes of the message when unset or on any upstream failure.
 func (s *Service) generateTitle(ctx context.Context, firstUserMsg string) string {
 	if providerID, modelID, ok := s.taskModel(ctx); ok {
-		prov, err := s.taskProvider(ctx, providerID)
+		prov, err := s.taskProvider(ctx, providerID, modelID)
 		if err != nil {
 			slog.Warn("chat: task model provider unavailable", "error", err)
 		} else {

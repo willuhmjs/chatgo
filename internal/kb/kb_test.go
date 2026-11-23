@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -555,6 +556,52 @@ func TestEmbedModelSelection(t *testing.T) {
 	}
 	if _, err := d.pickEmbedModel(ctx); err != ErrNoEmbedModel {
 		t.Fatalf("all-disabled: %v, want ErrNoEmbedModel", err)
+	}
+}
+
+// SECREV4 M3b (kb half): a rotated SESSION_SECRET leaves stored provider keys
+// undecryptable. The scan paths skip such rows like disabled ones (an empty
+// bearer is worse than no provider), and an explicit kb_embed_model override
+// answers the honest 503 instead of dialing unauthenticated — there is no
+// fallback for an override, the vector space pins the model.
+func TestEmbedSkipsUnreadableKeys(t *testing.T) {
+	ctx := context.Background()
+	name := "file:mem_kb_unreadable_" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	st, err := store.Open(name, []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.Providers.Insert(ctx, &store.Provider{ID: "kb-p", Name: "kb-p",
+		BaseURL: "http://127.0.0.1:1/v1", APIKey: "sk-kb", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Models.ReplaceForProvider(ctx, "kb-p",
+		[]store.ModelRow{{ModelID: "bge-embed-base", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Foreign-secret handle on the SAME DB: provider rows read unreadable.
+	st2, err := store.Open(name, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+	d := &Deps{Cfg: &config.Config{}, Store: st2}
+
+	if _, err := d.pickEmbedModel(ctx); err != ErrNoEmbedModel {
+		t.Fatalf("scan path: %v, want ErrNoEmbedModel (unreadable row skipped)", err)
+	}
+
+	if err := st2.Settings.Set(ctx, settingEmbedModel, "kb-p:bge-embed-base"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.pickEmbedModel(ctx)
+	var he httpError
+	if !errors.As(err, &he) || he.status != http.StatusServiceUnavailable ||
+		!strings.Contains(he.msg, "can't be decrypted") {
+		t.Fatalf("override path: %v, want honest 503 key-unreadable error", err)
 	}
 }
 
