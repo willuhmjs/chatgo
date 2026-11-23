@@ -400,9 +400,10 @@
   }
 
   /* user: right-aligned neutral bubble (OWUI: rounded-3xl, flat bottom-right
-     corner, max ~75%) over the quiet --panel surface token */
+     corner) over the quiet --panel surface token. 92% matches the inline
+     edit box so ordinary messages barely ever wrap. */
   .bubble {
-    max-width: 75%;
+    max-width: 92%;
     border-radius: 1.5rem 1.5rem 1.5rem 0.5rem;
     padding: 0.625rem 1rem;
     font-size: 1rem;
