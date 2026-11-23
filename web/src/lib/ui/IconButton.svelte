@@ -29,14 +29,17 @@
   {onclick}
   aria-label={label}
   aria-pressed={active || undefined}
-  class="icon-btn icon-btn-{variant} {active ? 'active' : ''} {cls}"
+  class="icon-btn inline-flex icon-btn-{variant} {active ? 'active' : ''} {cls}"
 >
   {@render children()}
 </button>
 
 <style>
   .icon-btn {
-    display: inline-flex;
+    /* display comes from the inline-flex utility class, NOT this scoped
+       rule: a scoped .icon-btn{display:…} (specificity 0-2-0) beats the
+       `hidden`/`md:hidden` utilities callers pass, which made the mobile
+       "Close sidebar" button show up on desktop. */
     align-items: center;
     justify-content: center;
     width: 2rem;

@@ -469,10 +469,12 @@
     </div>
   {:else}
     <div class="flex h-12 shrink-0 items-center gap-0.5 px-2">
-      <IconButton label="Collapse sidebar" onclick={() => onToggleCollapse?.()} class="hidden md:inline-flex">
+      <!-- ! important beats the base `inline-flex` utility IconButton
+           applies (Tailwind v4 sorts .inline-flex after .hidden) -->
+      <IconButton label="Collapse sidebar" onclick={() => onToggleCollapse?.()} class="!hidden md:!inline-flex">
         <PanelLeftClose class="size-[18px]" />
       </IconButton>
-      <IconButton label="Close sidebar" onclick={() => onCloseMobile?.()} class="md:hidden">
+      <IconButton label="Close sidebar" onclick={() => onCloseMobile?.()} class="md:!hidden">
         <PanelLeftClose class="size-[18px]" />
       </IconButton>
       <IconButton label="New chat" onclick={newChat}>
