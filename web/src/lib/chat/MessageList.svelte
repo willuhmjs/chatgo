@@ -36,6 +36,49 @@
 
   const groups = $derived(groupMessages(messages));
 
+  // ---------- one open inline editor, moved by the ↑/↓ "edit message" walk
+  // (Composer dispatches `chatgo:edit-message` {direction} on the window when
+  // the composer is empty; see docs/FE-CHAT-UI.md "regenerate semantics") ----
+  let editingId = $state<string | null>(null);
+  const userMsgs = $derived(messages.filter((m) => m.role === 'user'));
+
+  function closeEditor(): void {
+    editingId = null;
+    // editor gone — hand focus back to the composer (Esc/Save leave focus
+    // nowhere otherwise, and the next ↑ would need a click first)
+    window.dispatchEvent(new CustomEvent('chatgo:focus-composer'));
+  }
+
+  function stepEdit(dir: number): void {
+    if (busy) return; // never open/move an editor mid-stream
+    const list = userMsgs;
+    if (!list.length) return; // no user messages → no-op
+    const cur = list.findIndex((m) => m.id === editingId);
+    if (cur < 0) {
+      // nothing open: ↑ opens the LAST user message; ↓ is a no-op
+      if (dir < 0) editingId = list[list.length - 1].id;
+      return;
+    }
+    const next = cur + dir;
+    if (next < 0 || next >= list.length) return; // edges keep the editor put
+    editingId = list[next].id;
+  }
+
+  $effect(() => {
+    const onEditMsg = (e: Event) => {
+      const d = (e as CustomEvent<{ direction?: number }>).detail;
+      stepEdit((d?.direction ?? -1) < 0 ? -1 : 1);
+    };
+    window.addEventListener('chatgo:edit-message', onEditMsg);
+    return () => window.removeEventListener('chatgo:edit-message', onEditMsg);
+  });
+
+  // the edited message can vanish under us (regenerate tail-drop) — drop the
+  // dangling id so the next ↑ opens the new last user message cleanly
+  $effect(() => {
+    if (editingId && !messages.some((m) => m.id === editingId)) editingId = null;
+  });
+
   // Ids present when this list mounts (initial load) — those rows must NOT
   // animate; everything appended afterwards gets the rise-in. Capturing the
   // initial value is the whole point, so the reactive ref is one-shot.
@@ -137,9 +180,12 @@
               <MessageRow
                 message={m}
                 {busy}
+                editing={editingId === m.id}
                 rating={ratings?.[m.id] ?? null}
                 {onretry}
                 {onedit}
+                oneditopen={(msg) => (editingId = msg.id)}
+                oneditclose={closeEditor}
                 {onrate}
                 {onratecomment}
                 {onfork}

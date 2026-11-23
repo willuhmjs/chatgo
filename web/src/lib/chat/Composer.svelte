@@ -9,6 +9,7 @@
   import * as api from '$lib/api';
   import ModelPicker from './ModelPicker.svelte';
   import SlashPrompts from './SlashPrompts.svelte';
+  import ShortcutsHelp from './ShortcutsHelp.svelte';
   import IconButton from './ui/IconButton.svelte';
   import { capabilities } from './state.svelte.js';
   import { prefersEnterSend, formatBytes } from '$lib/chatview-api';
@@ -70,6 +71,7 @@
   let sendEnter = $state(prefersEnterSend());
   let ta = $state<HTMLTextAreaElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let shortcutsOpen = $state(false);
 
   const uploading = $derived(attachments.some((a) => a.status === 'uploading'));
   const canSend = $derived(!!value.trim() && !uploading);
@@ -88,14 +90,72 @@
   $effect(() => {
     const offSend = onShortcut('mod+enter', () => doSend());
     const offFocus = onShortcut('slash', () => ta?.focus());
+    // '?' with and without the shift flag — layouts differ on which one lands
+    const offHelp = onShortcut('shift+?', () => (shortcutsOpen = !shortcutsOpen));
+    const offHelp2 = onShortcut('?', () => (shortcutsOpen = !shortcutsOpen));
+    const offReqFocus = () => ta?.focus();
+    window.addEventListener('chatgo:focus-composer', offReqFocus);
     return () => {
       offSend();
       offFocus();
+      offHelp();
+      offHelp2();
+      window.removeEventListener('chatgo:focus-composer', offReqFocus);
     };
+  });
+
+  // ---------- auto-focus on chat open ----------
+  // ChatView re-mounts the Composer per route ({#key id}), so this fires once
+  // as each chat opens. Desktop only: (min-width:768px) and not (pointer:
+  // coarse) — phones/tablets must never get the soft keyboard hijacked. Also
+  // skipped when focus already sits in another field (e.g. sidebar search).
+  let autoFocusDone = false;
+  $effect(() => {
+    void ta; // re-run once the textarea binding lands
+    if (autoFocusDone || !ta) return;
+    autoFocusDone = true;
+    if (!window.matchMedia('(min-width: 768px)').matches) return;
+    if (window.matchMedia('(pointer: coarse)').matches) return;
+    const ae = document.activeElement;
+    if (
+      ae instanceof HTMLInputElement ||
+      ae instanceof HTMLTextAreaElement ||
+      ae instanceof HTMLSelectElement ||
+      (ae instanceof HTMLElement && ae.isContentEditable)
+    ) {
+      return;
+    }
+    ta.focus();
   });
 
   function onKeydown(e: KeyboardEvent): void {
     if (slashOpen && handleSlashKey(e)) return;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      // ChatGPT-parity: with an EMPTY composer, ↑/↓ hand off to MessageList's
+      // inline-edit walk (opens the last user message / moves the open editor).
+      // An empty composer makes ↑ unambiguous — inside text it stays caret
+      // movement. Guarded: IME composition, slash/kb popovers (the model
+      // picker keeps focus out of this textarea, so it can't reach here),
+      // modifiers, and mid-stream.
+      if (
+        !value.trim() &&
+        !e.isComposing &&
+        !kbOpen &&
+        !busy &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent('chatgo:edit-message', {
+            detail: { direction: e.key === 'ArrowUp' ? -1 : 1 },
+          }),
+        );
+      }
+      return;
+    }
     if (e.key !== 'Enter') return;
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
@@ -590,10 +650,12 @@
     </div>
 
     <p class="mt-1.5 px-1 text-[11px]" style="color:var(--faint, #6e6e6e)">
-      {sendEnter ? '↵ send · ⇧↵ newline · ' : '⇧↵ send · '}⌘↵ send · / focus
+      {sendEnter ? '↵ send · ⇧↵ newline · ' : '⇧↵ send · '}⌘↵ send · / focus · ↑ edit · ? help
     </p>
   </div>
 </div>
+
+<ShortcutsHelp open={shortcutsOpen} onclose={() => (shortcutsOpen = false)} />
 
 <style>
   /* the ChatGPT pill: --panel, radius 26, soft shadow (§1/§6), plus the OWUI

@@ -30,8 +30,11 @@
     message,
     busy = false,
     rating = null,
+    editing = false,
     onretry,
     onedit,
+    oneditopen,
+    oneditclose,
     onrate,
     onratecomment,
     onfork,
@@ -39,17 +42,35 @@
     message: UIMessage;
     busy?: boolean;
     rating?: Rating | null;
+    /** Controlled by MessageList so at most one row editor is open at a
+        time and the ↑/↓ "edit last message" walk can move it between rows. */
+    editing?: boolean;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
+    oneditopen?: (m: UIMessage) => void;
+    oneditclose?: () => void;
     onrate?: (m: UIMessage, value: 1 | -1) => void;
     onratecomment?: (m: UIMessage, comment: string) => void;
     onfork?: (m: UIMessage) => void;
   } = $props();
 
-  let editing = $state(false);
   let editText = $state('');
+  let editTa = $state<HTMLTextAreaElement | null>(null);
   let expanded = $state(false);
   let sourcesOpen = $state(false);
+
+  // Editor is parent-controlled: (re)load the message into the draft each
+  // time this row's editor opens, then focus with the caret at the end.
+  $effect(() => {
+    if (editing) editText = message.content ?? '';
+  });
+  $effect(() => {
+    if (!editing) return;
+    void tick().then(() => {
+      editTa?.focus();
+      editTa?.setSelectionRange(editText.length, editText.length);
+    });
+  });
 
   // 👍/👎 + comment popover (FE-CHATTER wave 2); server ids only
   const rateable = $derived(!!onrate && !isLocalId(message.id));
@@ -97,12 +118,14 @@
     );
   }
   function startEdit(): void {
-    editText = message.content ?? '';
-    editing = true;
+    if (oneditopen) oneditopen(message);
+  }
+  function cancelEdit(): void {
+    oneditclose?.();
   }
   function saveEdit(): void {
     const t = editText.trim();
-    editing = false;
+    oneditclose?.();
     if (t && t !== message.content) onedit?.(message, t);
   }
 </script>
@@ -114,15 +137,31 @@
         <textarea
           class="editbox"
           rows="3"
+          bind:this={editTa}
           bind:value={editText}
           aria-label="Edit message"
           onkeydown={(e) => {
             if (e.key === 'Escape') {
               e.stopPropagation();
-              editing = false;
+              cancelEdit();
             } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               saveEdit();
+            } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              // Hand the ↑/↓ "edit previous/next message" walk to MessageList
+              // when the caret sits on the first/last line — inside a taller
+              // draft the arrows still move the caret.
+              const up = e.key === 'ArrowUp';
+              const t = e.currentTarget;
+              const edge = up
+                ? !t.value.slice(0, t.selectionStart).includes('\n')
+                : !t.value.slice(t.selectionEnd).includes('\n');
+              if (edge && !e.isComposing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                e.preventDefault();
+                window.dispatchEvent(
+                  new CustomEvent('chatgo:edit-message', { detail: { direction: up ? -1 : 1 } }),
+                );
+              }
             }
           }}></textarea>
         <div class="flex items-center gap-2 text-xs">
@@ -141,9 +180,6 @@
     {:else}
       <div class="bubble" class:pending={message.pending}>
         <div class="whitespace-pre-wrap">{message.content}</div>
-        {#if message.pending}
-          <span class="ml-1 inline-block h-2 w-2 rounded-full align-middle" style="background:var(--muted)"></span>
-        {/if}
       </div>
     {/if}
     {#if !editing}
