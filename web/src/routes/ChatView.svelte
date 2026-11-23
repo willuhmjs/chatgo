@@ -527,7 +527,7 @@
       return;
     }
     const now = Math.floor(Date.now() / 1000);
-    const nu: UIMessage = {
+    messages.push({
       id: uid(),
       chat_id: id,
       role: 'user',
@@ -535,8 +535,13 @@
       content,
       created_at: now,
       pending: true,
-    };
-    messages.push(nu);
+    });
+    // Read the row back THROUGH the $state array (submit() does the same):
+    // handlers must mutate the reactive proxy, not the raw object — writes
+    // to the raw object are invisible to the derived chain walk, which used
+    // to leave the visible conversation collapsed to the new answer alone
+    // after `meta` renamed this row to its persisted id.
+    const nu = messages[messages.length - 1];
     const ph = appendPlaceholder();
     ph.parent_id = nu.id; // `meta` renames nu to the server id + reparents ph
     leafId = ph.id;

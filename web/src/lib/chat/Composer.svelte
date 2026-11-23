@@ -16,7 +16,7 @@
   import ShortcutsHelp from './ShortcutsHelp.svelte';
   import IconButton from './ui/IconButton.svelte';
   import { capabilities } from './state.svelte.js';
-  import { prefersEnterSend, formatBytes } from '$lib/chatview-api';
+  import { prefersEnterSend, formatBytes, lsGet, lsSet, LS_KEYS } from '$lib/chatview-api';
   import {
     listKbCached,
     kbIdsFromChat,
@@ -81,7 +81,12 @@
   let value = $state('');
   let attachments = $state<Attachment[]>([]);
   let dragging = $state(false);
-  let searchOn = $state(false);
+  // Web-search pill is sticky: once you turn it on it stays on for the next
+  // message, chat switch and page reload until you turn it off again.
+  let searchOn = $state(lsGet(LS_KEYS.composerSearch) === '1');
+  $effect(() => {
+    lsSet(LS_KEYS.composerSearch, searchOn ? '1' : '0');
+  });
   let sendEnter = $state(prefersEnterSend());
   let ta = $state<HTMLTextAreaElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);

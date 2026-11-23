@@ -143,7 +143,9 @@ import Globe from 'lucide-svelte/icons/globe';
   function saveEdit(): void {
     const t = editText.trim();
     oneditclose?.();
-    if (t && t !== message.content) onedit?.(message, t);
+    // Same text is a legitimate "ask again": branches a fresh sibling turn
+    // and regenerates — that's how re-runs work without touching the content.
+    if (t) onedit?.(message, t);
   }
 
   // ‹ n/m › branch pager (Open WebUI style). Only shown when this message has

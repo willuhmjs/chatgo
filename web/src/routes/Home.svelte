@@ -22,6 +22,7 @@
   import MenuItem from '$lib/ui/MenuItem.svelte';
   import SlashPrompts from '$lib/chat/SlashPrompts.svelte';
   import SearchToggle from '$lib/chat/SearchToggle.svelte';
+  import { lsGet, lsSet, LS_KEYS } from '$lib/chatview-api';
   import { capabilities } from '$lib/chat/state.svelte.js';
   import {
     listPromptsCached,
@@ -76,7 +77,12 @@
 
   let draft = $state('');
   let sending = $state(false);
-  let searchOn = $state(false); // OWUI web-search pill (first message carries it)
+  // OWUI web-search pill (first message carries it). Sticky: survives chat
+  // handoff and reloads via the shared composer-search key (Composer.svelte).
+  let searchOn = $state(lsGet(LS_KEYS.composerSearch) === '1');
+  $effect(() => {
+    lsSet(LS_KEYS.composerSearch, searchOn ? '1' : '0');
+  });
   let sendOnEnter = $state(getSendOnEnter());
   let ta = $state<HTMLTextAreaElement | undefined>();
 

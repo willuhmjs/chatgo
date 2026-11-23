@@ -249,6 +249,8 @@ export const LS_KEYS = {
   sendEnter: 'chatgo-send-enter',
   /** cached capability probe so the search pill doesn't flicker on load */
   capSearch: 'chatgo-cap-search',
+  /** '1' | '0' — sticky web-search pill state across messages/reloads */
+  composerSearch: 'chatgo-composer-search',
 } as const;
 
 export function lsGet(key: string): string | null {
