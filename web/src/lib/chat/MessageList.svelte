@@ -207,7 +207,11 @@
       {#if g.role === 'user'}
         <div class="flex min-w-0 flex-col items-end gap-2.5">
           {#each g.items as m (m.id)}
-            <div class="min-w-0 max-w-full {riseClass(m.id)}">
+            <!-- w-full: without it this wrapper shrink-wraps to the bubble's
+                 own max-content, and .bubble's max-width:92% then resolves
+                 against the text's own width — clipping 8% and forcing a
+                 wrap one word early. -->
+            <div class="w-full min-w-0 max-w-full {riseClass(m.id)}">
               <MessageRow
                 message={m}
                 {busy}
