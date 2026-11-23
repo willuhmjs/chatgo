@@ -109,7 +109,7 @@ POST /api/providers/{id}/sync → refreshes models cache
 GET  /api/models → [{provider_id,model_id,display,context_len,provider}]
 CRUD /api/chats  (list supports ?q=&folder=&tag=&page=&per= default 30)
 GET/DELETE/PATCH /api/chats/{id}          POST /api/chats/{id}/share → {token} ; DELETE …/share
-POST /api/chats/{id}/messages {content, images:[{file_id}], search:bool} → SSE (protocol below)
+POST /api/chats/{id}/messages {content, images:[{file_id}], search:bool, timezone?, location?:{lat,lon}} → SSE (protocol below)
 POST /api/chats/{id}/regenerate?from={msgID} → SSE
 POST /api/files (multipart, field `file`; ≤20MB; png/jpg/webp/gif/pdf/txt/md/csv/json) → FileMeta
 GET  /files/{id}/{name} (authed, serves original name, content-sniffed type)

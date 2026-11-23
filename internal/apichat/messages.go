@@ -110,10 +110,28 @@ func (d *Deps) handleListMessages(w http.ResponseWriter, r *http.Request) {
 
 // sendMessageReq mirrors api.ts SendMessageBody.
 type sendMessageReq struct {
-	Content string             `json:"content"`
-	Images  []sendMessageImage `json:"images"`
-	Search  bool               `json:"search"`
-	Branch  bool               `json:"branch"` // regenerate: insert as sibling, keep the tail
+	Content  string             `json:"content"`
+	Images   []sendMessageImage `json:"images"`
+	Search   bool               `json:"search"`
+	Branch   bool               `json:"branch"` // regenerate: insert as sibling, keep the tail
+	Timezone string             `json:"timezone"`
+	Location *sendLocation      `json:"location"`
+}
+
+// sendLocation is the opt-in geolocation payload (browser Geolocation API).
+type sendLocation struct {
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
+}
+
+// clientOpts lifts the browser-context fields into SendOpts (validation,
+// incl. prompt-injection guarding, lives in chat.userContext).
+func (b *sendMessageReq) clientOpts() chat.SendOpts {
+	o := chat.SendOpts{Search: b.Search, Timezone: b.Timezone}
+	if b.Location != nil {
+		o.HasLoc, o.LocLat, o.LocLon = true, b.Location.Lat, b.Location.Lon
+	}
+	return o
 }
 
 type sendMessageImage struct {
@@ -192,8 +210,10 @@ func (d *Deps) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sendOpts := body.clientOpts()
+	sendOpts.Images = images
 	d.streamSend(w, r, u.ID, c.ID, providers.ChatMessage{Role: "user", Content: body.Content + imgMD, Images: images},
-		chat.SendOpts{Search: body.Search, Images: images})
+		sendOpts)
 }
 
 // handleRegenerate re-runs the turn. Default mode: ?from={msgID} deletes that
@@ -230,9 +250,11 @@ func (d *Deps) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	branch := body.Branch || r.URL.Query().Get("branch") == "1"
 
+	sendOpts := body.clientOpts()
+	sendOpts.Images, sendOpts.From, sendOpts.Branch = images, from, branch
 	d.streamSend(w, r, u.ID, c.ID,
 		providers.ChatMessage{Role: "user", Content: body.Content + imgMD, Images: images},
-		chat.SendOpts{Search: body.Search, Images: images, From: from, Branch: branch})
+		sendOpts)
 }
 
 // switchBranchReq is the POST /api/chats/{id}/branch body.

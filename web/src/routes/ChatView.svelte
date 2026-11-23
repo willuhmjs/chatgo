@@ -12,6 +12,7 @@
     StreamErrorData,
     StreamUsageData,
   } from '$lib/chatview-api';
+  import { withClientContext } from '$lib/clientctx';
   import type { UIMessage } from '$lib/chat/group';
   import * as api from '$lib/api';
   import { navigate } from '$lib/router.svelte.js';
@@ -452,6 +453,7 @@
 
   function submit(body: SendMessageBody): void {
     if (!id || !chat) return;
+    withClientContext(body);
     // Mid-stream send: park it in the queue (rendered above the composer) —
     // runStream's settle point fires items in order once this stream ends.
     if (stream.active || streamMsg) {
@@ -494,13 +496,13 @@
       const ph = appendPlaceholder();
       ph.parent_id = i > 0 ? messages[i - 1].id : '';
       leafId = ph.id;
-      void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, { search }, makeHandlers()));
+      void runStream(regenerate(id, isLocalId(m.id) ? undefined : m.id, withClientContext({ search }), makeHandlers()));
       return;
     }
     const ph = appendPlaceholder();
     ph.parent_id = m.parent_id; // sibling beside the old answer
     leafId = ph.id;
-    void runStream(regenerate(id, m.id, { search, branch: true }, makeHandlers()));
+    void runStream(regenerate(id, m.id, withClientContext({ search, branch: true }), makeHandlers()));
   }
 
   /**

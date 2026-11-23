@@ -192,6 +192,10 @@ export interface SendMessageBody {
   content: string;
   images?: { file_id: string }[];
   search?: boolean;
+  /** browser IANA timezone, e.g. "Asia/Singapore" (system-prompt context) */
+  timezone?: string;
+  /** opt-in coarse geolocation from the browser (Settings → Share location) */
+  location?: { lat: number; lon: number };
   /** regenerate only: insert the new version beside the anchor instead of
    *  deleting it and the tail (Open WebUI-style branch history) */
   branch?: boolean;

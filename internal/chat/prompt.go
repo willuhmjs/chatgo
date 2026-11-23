@@ -5,6 +5,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func estimateTokens(msgs []providers.ChatMessage) int {
 }
 
 // systemPrompt returns the base persona; settings key "system_prompt" wins.
-func (s *Service) systemPrompt(ctx context.Context) string {
+func (s *Service) systemPrompt(ctx context.Context, opts SendOpts) string {
 	base := func() string {
 		v, err := s.Store.Settings.Get(ctx, settingSystemPrompt)
 		if err != nil {
@@ -59,11 +60,32 @@ func (s *Service) systemPrompt(ctx context.Context) string {
 		}
 		return defaultSystemPrompt
 	}()
-	// Clock anchor (OWUI parity): "today" / "this week" must resolve from the
-	// real date, not from stale search snippets the model latches onto.
-	// Appended even to admin overrides — no prompt should be date-blind.
+	return base + userContext(opts)
+}
+
+// userContext renders the per-turn clock/user anchor appended to every
+// system prompt: UTC date always; the browser timezone and (opt-in) coarse
+// location when the client shared them. Client-supplied values are treated
+// as hostile input: the timezone must parse as a real IANA zone (this also
+// neutralises prompt injection via the body field), coordinates must be in
+// range and are rounded to ~1 km — the model gets "Singapore", not a home
+// address.
+func userContext(opts SendOpts) string {
 	now := time.Now().UTC()
-	return base + "\n\nCurrent date: " + now.Format("2006-01-02") + " (" + now.Weekday().String() + ", UTC)."
+	var b strings.Builder
+	b.WriteString("\n\nCurrent date: " + now.Format("2006-01-02") + " (" + now.Weekday().String() + ", UTC).")
+	if opts.Timezone != "" && len(opts.Timezone) <= 64 {
+		if loc, err := time.LoadLocation(opts.Timezone); err == nil {
+			local := now.In(loc)
+			b.WriteString(fmt.Sprintf(" User timezone: %s (their local date/time: %s).",
+				opts.Timezone, local.Format("2006-01-02 15:04")))
+		}
+	}
+	if opts.HasLoc && opts.LocLat >= -90 && opts.LocLat <= 90 && opts.LocLon >= -180 && opts.LocLon <= 180 {
+		b.WriteString(fmt.Sprintf(" User approximate location (shared by their browser): %.2f, %.2f (lat, lon — use only when relevant).",
+			opts.LocLat, opts.LocLon))
+	}
+	return b.String()
 }
 
 // modelContextLen looks up the chat model's cached context_len, falling back

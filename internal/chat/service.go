@@ -138,6 +138,16 @@ type SendOpts struct {
 	Search bool     // enable SearXNG web search
 	Images []string // data: URLs attached to the user message
 	From   string   // message id to regenerate from ("" = normal append)
+
+	// Client context: the browser's IANA timezone and (opt-in) approximate
+	// location, folded into the system prompt's user-context line so
+	// "today / here / nearby" resolve without the model guessing.
+	// Timezone is validated via time.LoadLocation before use; HasLoc
+	// distinguishes "shared 0,0" from "not shared".
+	Timezone string
+	LocLat   float64
+	LocLon   float64
+	HasLoc   bool
 	// Branch makes From an insert-beside instead of a truncate-and-redo: the
 	// anchor and everything after it stay, the new version lands as its
 	// sibling (Open WebUI's ‹1/2› version model). Only meaningful with From.
@@ -442,7 +452,7 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 			&store.Message{Role: "assistant", Content: opts.branchAnchor.Content},
 			&store.Message{Role: "user", Content: userMsg.Content})
 	}
-	system := s.systemPrompt(ctx)
+	system := s.systemPrompt(ctx, opts)
 	contextLen := s.modelContextLen(ctx, chat)
 	msgs, compacted := assemblePrompt(system, summary, promptHist, contextLen, userMsgID, opts.Images)
 

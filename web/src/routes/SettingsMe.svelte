@@ -28,6 +28,7 @@
     type TwoFactorStatus,
   } from '$lib/security-api';
   import { copyText } from '$lib/chatview-api';
+  import { cachedGeo, disableGeoShare, enableGeoShare, geoShareOn, refreshGeo } from '$lib/clientctx';
   import {
     modelPrefs,
     load as loadModelPrefs,
@@ -111,6 +112,31 @@
 
   // ----- preferences -----
   let sendOnEnter = $state(getSendOnEnter());
+
+  // ----- location sharing (opt-in; browser-permission flow in $lib/clientctx) -----
+  let geoOn = $state(geoShareOn());
+  let geoNote = $state('');
+  function geoStamp(g?: { lat: number; lon: number }): string {
+    return g ? `Sharing ~${g.lat.toFixed(2)}, ${g.lon.toFixed(2)}.` : '';
+  }
+  geoNote = geoStamp(cachedGeo());
+  refreshGeo(); // keep the cached fix fresh while the page is open
+  async function toggleGeo(): Promise<void> {
+    if (!geoOn) {
+      disableGeoShare();
+      geoNote = '';
+      push('Location sharing is off', 'info');
+      return;
+    }
+    try {
+      const v = await enableGeoShare();
+      geoNote = geoStamp(v);
+      push('Location shared — "nearby" questions now have context', 'success');
+    } catch (e) {
+      geoOn = false;
+      push(e instanceof Error ? e.message : 'Location unavailable', 'error');
+    }
+  }
 
   // ----- account: password -----
   let curPw = $state('');
@@ -537,6 +563,21 @@
           <p class="text-xs text-[var(--muted)]">When off, use ⌘/Ctrl + Enter to send.</p>
         </div>
         <Toggle label="Send on Enter" bind:checked={sendOnEnter} onchange={() => setSendOnEnter(sendOnEnter)} />
+      </div>
+
+      <div class="flex items-center justify-between gap-4 border-t py-3.5" style="border-color:var(--border)">
+        <div class="min-w-0">
+          <p class="text-sm font-medium">Share location with the assistant</p>
+          <p class="text-xs text-[var(--muted)]">
+            {#if geoOn}
+              {geoNote || 'Location shared — approximate coordinates (±1 km) go with each message.'}
+            {:else}
+              Asks the browser once, then sends approximate coordinates (±1 km) with your messages so
+              "nearby" / "here" questions work. Your timezone is always shared — that needs no permission.
+            {/if}
+          </p>
+        </div>
+        <Toggle label="Share location" bind:checked={geoOn} onchange={() => void toggleGeo()} />
       </div>
     </section>
 
