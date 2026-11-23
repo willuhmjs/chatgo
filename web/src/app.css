@@ -181,6 +181,55 @@ body {
   animation: pop-rise 120ms ease-out;
 }
 
+/* Routed-view entrance: a 140ms fade+rise replayed on every route change
+   (App.svelte keys the wrapper by route name). Quiet, one-shot, no layout
+   shift — pages feel placed rather than snapped in. */
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.view-in {
+  animation: view-in 140ms ease-out;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Theme flips fade instead of hard-cutting surfaces + text (160ms). */
+body {
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+/* One quiet focus ring to rule them all — components that care override. */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--acc) 55%, transparent);
+  outline-offset: 1px;
+}
+
+/* <kbd> chips (About modal, shortcuts help) ride the token palette. */
+kbd {
+  font-family: inherit;
+  font-size: 0.75em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+/* Images inside markdown share the code-block corner language. */
+img.md-img {
+  border-radius: 0.75rem;
+}
+
 /* §9 kill-switch: nothing moves when the user asked us not to move */
 @media (prefers-reduced-motion: reduce) {
   *,

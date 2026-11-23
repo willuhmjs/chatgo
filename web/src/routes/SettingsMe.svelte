@@ -11,7 +11,7 @@
   import { ACCENTS, accent, setAccent } from '$lib/accent.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import { logout } from '$lib/session.svelte.js';
-  import { ApiError, listChats } from '$lib/api';
+  import { ApiError, importChats, listChats } from '$lib/api';
   import type { Chat } from '$lib/api';
   import { changePassword, getSendOnEnter, logoutEverywhere, setMeName, setSendOnEnter } from '$lib/api-shell';
   import {
@@ -65,9 +65,35 @@
     input,
     inputStyle,
   } from '$lib/admin/ui/styles';
-  import { Check, ChevronDown, Copy, Moon, Pencil, Search, ShieldCheck, Star, Sun, Trash2 } from 'lucide-svelte';
+  import { Check, ChevronDown, Copy, Download, Moon, Pencil, Search, ShieldCheck, Star, Sun, Trash2 } from 'lucide-svelte';
 
   let { tab = 'profile' }: { tab?: 'profile' | 'preferences' | 'account' } = $props();
+
+  // ----- account: chat import (ChatGPT / Open WebUI JSON exports) -----
+  let importInput = $state<HTMLInputElement | null>(null);
+  let importing = $state(false);
+  let importMsg = $state('');
+  let importErr = $state('');
+  async function runImport(file: File): Promise<void> {
+    importing = true;
+    importMsg = '';
+    importErr = '';
+    try {
+      const payload = JSON.parse(await file.text());
+      const res = await importChats(payload);
+      if (res.imported > 0) {
+        importMsg = `Imported ${res.imported} ${res.imported === 1 ? 'chat' : 'chats'} · ${res.messages} messages`;
+        navigate(`/c/${res.ids[0]}`); // land in the fresh chat; sidebar refetches
+      } else {
+        importErr = 'No conversations found in that file.';
+      }
+    } catch (e) {
+      importErr = e instanceof ApiError ? e.message : 'Import failed — is that a valid JSON export?';
+    } finally {
+      importing = false;
+      if (importInput) importInput.value = '';
+    }
+  }
 
   /** Shared quiet-red inline error text for ApiError-shaped failures. */
   function errText(e: unknown, fallback: string): string {
@@ -850,6 +876,36 @@
         >
           Sign out everywhere
         </button>
+      </div>
+    </section>
+
+    <section class="rounded-2xl p-4 sm:p-5" style="background:var(--panel); color:var(--text)">
+      <h2 class="text-[15px] font-medium">Import conversations</h2>
+      <p class="mt-0.5 mb-3 text-xs text-[var(--muted)]">
+        Bring chats over from ChatGPT (conversations.json) or an Open WebUI export. Only the active branch of each
+        conversation is imported, as regular chats you own.
+      </p>
+      <input
+        bind:this={importInput}
+        type="file"
+        accept="application/json,.json"
+        class="hidden"
+        onchange={(e) => {
+          const f = e.currentTarget.files?.[0];
+          if (f) void runImport(f);
+        }}
+      />
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          class={btn}
+          style={btnGhostStyle}
+          disabled={importing}
+          onclick={() => importInput?.click()}
+        >
+          <Download class="size-3.5" /> {importing ? 'Importing…' : 'Choose JSON file…'}
+        </button>
+        {#if importMsg}<span class="text-xs text-[var(--ok)]">{importMsg}</span>{/if}
+        {#if importErr}<span class="text-xs" style="color:var(--danger)">{importErr}</span>{/if}
       </div>
     </section>
 

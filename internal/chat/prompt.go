@@ -46,8 +46,13 @@ func estimateTokens(msgs []providers.ChatMessage) int {
 }
 
 // systemPrompt returns the base persona; settings key "system_prompt" wins.
-func (s *Service) systemPrompt(ctx context.Context, opts SendOpts) string {
+// override (chats.params_json."system") beats both — the per-chat system
+// prompt the user set in the chat's settings drawer.
+func (s *Service) systemPrompt(ctx context.Context, opts SendOpts, override string) string {
 	base := func() string {
+		if override != "" {
+			return override
+		}
 		v, err := s.Store.Settings.Get(ctx, settingSystemPrompt)
 		if err != nil {
 			slog.Warn("chat: read system_prompt failed", "error", err)

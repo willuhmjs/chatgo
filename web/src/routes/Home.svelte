@@ -44,6 +44,27 @@
     setDefault,
   } from '$lib/chat/model-prefs.svelte.js';
   import { ArrowUp, ChevronDown, Clock, LoaderCircle } from 'lucide-svelte';
+  import { firstName } from '$lib/ui/chat-grouping';
+
+  // Home motto (OWUI's "instance mottos", client-side): one greeting per day,
+  // rotated from a small list and personalized with the user's first name.
+  const MOTTOS = [
+    'What can I help with?',
+    'Where should we begin?',
+    'What are we building today?',
+    'Ask me anything.',
+    'Fresh context window, fresh start.',
+    'Let’s make something useful.',
+    'Two thoughts enter, one answer leaves.',
+    'The model is ready. Are you?',
+  ] as const;
+  const motto = $derived.by(() => {
+    const d = new Date();
+    const seed = d.getFullYear() * 372 + d.getMonth() * 31 + d.getDate();
+    const base = MOTTOS[seed % MOTTOS.length];
+    const who = user?.name ? firstName(user.name) : '';
+    return who && base.endsWith('.') ? `${base.slice(0, -1)}, ${who}.` : base;
+  });
 
   const user = $derived(session.user);
   const pending = $derived(user?.role === 'pending');
@@ -299,7 +320,8 @@
     {:else}
       <div class="-mt-[6vh] flex flex-1 flex-col justify-center">
         <!-- greeting (§4) -->
-        <h1 class="text-center text-[30px] font-semibold tracking-tight">What can I help with?</h1>
+        <!-- greeting (§4) — rotating motto, gradient-flashed but quiet (§4.1) -->
+        <h1 class="motto text-center text-[30px] font-semibold tracking-tight">{motto}</h1>
 
         <!-- pill composer (§6) -->
         <div class="composer relative mt-7">
@@ -488,5 +510,20 @@
   .sug:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--acc) 60%, transparent);
     outline-offset: 2px;
+  }
+  /* rotating greeting: quiet accent gradient wash on the active word */
+  .motto {
+    background: var(--acc-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .motto {
+      color: var(--text);
+      -webkit-text-fill-color: currentColor;
+      background: none;
+    }
   }
 </style>

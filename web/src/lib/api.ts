@@ -73,6 +73,7 @@ export interface Chat {
   model_id: string;
   params?: Record<string, unknown>;
   pinned: boolean;
+  archived?: boolean;
   folder_id?: string | null;
   share_token?: string | null;
   created_at: number;
@@ -137,6 +138,7 @@ export interface ChatListQuery {
   q?: string;
   folder?: string;
   tag?: string;
+  archived?: boolean;
   page?: number;
   per?: number;
 }
@@ -170,6 +172,7 @@ export const listChats = (q: ChatListQuery = {}) => {
   if (q.q) qs.set('q', q.q);
   if (q.folder) qs.set('folder', q.folder);
   if (q.tag) qs.set('tag', q.tag);
+  if (q.archived) qs.set('archived', '1');
   qs.set('page', String(q.page ?? 1));
   qs.set('per', String(q.per ?? 30));
   return req<ChatPage>('GET', `/api/chats?${qs}`);
@@ -185,6 +188,70 @@ export const setChatFolder = (id: string, folderId: string | null) =>
   req<void>('PUT', `/api/chats/${id}/folder`, { folder_id: folderId });
 export const setChatTags = (id: string, tagIds: string[]) =>
   req<void>('PUT', `/api/chats/${id}/tags`, { tag_ids: tagIds });
+
+/** Archive (hide from the sidebar; restore later) / unarchive a chat. */
+export const archiveChat = (id: string) =>
+  req<{ id: string; archived: boolean }>('POST', `/api/chats/${id}/archive`);
+export const unarchiveChat = (id: string) =>
+  req<{ id: string; archived: boolean }>('POST', `/api/chats/${id}/unarchive`);
+
+export interface ImportResult {
+  imported: number;
+  messages: number;
+  ids: string[];
+}
+/** Import a ChatGPT / Open WebUI JSON export (client-parsed array or object). */
+export const importChats = (payload: unknown) => req<ImportResult>('POST', '/api/chats/import', payload);
+
+// ---------- notes ----------
+
+export interface Note {
+  id: string;
+  title: string;
+  content: string;
+  share_token?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+export const listNotes = () => req<{ notes: Note[]; total: number }>('GET', '/api/notes');
+export const createNote = (body: { title?: string; content?: string }) => req<Note>('POST', '/api/notes', body);
+export const getNote = (id: string) => req<Note>('GET', `/api/notes/${id}`);
+export const updateNote = (id: string, patch: { title?: string; content?: string }) =>
+  req<Note>('PUT', `/api/notes/${id}`, patch);
+export const deleteNote = (id: string) => req<void>('DELETE', `/api/notes/${id}`);
+export const shareNote = (id: string, on: boolean) => req<Note>('POST', `/api/notes/${id}/share`, { on });
+export const getSharedNote = (token: string) => req<Note>('GET', `/api/share/note/${token}`);
+
+// ---------- evaluations (admin) ----------
+
+export interface EvalModel {
+  model_id: string;
+  provider_id: string;
+  up: number;
+  down: number;
+}
+export interface EvalFeedback {
+  id: string;
+  value: 1 | -1;
+  comment?: string;
+  created_at: number;
+  chat_id: string;
+  chat_title: string;
+  message_id: string;
+  excerpt: string;
+  model_id: string;
+  user_name: string;
+}
+export interface EvalSummary {
+  totals: { up: number; down: number; score: number };
+  models: EvalModel[];
+  recent: EvalFeedback[];
+  total: number;
+  page: number;
+  per: number;
+}
+export const getEvaluations = (page = 1, per = 25) =>
+  req<EvalSummary>('GET', `/api/admin/ratings?page=${page}&per=${per}`);
 
 // ---------- messages ----------
 

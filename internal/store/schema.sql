@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS chats (
 	pinned INTEGER NOT NULL DEFAULT 0,
 	share_token TEXT UNIQUE,
 	leaf_id TEXT NOT NULL DEFAULT '',
+	archived_at INTEGER,
 	deleted_at INTEGER,
 	created_at INTEGER NOT NULL DEFAULT 0,
 	updated_at INTEGER NOT NULL DEFAULT 0

@@ -37,7 +37,7 @@ const searchMatchCTE = `WITH match(cid, last_at) AS (
 	FROM messages_fts fts
 	JOIN messages m ON m.rowid = fts.rowid
 	JOIN chats c ON c.id = m.chat_id
-	WHERE fts.messages_fts MATCH ?1 AND c.user_id = ?2 AND c.deleted_at IS NULL
+	WHERE fts.messages_fts MATCH ?1 AND c.user_id = ?2 AND c.deleted_at IS NULL AND c.archived_at IS NULL
 	GROUP BY m.chat_id
 )`
 
@@ -102,6 +102,12 @@ func (r *ChatsRepo) ListPinned(ctx context.Context, userID string, opts ChatList
 	add := func(clause string, arg any) {
 		args = append(args, arg)
 		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	// Archive lane mirrors List: pinned-archived rows only show in ?archived=1.
+	if opts.Archived {
+		where = append(where, "archived_at IS NOT NULL")
+	} else {
+		where = append(where, "archived_at IS NULL")
 	}
 	if opts.FolderID != "" {
 		add("folder_id = ?%d", opts.FolderID)

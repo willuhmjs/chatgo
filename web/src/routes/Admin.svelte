@@ -4,15 +4,16 @@
   // mirrored into ?tab=… with history.replaceState (never pushState — keeps
   // the scaffold router's pathname-only location authoritative). Deep links
   // like /admin?tab=users resolve on mount.
-  import { ScanSearch, Server, Settings, Shield, ShieldX, Users } from 'lucide-svelte';
+  import { ScanSearch, Server, Settings, Shield, ShieldX, ThumbsUp, Users } from 'lucide-svelte';
   import { isAdmin, session } from '$lib/session.svelte.js';
   import ProvidersTab from '$lib/admin/tabs/ProvidersTab.svelte';
   import UsersTab from '$lib/admin/tabs/UsersTab.svelte';
   import SystemTab from '$lib/admin/tabs/SystemTab.svelte';
   import AuditTab from '$lib/admin/tabs/AuditTab.svelte';
+  import EvalsTab from '$lib/admin/tabs/EvalsTab.svelte';
   import Spinner from '$lib/admin/ui/Spinner.svelte';
 
-  const TABS = ['providers', 'users', 'system', 'audit'] as const;
+  const TABS = ['providers', 'users', 'system', 'audit', 'evals'] as const;
   type Tab = (typeof TABS)[number];
 
   function tabFromUrl(): Tab {
@@ -32,6 +33,7 @@
     { id: 'users', label: 'Users', icon: Users },
     { id: 'system', label: 'System', icon: Settings },
     { id: 'audit', label: 'Audit', icon: ScanSearch },
+    { id: 'evals', label: 'Evaluations', icon: ThumbsUp },
   ];
 </script>
 
@@ -81,7 +83,7 @@
         <h1 class="flex items-center gap-2 text-lg font-semibold tracking-tight">
           <Shield size={19} class="text-[var(--muted)]" /> Admin
         </h1>
-        <p class="mt-0.5 text-sm text-[var(--muted)]">Providers, people, instance settings and the audit trail.</p>
+        <p class="mt-0.5 text-sm text-[var(--muted)]">Providers, people, instance settings, evaluations and the audit trail.</p>
       </div>
       <!-- quiet segmented pill (§5): active = #3a3a3a fill, no accent bar -->
       <nav class="flex items-center gap-0.5 rounded-full p-1" style="background:var(--panel)" aria-label="Admin sections">
@@ -106,6 +108,8 @@
       <UsersTab />
     {:else if tab === 'system'}
       <SystemTab />
+    {:else if tab === 'evals'}
+      <EvalsTab />
     {:else}
       <AuditTab />
     {/if}

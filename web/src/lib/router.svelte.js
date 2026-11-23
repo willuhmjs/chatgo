@@ -8,6 +8,7 @@ const ROUTES = [
   { name: 'gallery', pattern: '/gallery' },
   { name: 'knowledge', pattern: '/knowledge' },
   { name: 'images', pattern: '/images' },
+  { name: 'notes', pattern: '/notes' },
   { name: 'settings', pattern: '/settings' },
   { name: 'admin', pattern: '/admin' },
   { name: 'login', pattern: '/login' },
@@ -15,6 +16,7 @@ const ROUTES = [
   { name: 'welcome', pattern: '/welcome' },
   { name: 'onboarding', pattern: '/onboarding' },
   { name: 'share', pattern: '/s/:token' },
+  { name: 'note', pattern: '/n/:token' },
 ];
 
 /** Reactive location; `path` is the current pathname (no query/hash). */

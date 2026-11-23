@@ -98,6 +98,7 @@ type Chat struct {
 	Pinned     bool
 	ShareToken *string
 	LeafID     string
+	ArchivedAt *int64 // non-nil = archived (hidden from the default list)
 	DeletedAt  *int64
 	CreatedAt  int64
 	UpdatedAt  int64

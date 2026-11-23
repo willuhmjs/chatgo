@@ -121,6 +121,7 @@ type chatJSON struct {
 	ModelID    string         `json:"model_id"`
 	Params     map[string]any `json:"params,omitempty"`
 	Pinned     bool           `json:"pinned"`
+	Archived   bool           `json:"archived,omitempty"`
 	FolderID   *string        `json:"folder_id,omitempty"`
 	ShareToken *string        `json:"share_token,omitempty"`
 	Tags       []*tagJSON     `json:"tags,omitempty"`
@@ -136,6 +137,7 @@ func toChatJSON(c *store.Chat) *chatJSON {
 	j := &chatJSON{
 		ID: c.ID, Title: c.Title, ProviderID: c.ProviderID, ModelID: c.ModelID,
 		Pinned: c.Pinned, FolderID: c.FolderID, ShareToken: c.ShareToken,
+		Archived:  c.ArchivedAt != nil,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	}
 	if c.ParamsJSON != "" && c.ParamsJSON != "{}" {
@@ -260,6 +262,11 @@ func wantsPinned(r *http.Request) bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+func wantsArchived(r *http.Request) bool {
+	v := r.URL.Query().Get("archived")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 // --- registration -------------------------------------------------------------
 
 // registerChats mounts chat CRUD on the shared mux. The retract sub-resource
@@ -269,10 +276,34 @@ func wantsPinned(r *http.Request) bool {
 func registerChats(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/chats", d.handleListChats)
 	mux.HandleFunc("POST /api/chats", d.handleCreateChat)
+	mux.HandleFunc("POST /api/chats/import", d.handleImportChats)
 	mux.HandleFunc("GET /api/chats/{id}", d.handleGetChat)
 	mux.HandleFunc("PATCH /api/chats/{id}", d.handlePatchChat)
 	mux.HandleFunc("DELETE /api/chats/{id}", d.handleDeleteChat)
+	mux.HandleFunc("POST /api/chats/{id}/archive", d.handleArchiveChat)
+	mux.HandleFunc("POST /api/chats/{id}/unarchive", d.handleArchiveChat)
 	mux.HandleFunc("POST /api/chats/{id}/messages/{msgId}/retract", d.handleRetractMessage)
+}
+
+// POST /api/chats/{id}/archive · POST /api/chats/{id}/unarchive —
+// Open WebUI-style archive: the chat leaves the sidebar/search/pinned lanes
+// but keeps everything (messages, shares, folder/tags) and restores intact.
+func (d *Deps) handleArchiveChat(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	c, err := d.ownChat(r.Context(), u.ID, r.PathValue("id"))
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	archived := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/archive")
+	if err := d.Store.Chats.SetArchived(r.Context(), c.ID, archived); err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": c.ID, "archived": archived})
 }
 
 // --- handlers -------------------------------------------------------------------
@@ -287,6 +318,7 @@ func (d *Deps) handleListChats(w http.ResponseWriter, r *http.Request) {
 	opts := store.ChatListOptions{
 		FolderID: r.URL.Query().Get("folder"),
 		TagID:    r.URL.Query().Get("tag"),
+		Archived: wantsArchived(r),
 		Page:     page,
 		Per:      per,
 	}
@@ -297,7 +329,7 @@ func (d *Deps) handleListChats(w http.ResponseWriter, r *http.Request) {
 		err   error
 	)
 	switch {
-	case q != "":
+	case q != "" && !opts.Archived:
 		// Message-content search via FTS5. CONTRACT-DEVIATION: the frozen
 		// SearchChats(ctx,userID,q,page,per) shape carries no folder/tag/
 		// pinned filters, so those query params are ignored on the ?q= path.

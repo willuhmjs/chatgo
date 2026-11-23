@@ -25,6 +25,7 @@ import (
 	"chatgo/internal/kb"
 	"chatgo/internal/library"
 	"chatgo/internal/memory"
+	"chatgo/internal/notes"
 	"chatgo/internal/providers"
 	"chatgo/internal/search"
 	"chatgo/internal/store"
@@ -75,6 +76,10 @@ func New(d Deps) (*Server, error) {
 	// v2 feature planes (docs/FEATURES-V2.md), mounted after the core groups.
 	// Each owns its DDL (coordination law) and self-inits it here.
 	if err := library.Register(mux, &library.Deps{Store: d.Store, Auth: d.Auth}); err != nil {
+		return nil, err
+	}
+	// notes.Register runs its DDL and mounts /api/notes + public note shares.
+	if err := notes.Register(mux, &notes.Deps{Store: d.Store, Auth: d.Auth}); err != nil {
 		return nil, err
 	}
 	// kb.Register runs its DDL and registers the "kb" chat enricher itself.
@@ -144,7 +149,8 @@ func AuthPolicy(a *auth.Auth, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {
-		case p == "/healthz", strings.HasPrefix(p, "/api/share/"), strings.HasPrefix(p, "/s/"):
+		case p == "/healthz", strings.HasPrefix(p, "/api/share/"),
+			strings.HasPrefix(p, "/s/"), strings.HasPrefix(p, "/n/"):
 			optional.ServeHTTP(w, r) // Attach keeps "me" working on shared pages
 		case strings.HasPrefix(p, "/api/auth/"):
 			switch {
@@ -157,6 +163,7 @@ func AuthPolicy(a *auth.Auth, next http.Handler) http.Handler {
 			}
 		case strings.HasPrefix(p, "/api/providers"),
 			strings.HasPrefix(p, "/api/users"),
+			strings.HasPrefix(p, "/api/admin/"),
 			p == "/api/settings" || strings.HasPrefix(p, "/api/settings/"):
 			admin.ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/api/"), strings.HasPrefix(p, "/files/"):

@@ -245,6 +245,10 @@ function enhance(html: string): string {
     };
     mkBtn('code-wrap', 'Toggle soft wrap', 'Wrap');
     mkBtn('code-copy', 'Copy code', 'Copy');
+    mkBtn('code-dl', 'Download as file', 'Save');
+    // mermaid fences get a source-toggle once the diagram renders (Markdown.svelte)
+    const lang = bar.querySelector('.codelang')?.textContent?.trim().toLowerCase();
+    if (lang === 'mermaid') mkBtn('code-src', 'Toggle diagram source', 'Code');
     bar.appendChild(acts);
   }
   // mXSS hardening: mutations + DOMParser re-parse + innerHTML re-serialize

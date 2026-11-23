@@ -89,6 +89,7 @@ func Register(mux *http.ServeMux, d *Deps) error {
 	}
 	registerPrompts(mux, d)
 	registerRatings(mux, d)
+	registerRatingsAdmin(mux, d)
 	registerFork(mux, d)
 	registerExport(mux, d)
 	return nil

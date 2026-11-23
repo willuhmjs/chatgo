@@ -6,6 +6,7 @@
   // KaTeX is pulled in via dynamic import ONLY when $…$ / $$…$$ math is found
   // (chunk-split out of the main bundle); any failure falls back to plain text.
   import DOMPurify from 'dompurify';
+  import { tick } from 'svelte';
   import { renderMarkdown } from '$lib/chat/markdown';
   import { mdStore, openLightbox } from '$lib/chat/state.svelte.js';
   import { copyText } from '$lib/chatview-api';
@@ -43,6 +44,65 @@
     tex: string;
     display: boolean;
     raw: string;
+  }
+
+  // ---------- lazy Mermaid (diagram fences only; chunk-split from main) ----------
+
+  let mermaidLoading: Promise<unknown> | null = null;
+  let mermaidTick = $state(0); // bump re-runs the paint effect once the lib lands
+  let mermaidSeq = 0;
+
+  function ensureMermaid(): Promise<unknown> {
+    if (!mermaidLoading) {
+      mermaidLoading = import('mermaid')
+        .then((mod) => {
+          const m = ((mod as { default?: unknown }).default ?? mod) as {
+            initialize: (cfg: Record<string, unknown>) => void;
+          };
+          m.initialize({
+            startOnLoad: false,
+            securityLevel: 'strict',
+            theme: document.documentElement.classList.contains('dark') ? 'dark' : 'neutral',
+            fontFamily: 'inherit',
+          });
+          mermaidTick++;
+          return m;
+        })
+        .catch(() => {
+          mermaidLoading = null; // retry on the next render
+          throw new Error('mermaid unavailable');
+        });
+    }
+    return mermaidLoading;
+  }
+
+  /** Replace un-rendered ```mermaid fences with their SVG (final renders only). */
+  function paintMermaid(el: HTMLElement): void {
+    const blocks = Array.from(
+      el.querySelectorAll<HTMLElement>('.codeblock:not(.mmd) code.language-mermaid'),
+    );
+    if (blocks.length === 0) return;
+    void ensureMermaid()
+      .then(async (mod) => {
+        const m = mod as { render: (id: string, code: string) => Promise<{ svg: string }> };
+        for (const code of blocks) {
+          const block = code.closest<HTMLElement>('.codeblock');
+          if (!block || block.classList.contains('mmd')) continue;
+          block.classList.add('mmd'); // claim first: re-entry renders nothing
+          try {
+            const { svg } = await m.render(`mmd-${++mermaidSeq}`, code.textContent ?? '');
+            const holder = document.createElement('div');
+            holder.className = 'mermaid-render';
+            holder.innerHTML = svg; // mermaid securityLevel:'strict' sanitizes
+            block.before(holder);
+          } catch {
+            block.classList.remove('mmd'); // leave the plain code fence
+          }
+        }
+      })
+      .catch(() => {
+        /* no mermaid — plain code fences remain */
+      });
   }
 
   // split point: fenced blocks + inline code spans — math inside them is left
@@ -173,6 +233,25 @@
         wrapBtn.closest('.codeblock')?.classList.toggle('wrap');
         return;
       }
+      const srcBtn = t.closest('.code-src');
+      if (srcBtn) {
+        srcBtn.closest('.codeblock')?.classList.toggle('src');
+        return;
+      }
+      const dlBtn = t.closest('.code-dl');
+      if (dlBtn instanceof HTMLButtonElement) {
+        const block = dlBtn.closest('.codeblock');
+        const code = block?.querySelector('pre')?.textContent ?? '';
+        const lang = (block?.querySelector('.codelang')?.textContent ?? 'txt').trim() || 'txt';
+        const name = `${lang}-${Date.now().toString(36)}.${lang.replace(/[^a-z0-9]/gi, '') || 'txt'}`;
+        const url = URL.createObjectURL(new Blob([code], { type: 'text/plain;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        return;
+      }
       const img = t.closest('img.md-img');
       if (img) {
         const s = img.getAttribute('src');
@@ -181,6 +260,17 @@
     };
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
+  });
+
+  // Mermaid diagrams land once final HTML is in the DOM (never mid-stream;
+  // the raw fence is the streaming state, the SVG replaces it when settled).
+  $effect(() => {
+    void html;
+    void mermaidTick;
+    if (streaming) return;
+    const el = root;
+    if (!el) return;
+    void tick().then(() => paintMermaid(el));
   });
 </script>
 
@@ -611,5 +701,29 @@
   }
   :global(.md-body .hljs-strong) {
     font-weight: 700;
+  }
+
+  /* ── Mermaid diagrams ───────────────────────────────────────────────────
+     Once rendered, the fence folds behind its SVG (the Code button in the
+     block's bar folds it back). Unrendered/streaming fences stay plain code. */
+  :global(.md-body .mermaid-render) {
+    display: flex;
+    justify-content: center;
+    margin: 10px 0;
+    padding: 12px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--bg);
+  }
+  :global(.md-body .mermaid-render svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  :global(.md-body .codeblock.mmd:not(.src) pre) {
+    display: none;
+  }
+  :global(.md-body .codeblock.mmd .code-src) {
+    display: inline-flex;
   }
 </style>

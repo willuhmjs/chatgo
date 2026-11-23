@@ -36,6 +36,9 @@
   let topP = $state(1);
   let maxTokens = $state<number | null>(null);
   let stopText = $state('');
+  // Per-chat system prompt (Open WebUI's per-model "system" knob): lives in
+  // chats.params."system"; the server prefers it over the instance default.
+  let systemPrompt = $state('');
 
   let syncing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -53,12 +56,15 @@
     topP = p.top_p ?? 1;
     maxTokens = p.max_tokens ?? null;
     stopText = formatStopList(p.stop);
+    systemPrompt = typeof params?.system === 'string' ? params.system : '';
     queueMicrotask(() => (syncing = false));
   });
 
   // Non-sampling keys inside chats.params (e.g. kb_collection_ids set by the
   // composer's 📚 toggle) must survive every params PATCH — merge them back.
-  const SAMPLING_KEYS = new Set(['temperature', 'top_p', 'max_tokens', 'stop']);
+  // "system" is managed by THIS drawer (the textarea below), so it rides the
+  // explicit write, not the passthrough merge.
+  const SAMPLING_KEYS = new Set(['temperature', 'top_p', 'max_tokens', 'stop', 'system']);
   function extraParams(): Record<string, unknown> {
     const rest: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params ?? {})) if (!SAMPLING_KEYS.has(k)) rest[k] = v;
@@ -73,8 +79,11 @@
       max_tokens: maxTokens ?? undefined,
       stop: parseStopList(stopText),
     };
+    const sys = systemPrompt.trim();
+    const body: Record<string, unknown> = { ...extraParams(), ...compactParams(p) };
+    if (sys) body.system = sys;
     api
-      .patchChat(chatId, { params: { ...extraParams(), ...compactParams(p) } })
+      .patchChat(chatId, { params: body })
       .then((c) => {
         onupdated?.(c);
         window.dispatchEvent(new CustomEvent('chatgo:chat-updated', { detail: { chat: c } }));
@@ -93,6 +102,7 @@
     void topP;
     void maxTokens;
     void stopText;
+    void systemPrompt;
     schedule();
   });
 
@@ -108,6 +118,7 @@
     topP = 1;
     maxTokens = null;
     stopText = '';
+    systemPrompt = '';
     api
       .patchChat(chatId, { params: extraParams() })
       .then((c) => {
@@ -238,6 +249,19 @@
           placeholder="One per line (or comma-separated)"
           bind:value={stopText}></textarea>
         <p class="mt-1.5 text-[11px]" style="color:var(--muted)">Up to 8 sequences; generation halts on match</p>
+      </div>
+
+      <div>
+        <label class="label mb-2 block" for="p-system">System prompt</label>
+        <textarea
+          id="p-system"
+          rows="4"
+          class="ta"
+          placeholder="Optional override for this chat — e.g. “Answer in British English, always cite sources.”"
+          bind:value={systemPrompt}></textarea>
+        <p class="mt-1.5 text-[11px]" style="color:var(--muted)">
+          Replaces the assistant persona for this chat only; empty = instance default.
+        </p>
       </div>
 
       {#if memCount !== null}

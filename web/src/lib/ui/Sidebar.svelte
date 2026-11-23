@@ -12,6 +12,7 @@
   import { confirmDialog } from '$lib/ui/confirm.svelte.js';
   import { groupByDay, timeAgo } from '$lib/ui/chat-grouping';
   import { hueFrom } from '$lib/hue';
+  import { openAbout } from '$lib/ui/about.svelte.js';
   import Button from '$lib/ui/Button.svelte';
   import IconButton from '$lib/ui/IconButton.svelte';
   import Input from '$lib/ui/Input.svelte';
@@ -23,6 +24,9 @@
   import Skeleton from '$lib/ui/Skeleton.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import {
+    Archive,
+    ArchiveRestore,
+    ArrowLeft,
     BookOpen,
     ChevronDown,
     ChevronRight,
@@ -33,6 +37,7 @@
     FolderOpen,
     FolderPlus,
     Image as ImageIcon,
+    Info,
     LogOut,
     MessageSquare,
     Moon,
@@ -47,6 +52,7 @@
     Settings,
     ShieldCheck,
     SquarePen,
+    StickyNote,
     Sun,
     Trash2,
   } from 'lucide-svelte';
@@ -81,6 +87,9 @@
   let query = $state('');
   let debounced = $state('');
   let activeTag = $state<string | null>(null);
+  // Archive lane (OWUI parity): true = the list below shows ARCHIVED chats
+  // only; pinned/folder/day grouping stands down for a flat, restorable list.
+  let archivedView = $state(false);
 
   let collapsedFolders = $state<Set<string>>(loadCollapsedFolders());
   let renamingId = $state<string | null>(null);
@@ -121,6 +130,7 @@
       const res = await api.listChats({
         q: debounced || undefined,
         tag: activeTag ?? undefined,
+        archived: archivedView || undefined,
         page: p,
         per: 50,
       });
@@ -163,6 +173,7 @@
     void location.path; // refresh list after navigation (new chats, titles)
     void debounced;
     void activeTag;
+    void archivedView;
     void loadChats(1);
   });
 
@@ -179,6 +190,10 @@
 
   // ----- derived list structure -----
   const filtering = $derived(Boolean(debounced) || Boolean(activeTag));
+  // Archived lane: server ignores ?q for archived lists, so title-match here.
+  const archivedShown = $derived(
+    debounced ? chats.filter((c) => c.title.toLowerCase().includes(debounced.toLowerCase())) : chats,
+  );
   const pinned = $derived(chats.filter((c) => c.pinned));
   const rest = $derived(chats.filter((c) => !c.pinned));
   const folderSections = $derived(
@@ -224,6 +239,21 @@
     try {
       const updated = await api.patchChat(c.id, { pinned: !c.pinned });
       chats = chats.map((x) => (x.id === c.id ? updated : x));
+    } catch (e) {
+      push(e instanceof ApiError ? e.message : 'Update failed', 'error');
+    }
+  }
+
+  // Archive/restore: the row leaves the current lane immediately (server
+  // truth: archived chats drop out of the active list and vice versa).
+  async function toggleArchive(c: Chat) {
+    try {
+      if (archivedView) await api.unarchiveChat(c.id);
+      else await api.archiveChat(c.id);
+      chats = chats.filter((x) => x.id !== c.id);
+      total = Math.max(0, total - 1);
+      if (!archivedView && activeId === c.id) navigate('/');
+      push(archivedView ? 'Chat restored' : 'Chat archived', 'success');
     } catch (e) {
       push(e instanceof ApiError ? e.message : 'Update failed', 'error');
     }
@@ -407,10 +437,21 @@
                 {#snippet icon()}{#if c.pinned}<PinOff class="size-4" />{:else}<Pin class="size-4" />{/if}{/snippet}
                 {c.pinned ? 'Unpin' : 'Pin to top'}
               </MenuItem>
-              <MenuItem onclick={() => startMove(c)} {close}>
-                {#snippet icon()}<FolderInput class="size-4" />{/snippet}
-                Move to folder…
-              </MenuItem>
+              {#if archivedView}
+                <MenuItem onclick={() => void toggleArchive(c)} {close}>
+                  {#snippet icon()}<ArchiveRestore class="size-4" />{/snippet}
+                  Restore to sidebar
+                </MenuItem>
+              {:else}
+                <MenuItem onclick={() => startMove(c)} {close}>
+                  {#snippet icon()}<FolderInput class="size-4" />{/snippet}
+                  Move to folder…
+                </MenuItem>
+                <MenuItem onclick={() => void toggleArchive(c)} {close}>
+                  {#snippet icon()}<Archive class="size-4" />{/snippet}
+                  Archive
+                </MenuItem>
+              {/if}
               <div class="my-1 border-t" style="border-color:var(--border)"></div>
               <MenuItem danger onclick={() => void removeChat(c)} {close}>
                 {#snippet icon()}<Trash2 class="size-4" />{/snippet}
@@ -469,6 +510,14 @@
           class="grid size-9 place-items-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
         ><ImageIcon class="size-[18px]" /></a>
       </Tooltip>
+      <Tooltip text="Notes" side="right">
+        <a
+          href="/notes"
+          aria-label="Notes"
+          onclick={(e) => { e.preventDefault(); navigate('/notes'); }}
+          class="grid size-9 place-items-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
+        ><StickyNote class="size-[18px]" /></a>
+      </Tooltip>
     </div>
   {:else}
     <div class="flex h-12 shrink-0 items-center gap-0.5 px-2">
@@ -515,7 +564,7 @@
     </div>
     <!-- FE-PAGES: quiet nav rows (same styling as the rows above) -->
     <div class="shrink-0 px-2 pb-1">
-      {#each [['/knowledge', 'Knowledge'], ['/images', 'Images']] as [href, label] (href)}
+      {#each [['/knowledge', 'Knowledge'], ['/images', 'Images'], ['/notes', 'Notes']] as [href, label] (href)}
         <a
           href={href}
           onclick={(e) => {
@@ -527,7 +576,7 @@
             ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
             : 'text-[var(--muted)] hover:bg-[var(--fill-hover)] hover:text-[var(--text)]'}"
         >
-          {#if href === '/knowledge'}<BookOpen class="size-4 shrink-0" />{:else}<ImageIcon class="size-4 shrink-0" />{/if}
+          {#if href === '/knowledge'}<BookOpen class="size-4 shrink-0" />{:else if href === '/images'}<ImageIcon class="size-4 shrink-0" />{:else}<StickyNote class="size-4 shrink-0" />{/if}
           <span>{label}</span>
         </a>
       {/each}
@@ -535,7 +584,7 @@
   {/if}
 
   <!-- tag chip filters: quiet chips, no border -->
-  {#if !rail && tags.length > 0 && !pending}
+  {#if !rail && tags.length > 0 && !pending && !archivedView}
     <div class="flex shrink-0 flex-wrap gap-1.5 px-2.5 pb-2" aria-label="Filter by tag">
       {#each tags as t (t.id)}
         <button
@@ -575,15 +624,27 @@
           {/each}
         </div>
       {:else if !hasAny && !filtering}
-        <EmptyState title="No chats yet" description="Start a new conversation — it will show up here.">
-          <Button variant="secondary" size="sm" onclick={() => navigate('/')}>
-            <Plus class="size-3.5" /> New chat
-          </Button>
-        </EmptyState>
+        {#if archivedView}
+          <EmptyState title="No archived chats" description="Archive a chat from its ⋯ menu — it leaves the sidebar but keeps everything, restorable any time.">
+            <Button variant="secondary" size="sm" onclick={() => (archivedView = false)}>
+              <ArrowLeft class="size-3.5" /> Back to chats
+            </Button>
+          </EmptyState>
+        {:else}
+          <EmptyState title="No chats yet" description="Start a new conversation — it will show up here.">
+            <Button variant="secondary" size="sm" onclick={() => navigate('/')}>
+              <Plus class="size-3.5" /> New chat
+            </Button>
+          </EmptyState>
+        {/if}
       {:else if !hasAny}
         <p class="px-2 py-8 text-center text-xs text-[var(--muted)]">No chats match.</p>
       {:else}
-        {#if filtering}
+        {#if archivedView}
+          <!-- archive lane: flat, restorable; grouping/pinned/folders stand down -->
+          {@render sectionLabel('Archived')}
+          {#each archivedShown as c (c.id)}{@render chatRow(c)}{/each}
+        {:else if filtering}
           <!-- flat search/tag results -->
           {@render sectionLabel(activeTag ? `Tag: ${tags.find((t) => t.id === activeTag)?.name ?? ''}` : 'Results')}
           {#each chats as c (c.id)}{@render chatRow(c)}{/each}
@@ -625,6 +686,17 @@
         {/if}
       {/if}
     </nav>
+    <!-- archive lane toggle (OWUI: the archive lives quietly at the bottom) -->
+    <button
+      type="button"
+      class="mx-2 mb-1 flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] transition-colors {rowFocus} {archivedView
+        ? 'text-[var(--acc)] hover:bg-[var(--acc-tint)]'
+        : 'text-[var(--faint)] hover:bg-[var(--fill-hover)] hover:text-[var(--muted)]'}"
+      onclick={() => (archivedView = !archivedView)}
+    >
+      {#if archivedView}<ArrowLeft class="size-4 shrink-0" />{:else}<Archive class="size-4 shrink-0" />{/if}
+      <span>{archivedView ? 'Back to chats' : 'Archived'}</span>
+    </button>
   {/if}
 
   <!-- rail: recent chats as icons -->
@@ -713,6 +785,10 @@
                 Admin
               </MenuItem>
             {/if}
+            <MenuItem onclick={openAbout} {close}>
+              {#snippet icon()}<Info class="size-4" />{/snippet}
+              About
+            </MenuItem>
             <div class="my-1 border-t" style="border-color:var(--border)"></div>
             <MenuItem danger onclick={() => void doLogout()} {close}>
               {#snippet icon()}<LogOut class="size-4" />{/snippet}

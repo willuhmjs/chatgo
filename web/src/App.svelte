@@ -30,12 +30,15 @@
   import FirstRun from './routes/FirstRun.svelte';
   import Onboarding from './routes/Onboarding.svelte';
   import Share from './routes/Share.svelte';
+  import Notes from './routes/Notes.svelte';
+  import NoteShare from './routes/NoteShare.svelte';
+  import AboutModal from './lib/ui/AboutModal.svelte';
 
   import { Menu, Plus, X } from 'lucide-svelte';
 
   const route = $derived(currentRoute());
   // auth + public pages render bare (no app chrome)
-  const bare = $derived(['login', 'register', 'welcome', 'onboarding', 'share'].includes(route.name));
+  const bare = $derived(['login', 'register', 'welcome', 'onboarding', 'share', 'note'].includes(route.name));
 
   // ----- sidebar state -----
   const COLLAPSE_KEY = 'chatgo:sidebar-collapsed';
@@ -216,6 +219,8 @@
     <FirstRun />
   {:else if route.name === 'onboarding'}
     <Onboarding />
+  {:else if route.name === 'note'}
+    <NoteShare token={route.params.token} />
   {:else}
     <Share token={route.params.token} />
   {/if}
@@ -253,8 +258,11 @@
         </IconButton>
       </header>
 
-      <!-- main scroll container -->
+      <!-- main scroll container — keyed by route so the entrance animation
+           replays per navigation (pages already remount per {#if} branch) -->
       <main class="min-h-0 flex-1 overflow-y-auto">
+        {#key route.name}
+        <div class="view-in">
         {#if route.name === 'home'}
           <Home />
         {:else if route.name === 'chat'}
@@ -267,6 +275,8 @@
           <Knowledge />
         {:else if route.name === 'images'}
           <Images />
+        {:else if route.name === 'notes'}
+          <Notes />
         {:else if route.name === 'settings'}
           <Settings />
         {:else if route.name === 'admin'}
@@ -276,6 +286,8 @@
             Not found — <a class="ml-1 text-[var(--acc)] hover:underline" href="/">go home</a>
           </div>
         {/if}
+        </div>
+        {/key}
       </main>
     </div>
   </div>
@@ -286,3 +298,4 @@
 <!-- themed toast stack + global ⌘K palette (FE-extra components, mounted here) -->
 <Toasts />
 <CommandPalette />
+<AboutModal />

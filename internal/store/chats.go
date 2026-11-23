@@ -10,15 +10,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const chatCols = "id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, leaf_id, deleted_at, created_at, updated_at"
+const chatCols = "id, user_id, folder_id, title, provider_id, model_id, params_json, pinned, share_token, leaf_id, archived_at, deleted_at, created_at, updated_at"
 
 func scanChat(scan func(...any) error) (*Chat, error) {
 	c := &Chat{}
 	var folder, share sql.NullString
-	var deleted sql.NullInt64
+	var deleted, archived sql.NullInt64
 	var pinned int
 	if err := scan(&c.ID, &c.UserID, &folder, &c.Title, &c.ProviderID, &c.ModelID,
-		&c.ParamsJSON, &pinned, &share, &c.LeafID, &deleted, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&c.ParamsJSON, &pinned, &share, &c.LeafID, &archived, &deleted, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if folder.Valid {
@@ -26,6 +26,10 @@ func scanChat(scan func(...any) error) (*Chat, error) {
 	}
 	if share.Valid {
 		c.ShareToken = &share.String
+	}
+	if archived.Valid {
+		a := archived.Int64
+		c.ArchivedAt = &a
 	}
 	if deleted.Valid {
 		d := deleted.Int64
@@ -88,6 +92,7 @@ type ChatListOptions struct {
 	Q        string
 	FolderID string // "" = any folder
 	TagID    string // "" = any tag
+	Archived bool   // true = list archived only; false = exclude archived
 	Page     int    // 1-based, default 1
 	Per      int    // default 30, max 100 (contract non-negotiable)
 }
@@ -114,6 +119,13 @@ func (r *ChatsRepo) List(ctx context.Context, userID string, opts ChatListOption
 	add := func(clause string, arg any) {
 		args = append(args, arg)
 		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	// Archive is a mutually-exclusive lane: the default list is the active
+	// inbox (archived_at IS NULL); ?archived=1 flips to the archive itself.
+	if opts.Archived {
+		where = append(where, "archived_at IS NOT NULL")
+	} else {
+		where = append(where, "archived_at IS NULL")
 	}
 	if opts.FolderID != "" {
 		add("folder_id = ?%d", opts.FolderID)
@@ -209,5 +221,19 @@ func (r *ChatsRepo) SetFolder(ctx context.Context, id string, folderID string) e
 func (r *ChatsRepo) SetLeaf(ctx context.Context, id, leafID string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE chats SET leaf_id = ?2 WHERE id = ?1 AND deleted_at IS NULL`, id, leafID)
+	return affected(res, err)
+}
+
+// SetArchived archives a live chat (stamps archived_at) or restores it (NULL).
+// Idempotent both ways: re-archiving keeps the original stamp.
+func (r *ChatsRepo) SetArchived(ctx context.Context, id string, archived bool) error {
+	var at any
+	if archived {
+		at = nowUnix()
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE chats SET archived_at = CASE WHEN ?2 = 1 AND archived_at IS NOT NULL
+		 THEN archived_at ELSE ?3 END
+		 WHERE id = ?1 AND deleted_at IS NULL`, id, boolInt(archived), at)
 	return affected(res, err)
 }

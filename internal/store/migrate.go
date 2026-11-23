@@ -15,7 +15,7 @@ var schemaSQL string
 
 // schemaVersion is the user_version this build migrates to. Steps are
 // idempotent so re-running on a current DB is a no-op.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrate applies the embedded schema, then steps user_version up to
 // schemaVersion. Fresh DBs land at the latest version immediately (the DDL
@@ -48,6 +48,44 @@ func (s *Store) migrate() error {
 // (IF NOT EXISTS re-runs are free), so steps only carry ALTER/UPDATE work.
 var migrations = [...]func(*sql.DB) error{
 	1: migrateV2MessageParents, // v1 → v2: message branching (parentId tree + chat leaf)
+	2: migrateV3ChatArchive,    // v2 → v3: chat archive flag (chats.archived_at)
+}
+
+// migrateV3ChatArchive adds chats.archived_at (nullable unix seconds; NULL =
+// not archived) to pre-existing databases. Fresh DBs already carry the column
+// from schema.sql. Idempotent: PRAGMA table_info is the probe.
+func migrateV3ChatArchive(db *sql.DB) error {
+	ctx := context.Background()
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(chats)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	have := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "archived_at" {
+			have = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if have {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE chats ADD COLUMN archived_at INTEGER`)
+	return err
 }
 
 // migrateV2MessageParents adds messages.parent_id + chats.leaf_id to

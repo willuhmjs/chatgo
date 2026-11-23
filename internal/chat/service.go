@@ -453,7 +453,7 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 			&store.Message{Role: "assistant", Content: opts.branchAnchor.Content},
 			&store.Message{Role: "user", Content: userMsg.Content})
 	}
-	system := s.systemPrompt(ctx, opts)
+	system := s.systemPrompt(ctx, opts, chatSystem(chat.ParamsJSON))
 	contextLen := s.modelContextLen(ctx, chat)
 	msgs, compacted := assemblePrompt(system, summary, promptHist, contextLen, userMsgID, opts.Images)
 
@@ -773,6 +773,8 @@ func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Res
 }
 
 // chatParams decodes chats.params_json into upstream passthrough params.
+// The "system" key is ChatGo-local (per-chat system-prompt override consumed
+// by systemPrompt) and must never ride along to the provider body.
 func chatParams(paramsJSON string) map[string]any {
 	if paramsJSON == "" || paramsJSON == "{}" {
 		return nil
@@ -781,7 +783,29 @@ func chatParams(paramsJSON string) map[string]any {
 	if err := json.Unmarshal([]byte(paramsJSON), &m); err != nil {
 		return nil
 	}
+	if _, ok := m["system"]; ok {
+		delete(m, "system")
+		if len(m) == 0 {
+			return nil
+		}
+	}
 	return m
+}
+
+// chatSystem returns the chat's per-chat system-prompt override
+// (params_json."system", Open WebUI's per-model system prompt), or "" when
+// unset/blank — the instance default then applies.
+func chatSystem(paramsJSON string) string {
+	if paramsJSON == "" || paramsJSON == "{}" {
+		return ""
+	}
+	var m struct {
+		System string `json:"system"`
+	}
+	if err := json.Unmarshal([]byte(paramsJSON), &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.System)
 }
 
 func providerFromRow(p *store.Provider) providers.Provider {
