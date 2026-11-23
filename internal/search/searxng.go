@@ -19,8 +19,13 @@ import (
 )
 
 const (
-	// MaxResults is the hard cap on hits fed into a prompt (contract §search).
+	// MaxResults is the default hit count fed into a prompt when the caller
+	// passes n<=0 (contract §search). Configurable per-instance via
+	// SEARCH_MAX_RESULTS, which the chat layer passes explicitly.
 	MaxResults = 5
+	// HardCap bounds any single search regardless of configuration, so a
+	// mis-set SEARCH_MAX_RESULTS cannot blow up the prompt budget.
+	HardCap = 20
 	// snippetChars caps each ComposeContext snippet.
 	snippetChars = 1200
 	// requestTimeout bounds one full SearXNG exchange.
@@ -102,7 +107,7 @@ func (s *Service) checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 // Search runs GET {base}/search?q=&format=json and maps top n hits.
-// n is clamped to [1, MaxResults] (n <= 0 means "default", i.e. MaxResults).
+// n is clamped to [1, HardCap] (n <= 0 means "default", i.e. MaxResults).
 func (s *Service) Search(ctx context.Context, q string, n int) ([]Result, error) {
 	if !s.Enabled || s.BaseURL == "" {
 		return nil, errors.New("search: SearXNG disabled (SEARXNG_URL unset)")
@@ -153,8 +158,11 @@ func (s *Service) ensureClient() *http.Client {
 
 // searchAt performs the actual SearXNG exchange against base.
 func (s *Service) searchAt(ctx context.Context, base, q string, n int) ([]Result, error) {
-	if n <= 0 || n > MaxResults {
+	if n <= 0 {
 		n = MaxResults
+	}
+	if n > HardCap {
+		n = HardCap
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)

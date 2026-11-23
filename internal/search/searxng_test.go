@@ -50,7 +50,7 @@ func TestSearchMapping(t *testing.T) {
 		t.Fatal("Enabled = false with SEARXNG_URL set")
 	}
 
-	// n<=0 defaults to the 5-result cap (contract: ≤5 results).
+	// n<=0 means "default", i.e. the 5-result MaxResults.
 	results, err := svc.Search(context.Background(), "golang wasm", 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -72,6 +72,33 @@ func TestSearchMapping(t *testing.T) {
 	}
 	if len(results) != 2 {
 		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+}
+
+func TestSearchNUpToHardCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(searxngPayload(HardCap + 5))
+	}))
+	defer srv.Close()
+	svc := New(&config.Config{SearXNGURL: srv.URL, AllowLoopback: true})
+
+	// Above the old 5-result default but within the cap: honored verbatim
+	// (this is how SEARCH_MAX_RESULTS reaches SearXNG via the chat layer).
+	results, err := svc.Search(context.Background(), "q", 12)
+	if err != nil {
+		t.Fatalf("Search(n=12): %v", err)
+	}
+	if len(results) != 12 {
+		t.Fatalf("len(results) = %d, want 12", len(results))
+	}
+
+	// Absurd n clamps to HardCap, never more.
+	results, err = svc.Search(context.Background(), "q", 500)
+	if err != nil {
+		t.Fatalf("Search(n=500): %v", err)
+	}
+	if len(results) != HardCap {
+		t.Fatalf("len(results) = %d, want %d", len(results), HardCap)
 	}
 }
 

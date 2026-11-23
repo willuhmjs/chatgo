@@ -31,8 +31,6 @@ const (
 	compactionTrigger = 0.70 // compact when estimate exceeds this fraction
 	compactionBudget  = 0.60 // keep the kept-window under this fraction
 
-	searchMaxResults = 5
-
 	// backgroundTaskTimeout bounds fire-and-forget work (titles, summaries,
 	// final persistence) once detached from the request context.
 	backgroundTaskTimeout = 60 * time.Second

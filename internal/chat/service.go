@@ -719,6 +719,19 @@ func fireCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 // apimgr/admin.go reports as search_enabled.
 const settingSearchURL = "search_url"
 
+// searchN is how many SearXNG hits a turn requests: SEARCH_MAX_RESULTS from
+// config (default 5), never above the search service's HardCap.
+func (s *Service) searchN() int {
+	n := search.MaxResults
+	if s.Cfg != nil && s.Cfg.SearchMaxResults > 0 {
+		n = s.Cfg.SearchMaxResults
+	}
+	if n > search.HardCap {
+		n = search.HardCap
+	}
+	return n
+}
+
 // searchWeb runs the turn's web search, resolving the SearXNG target in the
 // order the rest of the app already implies: cfg SEARXNG_URL (service
 // enabled) wins; when it is unset, the admin-configured "search_url" setting
@@ -727,7 +740,7 @@ const settingSearchURL = "search_url"
 // caller then emits no `sources` event.
 func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Result, ran bool, err error) {
 	if s.Search.Enabled {
-		results, err := s.Search.Search(ctx, q, searchMaxResults)
+		results, err := s.Search.Search(ctx, q, s.searchN())
 		return results, true, err
 	}
 	if s.Cfg != nil && strings.TrimSpace(s.Cfg.SearXNGURL) != "" {
@@ -745,7 +758,7 @@ func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Res
 	if target == "" {
 		return nil, false, nil
 	}
-	results, err = s.Search.SearchURL(ctx, target, q, searchMaxResults)
+	results, err = s.Search.SearchURL(ctx, target, q, s.searchN())
 	return results, true, err
 }
 

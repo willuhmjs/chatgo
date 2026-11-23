@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +40,8 @@ type Config struct {
 	Registration string // "open" | "approve" | "closed" (default "approve")
 	TaskModel    string // "providerID:modelID" for titles/summaries; optional
 	SearXNGURL   string // optional; enables web-search toggle
+	// SearchMaxResults caps SearXNG hits fed into a turn (SEARCH_MAX_RESULTS).
+	SearchMaxResults int
 
 	TrustedURLNets []string // CIDRs allowed for provider/SearXNG URLs beyond public internet
 	AllowLoopback  bool     // for in-cluster SearXNG; default true
@@ -69,6 +72,7 @@ func Load() (*Config, error) {
 		Registration:   getenv("REGISTRATION", "approve"),
 		TaskModel:      os.Getenv("TASK_MODEL"),
 		SearXNGURL:     strings.TrimRight(os.Getenv("SEARXNG_URL"), "/"),
+		SearchMaxResults: getenvInt("SEARCH_MAX_RESULTS", 5),
 		TrustedURLNets: splitList(os.Getenv("TRUSTED_URL_NETS")),
 		AllowLoopback:  getenvBool("ALLOW_LOOPBACK", true),
 		TrustedProxies: splitList(os.Getenv("TRUSTED_PROXIES")),
@@ -79,6 +83,11 @@ func Load() (*Config, error) {
 
 	if cfg.DatabasePath == "" {
 		cfg.DatabasePath = filepath.Join(cfg.DataDir, "chatgo.db")
+	}
+	// Hard ceiling matching search.HardCap — protects prompt budget even if
+	// SEARCH_MAX_RESULTS is set absurdly high.
+	if cfg.SearchMaxResults > 20 {
+		cfg.SearchMaxResults = 20
 	}
 
 	secret := os.Getenv("SESSION_SECRET")
@@ -157,6 +166,16 @@ func getenvBool(key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// getenvInt parses a positive int env var, falling back to def on junk or
+// non-positive values.
+func getenvInt(key string, def int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || v <= 0 {
+		return def
+	}
+	return v
 }
 
 func splitList(v string) []string {
