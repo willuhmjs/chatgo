@@ -105,11 +105,12 @@ CREATE TABLE IF NOT EXISTS messages (
 	created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id);
-CREATE INDEX IF NOT EXISTS idx_messages_chat_parent ON messages(chat_id, parent_id);
 -- read order is by rowid (insertion order); the chat_id index narrows the scan.
 -- parent_id forms a tree per chat (regenerate/edit = sibling, Open WebUI model):
 -- the active conversation is the chain chats.leaf_id → … → root; messages
 -- without parents (legacy rows, parent_id='') fall back to rowid order.
+-- NOTE: idx_messages_chat_parent is created by the v2 migration step (it must
+-- run AFTER ALTER TABLE … ADD COLUMN parent_id on pre-existing databases).
 
 CREATE TABLE IF NOT EXISTS message_images (
 	id TEXT PRIMARY KEY,

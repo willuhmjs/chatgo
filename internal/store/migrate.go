@@ -95,6 +95,19 @@ func migrateV2MessageParents(db *sql.DB) error {
 	if err := added("chats", "leaf_id"); err != nil {
 		return err
 	}
+	// Built here, not in schema.sql: on pre-existing databases the column only
+	// exists after the ALTER above (schema.sql runs before the version steps).
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_messages_chat_parent ON messages(chat_id, parent_id)`); err != nil {
+		return err
+	}
+	// Heal the FTS index against its content table before the backfill's
+	// UPDATEs fire the AU triggers: an out-of-step external-content index
+	// answers those with SQLITE_CORRUPT.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`); err != nil {
+		return err
+	}
 
 	// Backfill parents: one pass per chat that still has un-parented rows
 	// (fresh DBs have no messages at all, so this is dead code for them).
