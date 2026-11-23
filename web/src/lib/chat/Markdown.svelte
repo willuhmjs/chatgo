@@ -117,7 +117,9 @@
   :global(.md-body h1),
   :global(.md-body h2),
   :global(.md-body h3),
-  :global(.md-body h4) {
+  :global(.md-body h4),
+  :global(.md-body h5),
+  :global(.md-body h6) {
     margin: 8px 0;
     line-height: 1.35;
     font-weight: 500;
@@ -131,16 +133,84 @@
   :global(.md-body h3) {
     font-size: 1.125rem; /* 18px — lg */
   }
+  /* preflight leak: `h1..h6 { font-size: inherit }` — without these h4–h6
+     rendered at body size with (before h5/h6 were added here) zero margin */
+  :global(.md-body h4) {
+    font-size: 1rem; /* 16px — explicit, was implicit via inherit */
+  }
+  :global(.md-body h5) {
+    font-size: 1rem;
+  }
+  :global(.md-body h6) {
+    font-size: 0.875rem;
+  }
   :global(.md-body ul),
   :global(.md-body ol) {
     margin: 4px 0;
     padding-left: 1.5em;
+  }
+  /* Tailwind preflight leak (app.css `@import "tailwindcss"`): its
+     `ol, ul { list-style: none; margin: 0; padding: 0 }` reset leaks into the
+     un-scoped {@html} children and kills every bullet/number. Re-declare at
+     .md-body specificity (same cure as lib/extra/markdown.css for .md). */
+  :global(.md-body ul) {
+    list-style-type: disc;
+  }
+  :global(.md-body ul ul) {
+    list-style-type: circle;
+  }
+  :global(.md-body ul ul ul) {
+    list-style-type: square;
+  }
+  :global(.md-body ol) {
+    list-style-type: decimal; /* numbering itself is the browser's (marked emits plain <ol>, separate lists restart) */
+  }
+  /* nested lists sit a touch tighter than top-level ones */
+  :global(.md-body li > ul),
+  :global(.md-body li > ol) {
+    padding-left: 1.25em;
   }
   :global(.md-body li) {
     margin: 2px 0;
   }
   :global(.md-body li::marker) {
     color: var(--muted, #a8a8a8);
+  }
+  /* GFM task lists: markdown.ts tags task items .task-list-item (the <input>
+     marked emits dies in the strict sanitize, so draw a quiet disabled-look
+     box instead). li loses its bullet only for these; unclassed items keep a
+     plain bullet as graceful fallback. */
+  :global(.md-body li.task-list-item) {
+    list-style-type: none;
+  }
+  :global(.md-body li.task-list-item::before) {
+    content: '';
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-right: 0.45em;
+    vertical-align: -0.05em;
+    border: 1px solid var(--muted, #a8a8a8);
+    border-radius: 0.2em;
+  }
+  :global(.md-body li.task-list-checked::before) {
+    content: '\2713'; /* ✓ on a quiet fill — reads as checked + disabled */
+    text-align: center;
+    line-height: 0.8;
+    font-size: 0.9em;
+    color: var(--text);
+    background: var(--muted, #a8a8a8);
+  }
+  /* defensive: if a real checkbox ever survives sanitization in the future,
+     style it disabled-styled and drop the bullet (modern :has, plain-bullet
+     fallback elsewhere) */
+  :global(.md-body li:has(> input[type='checkbox'])) {
+    list-style-type: none;
+  }
+  :global(.md-body li > input[type='checkbox']) {
+    margin: 0 0.45em 0 0;
+    vertical-align: -0.05em;
+    accent-color: var(--muted, #a8a8a8);
   }
   :global(.md-body a) {
     color: var(--acc);

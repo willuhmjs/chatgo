@@ -105,6 +105,19 @@ md.use({
       const t = title ? ` title="${esc(title)}"` : '';
       return `<img src="${esc(href ?? '')}" alt="${esc(text ?? '')}"${t} loading="lazy" class="md-img" />`;
     },
+    // GFM task lists: marked's default listitem emits <input type=checkbox>,
+    // which the strict pass-1 sanitize below forbids (PURIFY_CFG FORBID_TAGS) —
+    // so the checkbox would silently vanish. Instead we mark the <li> with
+    // task-list-item / task-list-checked classes (class survives both purify
+    // passes) and Markdown.svelte draws a disabled-look checkbox via ::before.
+    // Non-task items (incl. nested lists + loose lists) reproduce the default
+    // renderer exactly: `<li>` + parser.parse(tokens, loose).
+    listitem(item: Tokens.ListItem): string {
+      const body = this.parser.parse(item.tokens, !!item.loose);
+      if (!item.task) return `<li>${body}</li>\n`;
+      const cls = item.checked ? 'task-list-item task-list-checked' : 'task-list-item';
+      return `<li class="${cls}">${body}</li>\n`;
+    },
   },
 });
 
