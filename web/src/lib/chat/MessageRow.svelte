@@ -1,14 +1,16 @@
 <script lang="ts">
-  // One message row (docs/DESIGN-POLISH.md §5). User: right-aligned quiet
-  // pill (#2f2f2f, radius 24 per DESIGN-REF §3, max 85%) with copy + inline
-  // edit (edit → regenerate path; see docs/FE-CHAT-UI.md "regenerate semantics").
-  // Assistant: plain text on canvas — no bubble, no avatar — quiet sources
-  // chips, error line + Retry pill, and a hover action bar BELOW the text.
+  // One message row (Open WebUI paradigm). User: right-aligned neutral bubble
+  // (rounded-3xl with a flattened bottom-right corner, max 75%) with copy +
+  // inline edit (edit → regenerate path; see docs/FE-CHAT-UI.md "regenerate
+  // semantics"). Assistant: avatar + model-name label above plain full-width
+  // markdown text — no bubble — quiet sources chips, error line + Retry pill,
+  // and an action bar BELOW the text that fades in on row hover/focus.
   import { tick } from 'svelte';
   import type { UIMessage } from '$lib/chat/group';
   import { COLLAPSE_CHARS, COLLAPSE_MAX_PX, isLocalId } from '$lib/chat/group';
   import type { Rating } from '$lib/chat-features-api';
   import Markdown from './Markdown.svelte';
+  import Avatar from '$lib/ui/Avatar.svelte';
   import IconButton from './ui/IconButton.svelte';
   import Copy from 'lucide-svelte/icons/copy';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
@@ -34,6 +36,7 @@
     rating = null,
     editing = false,
     versions = null,
+    name = 'ChatGo',
     onretry,
     onedit,
     oneditopen,
@@ -51,6 +54,8 @@
     editing?: boolean;
     /** branch pager slot (i = 0-based position among sibling versions) */
     versions?: { i: number; n: number } | null;
+    /** assistant label shown above the text (model display name) */
+    name?: string;
     onretry?: (m: UIMessage) => void;
     onedit?: (m: UIMessage, content: string) => void;
     oneditopen?: (m: UIMessage) => void;
@@ -229,145 +234,152 @@
     {message.content}
   </div>
 {:else}
-  <div class="msg-row group relative" role="article" aria-label="Assistant message">
-    {#if thinking}
-      <div class="thinking" role="status" aria-label="Waiting for the model">
-        <span></span><span></span><span></span>
-      </div>
-    {:else}
-      <div class="relative" class:clamped={collapsed} style={collapsed ? `max-height:${COLLAPSE_MAX_PX}px` : ''}>
-        <Markdown src={message.content ?? ''} streaming={!!message.streaming} />
-        {#if collapsed}
-          <div class="clampfade"></div>
-        {/if}
-      </div>
-    {/if}
-    {#if collapsible}
-      <button
-        class="mt-1 text-xs font-medium"
-        style="color:var(--text)"
-        onclick={() => (expanded = !expanded)}
-      >
-        {expanded ? 'Collapse' : 'Expand'}
-      </button>
-    {/if}
+  <div class="msg-row group relative flex gap-2.5" role="article" aria-label="Assistant message">
+    <div class="mt-px shrink-0">
+      <Avatar name={name} size={28} />
+    </div>
+    <div class="min-w-0 flex-1">
+      <p class="who" title={name}>{name}</p>
 
-    {#if message.stopped}
-      <p class="mt-1 text-xs" style="color:var(--muted)">Generation stopped.</p>
-    {/if}
-
-    {#if message.error}
-      <div class="errline" role="alert">
-        <TriangleAlert size={14} style="color:var(--danger); flex:none" />
-        <span class="min-w-0 flex-1 text-xs" style="color:var(--muted)">
-          <span style="color:var(--text)">Generation failed.</span> {message.error}
-        </span>
-        <button type="button" class="retrypill" disabled={busy} onclick={() => onretry?.(message)}>
-          <RefreshCw size={11} /> Retry
+      {#if thinking}
+        <div class="thinking" role="status" aria-label="Waiting for the model">
+          <span></span><span></span><span></span>
+        </div>
+      {:else}
+        <div class="relative" class:clamped={collapsed} style={collapsed ? `max-height:${COLLAPSE_MAX_PX}px` : ''}>
+          <Markdown src={message.content ?? ''} streaming={!!message.streaming} />
+          {#if collapsed}
+            <div class="clampfade"></div>
+          {/if}
+        </div>
+      {/if}
+      {#if collapsible}
+        <button
+          class="mt-1 text-xs font-medium"
+          style="color:var(--text)"
+          onclick={() => (expanded = !expanded)}
+        >
+          {expanded ? 'Collapse' : 'Expand'}
         </button>
-      </div>
-    {/if}
+      {/if}
 
-    {#if message.sources?.length}
-      <div class="mt-2.5">
-        <button type="button" class="sourcespill" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
-          <LinkIcon size={12} />
-          Sources · {message.sources.length}
-          <ChevronDown size={12} style={sourcesOpen ? 'transform: rotate(180deg)' : ''} class="transition-transform" />
-        </button>
-        {#if sourcesOpen}
-          <div class="mt-1.5 flex flex-wrap gap-1.5">
-            {#each message.sources as s, i (s.url + i)}
-              {#if isKbSource(s.url)}
-                <!-- kb:// refs have no public URL — quiet non-clickable chip -->
-                <span class="chip" title={s.title || s.url}>
-                  <span class="chipidx">[{i + 1}]</span>
-                  <span class="truncate">{s.title || s.url}</span>
-                </span>
-              {:else}
-                <a
-                  class="chip"
-                  href={safeHref(s.url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={s.title || s.url}
-                >
-                  <span class="chipidx">[{i + 1}]</span>
-                  <span class="truncate">{domainOf(s.url)}</span>
-                </a>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
+      {#if message.stopped}
+        <p class="mt-1 text-xs" style="color:var(--muted)">Generation stopped.</p>
+      {/if}
 
-    {#if !message.streaming}
-      <!-- hover action bar BELOW the text: pager · copy · regenerate · read-aloud (§5) -->
-      <div class="acts" class:rated={!!rating || commentOpen} class:hasver={!!versions}>
-        {@render pagerUI()}
-        <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
-        {#if !busy}
-          <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
-            <RefreshCw size={15} />
-          </IconButton>
-        {/if}
-        {#if speechSupported}
-          <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
-            {#if speaking}<VolumeX size={15} />{:else}<Volume2 size={15} />{/if}
-          </IconButton>
-        {/if}
-        {#if rateable}
-          <IconButton title={rating?.value === 1 ? 'Remove rating' : 'Good response'} onclick={rateUp}>
-            <ThumbsUp size={15} style={rating?.value === 1 ? 'color:var(--ok, #10a37f)' : ''} />
-          </IconButton>
-          <span class="rateme">
-            <IconButton
-              title={rating?.value === -1 ? 'Remove rating' : 'Poor response'}
-              onclick={rateDown}
-            >
-              <ThumbsDown size={15} style={rating?.value === -1 ? 'color:var(--danger, #ef4444)' : ''} />
-            </IconButton>
-            {#if commentOpen}
-              <div class="ratepop" role="dialog" aria-label="Tell us what went wrong">
-                <textarea
-                  class="ratera"
-                  rows="3"
-                  maxlength="300"
-                  placeholder="What could be better? (optional)"
-                  aria-label="Rating comment"
-                  bind:value={commentText}
-                  bind:this={commentTa}
-                  onkeydown={(e) => {
-                    if (e.key === 'Escape') {
-                      e.stopPropagation();
-                      commentOpen = false;
-                    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      saveComment();
-                    }
-                  }}></textarea>
-                <div class="flex items-center justify-end gap-1.5 pt-1.5">
-                  <button type="button" class="skipbtn" onclick={() => (commentOpen = false)}>Skip</button>
-                  <button type="button" class="savebtn" disabled={!commentText.trim()} onclick={saveComment}>
-                    Save
-                  </button>
-                </div>
-              </div>
-            {/if}
+      {#if message.error}
+        <div class="errline" role="alert">
+          <TriangleAlert size={14} style="color:var(--danger); flex:none" />
+          <span class="min-w-0 flex-1 text-xs" style="color:var(--muted)">
+            <span style="color:var(--text)">Generation failed.</span> {message.error}
           </span>
-        {/if}
-        {#if forkable}
-          <IconButton title="Branch from here" disabled={busy} onclick={() => onfork?.(message)}>
-            <GitBranch size={15} />
-          </IconButton>
-        {/if}
-        <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
-        {#if message.tokens_out}
-          <span class="tokcount">{message.tokens_in ?? 0}→{message.tokens_out} tok</span>
-        {/if}
-      </div>
-    {/if}
+          <button type="button" class="retrypill" disabled={busy} onclick={() => onretry?.(message)}>
+            <RefreshCw size={11} /> Retry
+          </button>
+        </div>
+      {/if}
+
+      {#if message.sources?.length}
+        <div class="mt-2.5">
+          <button type="button" class="sourcespill" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
+            <LinkIcon size={12} />
+            Sources · {message.sources.length}
+            <ChevronDown size={12} style={sourcesOpen ? 'transform: rotate(180deg)' : ''} class="transition-transform" />
+          </button>
+          {#if sourcesOpen}
+            <div class="mt-1.5 flex flex-wrap gap-1.5">
+              {#each message.sources as s, i (s.url + i)}
+                {#if isKbSource(s.url)}
+                  <!-- kb:// refs have no public URL — quiet non-clickable chip -->
+                  <span class="chip" title={s.title || s.url}>
+                    <span class="chipidx">[{i + 1}]</span>
+                    <span class="truncate">{s.title || s.url}</span>
+                  </span>
+                {:else}
+                  <a
+                    class="chip"
+                    href={safeHref(s.url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={s.title || s.url}
+                  >
+                    <span class="chipidx">[{i + 1}]</span>
+                    <span class="truncate">{domainOf(s.url)}</span>
+                  </a>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if !message.streaming}
+        <!-- hover action bar BELOW the text: pager · copy · regenerate · read-aloud (§5) -->
+        <div class="acts" class:rated={!!rating || commentOpen}>
+          {@render pagerUI()}
+          <IconButton title="Copy" onclick={doCopy}><Copy size={15} /></IconButton>
+          {#if !busy}
+            <IconButton title="Retry (regenerate)" onclick={() => onretry?.(message)}>
+              <RefreshCw size={15} />
+            </IconButton>
+          {/if}
+          {#if speechSupported}
+            <IconButton title={speaking ? 'Stop reading' : 'Read aloud'} active={speaking} onclick={() => toggleSpeak(message)}>
+              {#if speaking}<VolumeX size={15} />{:else}<Volume2 size={15} />{/if}
+            </IconButton>
+          {/if}
+          {#if rateable}
+            <IconButton title={rating?.value === 1 ? 'Remove rating' : 'Good response'} onclick={rateUp}>
+              <ThumbsUp size={15} style={rating?.value === 1 ? 'color:var(--ok, #10a37f)' : ''} />
+            </IconButton>
+            <span class="rateme">
+              <IconButton
+                title={rating?.value === -1 ? 'Remove rating' : 'Poor response'}
+                onclick={rateDown}
+              >
+                <ThumbsDown size={15} style={rating?.value === -1 ? 'color:var(--danger, #ef4444)' : ''} />
+              </IconButton>
+              {#if commentOpen}
+                <div class="ratepop" role="dialog" aria-label="Tell us what went wrong">
+                  <textarea
+                    class="ratera"
+                    rows="3"
+                    maxlength="300"
+                    placeholder="What could be better? (optional)"
+                    aria-label="Rating comment"
+                    bind:value={commentText}
+                    bind:this={commentTa}
+                    onkeydown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        commentOpen = false;
+                      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        saveComment();
+                      }
+                    }}></textarea>
+                  <div class="flex items-center justify-end gap-1.5 pt-1.5">
+                    <button type="button" class="skipbtn" onclick={() => (commentOpen = false)}>Skip</button>
+                    <button type="button" class="savebtn" disabled={!commentText.trim()} onclick={saveComment}>
+                      Save
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </span>
+          {/if}
+          {#if forkable}
+            <IconButton title="Branch from here" disabled={busy} onclick={() => onfork?.(message)}>
+              <GitBranch size={15} />
+            </IconButton>
+          {/if}
+          <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
+          {#if message.tokens_out}
+            <span class="tokcount">{message.tokens_in ?? 0}→{message.tokens_out} tok</span>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -378,19 +390,31 @@
     contain-intrinsic-size: auto 140px;
   }
 
-  /* user: right-aligned quiet pill (§5 + docs/DESIGN-REF.md §3: r24) —
-     accent tint over the --panel fill (FE-COLOR: quiet color = signal) */
+  /* user: right-aligned neutral bubble (OWUI: rounded-3xl, flat bottom-right
+     corner, max ~75%) over the quiet --panel surface token */
   .bubble {
-    max-width: 85%;
-    border-radius: 24px;
-    padding: 10px 16px;
+    max-width: 75%;
+    border-radius: 1.5rem 1.5rem 1.5rem 0.5rem;
+    padding: 0.625rem 1rem;
     font-size: 1rem;
     line-height: 1.6;
-    background: color-mix(in srgb, var(--acc) 16%, var(--panel, #2f2f2f));
+    background: var(--panel, #2f2f2f);
     white-space: normal;
   }
   .bubble.pending {
     opacity: 0.7;
+  }
+
+  /* assistant: model-name label above the text (OWUI response header) */
+  .who {
+    margin-bottom: 3px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* pre-first-token thinking dots — one text line tall, no layout shift (§5) */
@@ -439,7 +463,8 @@
     transition: opacity 120ms ease;
   }
 
-  /* action bar below assistant text: fade in on row hover/focus (§5) */
+  /* action bar below assistant text: hidden until the row is hovered or a
+     control inside it takes focus (OWUI group-hover reveal) */
   .acts {
     display: flex;
     align-items: center;
@@ -447,13 +472,6 @@
     margin-top: 4px;
     opacity: 0;
     transition: opacity 120ms ease;
-  }
-  /* a versioned message keeps its bar quietly visible (pager discoverability) */
-  .acts.hasver {
-    opacity: 0.55;
-  }
-  .acts.hasver:hover {
-    opacity: 1;
   }
 
   /* ‹ n/m › branch pager (quiet until hovered, OWUI parity) */

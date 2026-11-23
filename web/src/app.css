@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
-/* Design tokens — docs/DESIGN-POLISH.md §1 (ChatGPT-fidelity, dark = the product).
-   Monochrome, quiet, spacious. --accent is WHITE (primary buttons) with --accent-fg
-   as its label; the "quiet signal" roles (focus rings, active nav, menu hovers,
-   links) use --accent-soft, now derived from the active --acc so nothing reads
-   as leftover purple when the default is blue. */
+/* Design tokens — Open WebUI gray ramp (their tailwind.css @theme: gray-50
+   oklch(0.98) → gray-950 oklch(0.16)) mapped onto ChatGo's existing token
+   names. Monochrome, quiet, spacious. --accent is WHITE (primary buttons) with
+   --accent-fg as its label; the "quiet signal" roles (focus rings, active nav,
+   menu hovers, links) use --accent-soft, now derived from the active --acc so
+   nothing reads as leftover purple when the default is blue. */
 :root {
   /* system-first per docs/DESIGN-REF.md §4: SF/Segoe render before Inter,
      which is used only when locally installed (never fetched over the wire) */
@@ -12,18 +13,19 @@
     -apple-system, BlinkMacSystemFont, 'Inter', ui-sans-serif, system-ui,
     'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 
-  /* light theme (§1): #ffffff canvas, #f9f9f9 sidebar, #f4f4f4 composer */
+  /* light theme: white canvas (OWUI surfaces are white in light mode),
+     gray-50 sidebar, gray-100/200 fills, gray-900 text */
   --bg: #ffffff;
-  --bg-deep: #f9f9f9;
-  --panel: #f4f4f4;
-  --panel-2: #ebebeb;
+  --bg-deep: oklch(0.98 0 0); /* gray-50 — sidebar/mobile bar recede a step */
+  --panel: oklch(0.94 0 0); /* gray-100 */
+  --panel-2: oklch(0.92 0 0); /* gray-200 */
   --fill-hover: rgba(0, 0, 0, 0.05);
-  --border: rgba(0, 0, 0, 0.1);
-  --text: #0d0d0d;
-  --muted: #5d5d5d;
-  --faint: #9b9b9b;
-  --accent: #0d0d0d;
-  --accent-fg: #ffffff;
+  --border: rgba(0, 0, 0, 0.08);
+  --text: oklch(0.2 0 0); /* gray-900 — strong body text */
+  --muted: oklch(0.51 0 0); /* gray-600 */
+  --faint: oklch(0.69 0 0); /* gray-500 */
+  --accent: oklch(0.2 0 0); /* primary button fill = gray-900 (OWUI) */
+  --accent-fg: oklch(0.98 0 0);
   /* "quiet signal" soft fill (focus rings, menu hovers) — follows the active
      accent via --acc; the old fixed indigo (rgba(99,102,241,.18)) read as
      leftover purple once blue became the default. */
@@ -40,17 +42,20 @@
 }
 
 html.dark {
-  --bg: #212121;
-  --bg-deep: #171717;
-  --panel: #2f2f2f;
-  --panel-2: #3a3a3a;
-  --fill-hover: rgba(255, 255, 255, 0.065);
-  --border: rgba(255, 255, 255, 0.1);
-  --text: #ececec;
-  --muted: #a8a8a8;
-  --faint: #6e6e6e;
-  --accent: #ffffff;
-  --accent-fg: #0d0d0d;
+  /* OWUI dark direction: chat canvas is the darkest surface (gray-950), the
+     sidebar sits a step lighter (gray-900), fills climb gray-850/800. Text
+     rides gray-100, secondary gray-500, tertiary gray-600. */
+  --bg: oklch(0.16 0 0); /* gray-950 */
+  --bg-deep: oklch(0.2 0 0); /* gray-900 — sidebar, a step above the canvas */
+  --panel: oklch(0.27 0 0); /* gray-850 */
+  --panel-2: oklch(0.32 0 0); /* gray-800 */
+  --fill-hover: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: oklch(0.94 0 0); /* gray-100 */
+  --muted: oklch(0.69 0 0); /* gray-500 */
+  --faint: oklch(0.51 0 0); /* gray-600 */
+  --accent: oklch(0.98 0 0);
+  --accent-fg: oklch(0.16 0 0);
   --accent-soft: color-mix(in srgb, var(--acc) 18%, transparent);
   --indigo: var(--acc);
   --danger: #ef4444;
@@ -66,8 +71,8 @@ html.dark {
    picks the hue; lib/accent.svelte.js always sets the attribute (default
    blue) from localStorage/server. The derived tokens are computed once here
    from --acc via color-mix so each hue only needs its base tuned. Light mode
-   uses deeper --acc (tints sit on #ffffff/#f4f4f4); dark uses pastels for the
-   #212121/#2f2f2f canvas. :not(.dark) keeps the light blocks from outranking
+   uses deeper --acc (tints sit on #ffffff/gray-100); dark uses pastels for the
+   gray-950/gray-850 canvas. :not(.dark) keeps the light blocks from outranking
    the html.dark fallback at equal specificity. */
 html {
   /* fallback = blue (the default accent) if JS never ran */
@@ -100,7 +105,7 @@ html[data-accent='green']:not(.dark)  { --acc: #15803d; }
 html[data-accent='orange']:not(.dark) { --acc: #d97706; }
 html[data-accent='pink']:not(.dark)   { --acc: #db2777; }
 
-/* dark hues — tuned for contrast on #212121/#2f2f2f */
+/* dark hues — tuned for contrast on gray-950/gray-850 */
 html.dark[data-accent='violet'] { --acc: #a78bfa; }
 html.dark[data-accent='blue']   { --acc: #60a5fa; }
 html.dark[data-accent='teal']   { --acc: #2dd4bf; }

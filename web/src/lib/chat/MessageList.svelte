@@ -2,10 +2,10 @@
   // Message scroll area. Sticky-bottom auto-follows the stream; any real
   // user scroll-up (wheel / touch / PageUp) releases it and shows a floating
   // circular "jump to latest" button with an unseen-count dot. Rows use
-  // content-visibility:auto instead of a virtualizer (no dependency per
-  // contract stack). Layout per docs/DESIGN-POLISH.md §5/§9: 24px rhythm,
-  // "ChatGo" wordmark above the first message of each assistant turn,
-  // fade+rise 200ms for appended rows only (never on initial load).
+  // rows use content-visibility:auto instead of a virtualizer (no dependency
+  // per contract stack). Layout per Open WebUI paradigm: 24px rhythm, each
+  // assistant row carries its own avatar + model-name label (passed down as
+  // `name`), fade+rise 200ms for appended rows only (never on initial load).
   import type { UIMessage } from '$lib/chat/group';
   import { groupMessages } from '$lib/chat/group';
   import type { RatingsMap } from '$lib/chat-features-api';
@@ -226,12 +226,12 @@
         </div>
       {:else}
         <div class="flex min-w-0 flex-col gap-5">
-          {#each g.items as m, i (m.id)}
+          {#each g.items as m (m.id)}
             <div class="flex min-w-0 flex-col {riseClass(m.id)}">
-              {#if i === 0}<span class="wordmark">{wordmark}</span>{/if}
               <MessageRow
                 message={m}
                 {busy}
+                name={wordmark}
                 rating={ratings?.[m.id] ?? null}
                 versions={versionsOf(m)}
                 {onretry}
@@ -267,16 +267,6 @@
 </div>
 
 <style>
-  /* tiny wordmark above the first message of each assistant turn (§5) */
-  .wordmark {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--muted, #a8a8a8);
-    letter-spacing: 0.01em;
-  }
-
   /* appended rows fade + rise 200ms; initial load never animates (§9) */
   .rise {
     animation: row-rise 200ms ease-out both;

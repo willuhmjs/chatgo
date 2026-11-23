@@ -27,6 +27,7 @@
   } from '$lib/chat-features-api';
   import MessageList from '$lib/chat/MessageList.svelte';
   import Composer from '$lib/chat/Composer.svelte';
+  import Welcome from '$lib/chat/Welcome.svelte';
   import ParamDrawer from '$lib/chat/ParamDrawer.svelte';
   import Lightbox from '$lib/chat/Lightbox.svelte';
   import IconButton from '$lib/chat/ui/IconButton.svelte';
@@ -51,6 +52,25 @@
   let phase = $state<'loading' | 'ready' | 'notfound' | 'error'>('loading');
   let loadError = $state('');
   let drawerOpen = $state(false);
+
+  // Queued sends (Composer Enter/click mid-stream): ChatView owns the list,
+  // submit() routes to it while busy, runStream's settle point fires items
+  // in order. Cleared whenever the route leaves this chat.
+  let queue = $state<SendMessageBody[]>([]);
+  // Temporary chat (client-side OWUI contract): when enabled, leaving the
+  // chat deletes it via DELETE /api/chats/{id} — that's the whole promise.
+  let temporary = $state(false);
+
+  function removeFromQueue(i: number): void {
+    queue.splice(i, 1);
+  }
+
+  /** Fire the next queued body (submit re-routes if somehow busy again). */
+  function drainQueue(): void {
+    if (!queue.length) return;
+    const next = queue.shift();
+    if (next) submit(next);
+  }
 
   const byId = $derived(new Map(messages.map((m) => [m.id, m])));
 
@@ -176,7 +196,19 @@
       tokenBuf = '';
       streamMsg = null;
       aborted = false;
+      queue = []; // queued sends belong to the chat being left, never the next
       stopSpeaking();
+    };
+  });
+
+  // Temporary-chat contract (OWUI): the mode is client-only; when the user
+  // leaves with the switch still on, the persisted chat is deleted and the
+  // sidebar's path-change refresh drops it. `temporary` is read untracked in
+  // the cleanup on purpose — toggling off mid-chat must keep the chat.
+  $effect(() => {
+    const cid = id;
+    return () => {
+      if (temporary && cid) void api.deleteChat(cid).catch(() => {});
     };
   });
 
@@ -318,7 +350,13 @@
       retractPending = false;
       const target = cid ? streamMsg : null;
       finishStream(userMsg);
-      if (cid && target) void retractExchange(cid, target);
+      if (cid && target) {
+        // Queued sends wait for the retract + resync to settle so the next
+        // send parents onto the re-landed leaf, not the deleted exchange.
+        void retractExchange(cid, target).then(() => drainQueue());
+      } else {
+        drainQueue(); // settle point: fire any messages queued mid-stream
+      }
     }
   }
 
@@ -357,8 +395,9 @@
     // The server retracts the whole version slot (every sibling version of the
     // cancelled exchange + their subtrees) and re-lands the leaf beside it —
     // a superset of these two local rows, so refetch the tree instead of a
-    // hand splice.
-    if (cid === id) void resync();
+    // hand splice. Awaited so a queued resend (runStream) parents onto the
+    // fresh leaf the resync installs.
+    if (cid === id) await resync();
   }
 
   // Branch tree helpers ----------------------------------------------------
@@ -396,9 +435,24 @@
       .catch(() => void resync());
   }
 
+  /** Model display name for the assistant wordmark + the Welcome subline. */
+  const modelLabel = $derived.by(() => {
+    const mid = chat?.model_id;
+    if (!mid) return 'ChatGo';
+    const e =
+      models.items.find((x) => x.provider_id === chat?.provider_id && x.model_id === mid) ??
+      models.items.find((x) => x.model_id === mid);
+    return e?.display || mid;
+  });
+
   function submit(body: SendMessageBody): void {
-    // streamMsg stays set until the previous stream settles (abort race guard)
-    if (!id || !chat || stream.active || streamMsg) return;
+    if (!id || !chat) return;
+    // Mid-stream send: park it in the queue (rendered above the composer) —
+    // runStream's settle point fires items in order once this stream ends.
+    if (stream.active || streamMsg) {
+      queue.push({ ...body });
+      return;
+    }
     const now = Math.floor(Date.now() / 1000);
     const parent = leafId || (messages.length ? messages[messages.length - 1].id : '');
     messages.push({
@@ -607,14 +661,7 @@
               messages={visible}
               {versionInfo}
               onversion={pageVersion}
-              wordmark={(() => {
-                const mid = chat?.model_id;
-                if (!mid) return 'ChatGo';
-                const e =
-                  models.items.find((x) => x.provider_id === chat?.provider_id && x.model_id === mid) ??
-                  models.items.find((x) => x.model_id === mid);
-                return e?.display || mid;
-              })()}
+              wordmark={modelLabel}
               {ratings}
               busy={stream.active}
               onretry={retry}
@@ -624,14 +671,20 @@
               onfork={forkOk ? forkFrom : undefined}
             />
           {:else}
-            <div class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-              <p class="text-[26px] font-semibold tracking-tight">What can I help with?</p>
-              <p class="max-w-xs text-sm" style="color:var(--muted)">
-                Pick a model, attach images or paste screenshots, toggle web search — then say hi.
-              </p>
-            </div>
+            <!-- empty chat: OWUI-style welcome + suggestion grid (sends on click) -->
+            <Welcome model={modelLabel} onselect={(p) => submit({ content: p })} />
           {/if}
-          <Composer chat={chat} busy={stream.active} onsend={submit} onstop={stop} onupdated={chatUpdated} />
+          <Composer
+            chat={chat}
+            busy={stream.active}
+            {queue}
+            {temporary}
+            onsend={submit}
+            onstop={stop}
+            onupdated={chatUpdated}
+            onremovequeued={removeFromQueue}
+            ontemporary={(v) => (temporary = v)}
+          />
         {/if}
       </section>
 

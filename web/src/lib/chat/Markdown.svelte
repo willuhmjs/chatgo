@@ -1,8 +1,11 @@
 <script lang="ts">
-  // Streaming-safe markdown renderer: marked + DOMPurify + lazy hljs.
+  // Streaming-safe markdown renderer: marked + DOMPurify + lazy hljs + lazy KaTeX.
   // While `streaming`, re-renders are throttled to one per 80ms window and
   // the unparsed raw tail is shown as plain text (see docs/FE-CHAT-UI.md).
   // Code-block Copy/Wrap buttons + image zoom use event delegation.
+  // KaTeX is pulled in via dynamic import ONLY when $…$ / $$…$$ math is found
+  // (chunk-split out of the main bundle); any failure falls back to plain text.
+  import DOMPurify from 'dompurify';
   import { renderMarkdown } from '$lib/chat/markdown';
   import { mdStore, openLightbox } from '$lib/chat/state.svelte.js';
   import { copyText } from '$lib/chatview-api';
@@ -16,9 +19,102 @@
   let renderedLen = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  // ---------- lazy KaTeX ----------
+
+  type KatexModule = typeof import('katex');
+  let katex: KatexModule | null = null;
+  let katexLoading: Promise<void> | null = null;
+  let katexTick = $state(0); // bump re-runs the render effect once KaTeX lands
+
+  function ensureKatex(): void {
+    if (katex || katexLoading) return;
+    // js + css both arrive in the math chunk, not the main one
+    katexLoading = Promise.all([import('katex'), import('katex/dist/katex.min.css')])
+      .then(([mod]) => {
+        katex = mod;
+        katexTick++;
+      })
+      .catch(() => {
+        katexLoading = null; // allow retry on the next render
+      });
+  }
+
+  interface MathItem {
+    tex: string;
+    display: boolean;
+    raw: string;
+  }
+
+  // split point: fenced blocks + inline code spans — math inside them is left
+  // alone (odd indices of the split() result are the code segments)
+  const CODE_SPLIT = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/;
+  const DISPLAY_RE = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$/g;
+  // inline: no space after the opening $ / before the closing $, closing $ not
+  // followed by a digit ("$5 and $6" stay plain text), no \$ escapes
+  const INLINE_RE = /(?<!\\)\$(?![\s$])((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?!\d)/g;
+
+  /** Tokenize $…$ / $$…$$ into @@katexN@@ placeholders (source-level, before
+   *  marked runs, so `_`/`*` inside math survive as literal text). */
+  function extractMath(source: string): { masked: string; items: MathItem[] } {
+    const items: MathItem[] = [];
+    const mask = (text: string): string =>
+      text
+        .replace(DISPLAY_RE, (raw, tex: string) => {
+          if (!tex.trim()) return raw;
+          items.push({ tex, display: true, raw });
+          return `@@katex${items.length - 1}@@`;
+        })
+        .replace(INLINE_RE, (raw, tex: string) => {
+          if (!tex.trim()) return raw;
+          items.push({ tex, display: false, raw });
+          return `@@katex${items.length - 1}@@`;
+        });
+    const parts = source.split(CODE_SPLIT);
+    for (let i = 0; i < parts.length; i += 2) parts[i] = mask(parts[i]);
+    return { masked: parts.join(''), items };
+  }
+
+  const ESC_MAP: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC_MAP[c] ?? c);
+
+  /** Swap the placeholders in sanitized output for KaTeX HTML (re-sanitized
+   *  through DOMPurify). Broken expressions degrade to their raw source. */
+  function injectMath(out: string, items: MathItem[]): string {
+    const k = katex;
+    if (!k || !items.length) return out;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      let frag: string;
+      try {
+        const rendered = k.renderToString(it.tex, {
+          displayMode: it.display,
+          throwOnError: false,
+          errorColor: '#ef4444',
+          strict: 'ignore',
+          trust: false,
+        });
+        frag = `<span class="md-math${it.display ? ' md-math-block' : ''}">${DOMPurify.sanitize(rendered)}</span>`;
+      } catch {
+        frag = esc(it.raw);
+      }
+      out = out.replaceAll(`@@katex${i}@@`, frag);
+    }
+    return out;
+  }
+
   function render(s: string, live: boolean): void {
     renderedLen = s.length;
-    html = renderMarkdown(s, { live, cursor: live });
+    const { masked, items } = extractMath(s);
+    const mathReady = items.length > 0 && katex !== null;
+    if (items.length && !katex) ensureKatex();
+    // unmasked source path = today's behavior, untouched when no math present
+    html = injectMath(renderMarkdown(mathReady ? masked : s, { live, cursor: live }), mathReady ? items : []);
     tail = '';
   }
 
@@ -26,6 +122,7 @@
     const s = src;
     const live = streaming;
     void mdStore.hljsReady; // re-render with highlighting once hljs lands
+    void katexTick; // …and with typeset math once KaTeX lands
     if (!live) {
       if (timer !== undefined) {
         clearTimeout(timer);
@@ -61,9 +158,12 @@
       if (copyBtn instanceof HTMLButtonElement) {
         const code = copyBtn.closest('.codeblock')?.querySelector('pre')?.textContent ?? '';
         void copyText(code).then((ok) => {
+          // OWUI-style "Copied" state — .copied draws the checkmark (CSS ::before)
           copyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+          copyBtn.classList.toggle('copied', ok);
           setTimeout(() => {
             copyBtn.textContent = 'Copy';
+            copyBtn.classList.remove('copied');
           }, 1200);
         });
         return;
@@ -90,8 +190,11 @@
 
 <style>
   /* everything below is :global — {@html} children carry no scope attr.
-     Type + block styling per docs/DESIGN-POLISH.md §2/§8: 16px/1.7 text,
-     code = #000 body (dark) / #f4f4f4 (light) with a 36px header row. */
+     Type + block styling per docs/DESIGN-POLISH.md §2/§8: 16px/1.7 text;
+     code blocks follow the OWUI CodeBlock recipe: rounded-xl shell with a
+     hairline border, header bar on the body surface (language left, actions
+     right), body white in light / #000 in dark (OWUI keeps it theme-aware —
+     `bg-white dark:bg-black` — so we do the same rather than always-dark). */
   :global(.md-body) {
     font-size: 1rem;
     line-height: 1.7;
@@ -248,13 +351,14 @@
     font-size: 0.85em;
   }
 
-  /* fenced code blocks (§8): #000 body in dark, #f4f4f4 in light */
+  /* fenced code blocks — OWUI: rounded-xl + hairline border, bar shares the
+     body surface (white light / #000 dark), small quiet action buttons */
   :global(.md-body .codeblock) {
     margin: 0.9em 0;
-    border: 0;
-    border-radius: 14px;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem; /* rounded-xl */
     overflow: hidden;
-    background: #f4f4f4;
+    background: #ffffff;
     color: var(--text);
   }
   :global(html.dark .md-body .codeblock) {
@@ -265,44 +369,54 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    height: 36px;
-    padding: 0 0.35rem 0 0.85rem;
-    background: var(--panel-2, #3a3a3a);
+    padding: 0.3rem 0.45rem 0.3rem 0.9rem;
+    background: transparent; /* sits on the code surface, OWUI-style */
     border-bottom: 0;
   }
   :global(.md-body .codelang) {
-    font-family: ui-monospace, monospace;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.75rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     color: var(--muted, #a8a8a8);
   }
   :global(.md-body .codeacts) {
     display: flex;
+    flex: none;
     gap: 0.15rem;
   }
   :global(.md-body .codebtn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.625rem;
     border: 0;
     background: transparent;
     color: var(--muted, #a8a8a8);
     border-radius: 0.5rem;
     font-size: 0.75rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.25rem 0.55rem;
+    font-weight: 400;
+    padding: 0 0.5rem;
     cursor: pointer;
     transition:
-      color 120ms ease,
-      background 120ms ease;
+      color 100ms ease,
+      background 100ms ease;
   }
   :global(.md-body .codebtn:hover) {
     color: var(--text);
-    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+    background: var(--fill-hover, rgb(255 255 255 / 0.05));
+  }
+  /* copied state: checkmark rides in front of the label (set by the click
+     handler in this component) */
+  :global(.md-body .codebtn.copied)::before {
+    content: '\2713';
+    font-size: 0.7rem;
+    line-height: 1;
   }
   :global(.md-body .codeblock pre) {
     margin: 0;
-    padding: 0.75rem 0.9rem;
+    padding: 0.4rem 0.9rem 0.85rem;
     overflow-x: auto;
     background: transparent;
   }
@@ -317,6 +431,24 @@
     background: none;
     border: 0;
     padding: 0;
+  }
+
+  /* KaTeX math (lazy chunk). Block math scrolls sideways instead of
+     overflowing; katex-display's own 1em margins are folded into ours. */
+  :global(.md-body .md-math) {
+    white-space: normal;
+  }
+  :global(.md-body .md-math-block) {
+    display: block;
+    margin: 0.55em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  :global(.md-body .katex-display) {
+    margin: 0;
+  }
+  :global(.md-body .katex) {
+    font-size: 1.02em;
   }
 
   /* tables — quiet: no outer frame, hairline row separators only (§4: my 4px) */
@@ -392,7 +524,7 @@
 
   /* hljs token theme (FE-COLOR: colorized both modes — strings green,
      keywords on the accent hue, numbers orange, comments --faint; class
-     names per highlight.js v11). Light values first (code bg #f4f4f4),
+     names per highlight.js v11). Light values first (code bg white),
      pastel overrides under html.dark (code bg #000). --acc/--faint flip
      with the mode automatically. */
   :global(.md-body .hljs-comment),

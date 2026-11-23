@@ -1,10 +1,14 @@
 <script lang="ts">
-  // Composer (docs/DESIGN-POLISH.md §6 — "THE ChatGPT moment"): --panel pill,
-  // radius 26, soft shadow, transparent autosize textarea, inner bottom row
-  // with [attach] [search] [model picker] … [mic] [send/stop]. Send morphs
-  // in place into the stop circle while streaming. Enter/⌘Enter semantics
-  // keep the chatgo-send-enter pref; image attach via paste/drag/clip →
-  // /api/files; Web Speech mic; stop wired to the existing abort path.
+  // Composer (docs/DESIGN-POLISH.md §6 — "THE ChatGPT moment", OWUI pass):
+  // rounded-3xl container, transparent autosize textarea, footer row with
+  // [attach] [model picker] [search] [knowledge] … [temporary] [mic] [stop]
+  // [send]. The send circle is always the up-arrow primary button: while a
+  // response streams, sending again ENQUEUES (ChatView owns the queue and
+  // auto-fires items when the stream settles); a separate stop circle shows
+  // mid-stream. Temporary-chat switch dashed-frames the pill (OWUI contract:
+  // ChatView deletes the chat on leave). Enter/⌘Enter semantics keep the
+  // chatgo-send-enter pref; image attach via paste/drag/clip → /api/files;
+  // Web Speech mic; stop wired to the existing abort path.
   import type { Chat, SendMessageBody } from '$lib/api';
   import * as api from '$lib/api';
   import ModelPicker from './ModelPicker.svelte';
@@ -53,15 +57,25 @@
   let {
     chat,
     busy = false,
+    queue = [],
+    temporary = false,
     onsend,
     onstop,
     onupdated,
+    onremovequeued,
+    ontemporary,
   }: {
     chat: Chat | null | undefined;
     busy?: boolean;
+    /** bodies waiting to fire after the current stream settles (ChatView) */
+    queue?: SendMessageBody[];
+    /** temporary-chat mode: dashed pill + badge; ChatView deletes on leave */
+    temporary?: boolean;
     onsend: (body: SendMessageBody) => void;
     onstop: () => void;
     onupdated?: (c: Chat) => void;
+    onremovequeued?: (index: number) => void;
+    ontemporary?: (v: boolean) => void;
   } = $props();
 
   let value = $state('');
@@ -246,7 +260,9 @@
 
   function doSend(): void {
     const text = value.trim();
-    if (!text || busy) return;
+    // While a response streams this is a QUEUED send — ChatView.submit routes
+    // it to the visible queue instead of starting a second stream.
+    if (!text) return;
     if (uploading) {
       toast('Images are still uploading…', 'info');
       return;
@@ -578,10 +594,34 @@
 
 <div style="background:var(--bg)" aria-label="Message composer">
   <div class="mx-auto w-full max-w-[48rem] px-4 pb-2.5 pt-1">
+    {#if queue.length}
+      <!-- queued sends (Enter mid-stream) — auto-fired in order when the
+           current stream settles; each item removable -->
+      <div class="mb-1.5 flex flex-col gap-1" role="list" aria-label="Queued messages">
+        <p class="px-1.5 text-[11px] font-medium uppercase tracking-wide" style="color:var(--faint, #6e6e6e)">
+          Queued · {queue.length}
+        </p>
+        {#each queue as item, i (i)}
+          <div class="qrow" role="listitem">
+            <span class="min-w-0 flex-1 truncate text-[13px]" style="color:var(--text)">{item.content}</span>
+            <button
+              type="button"
+              class="attx"
+              title="Remove from queue"
+              aria-label="Remove queued message"
+              onclick={() => onremovequeued?.(i)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
     <div
       class="pill"
       class:dragging
+      class:temp={temporary}
       ondragover={(e) => {
         e.preventDefault();
         dragging = true;
@@ -623,7 +663,7 @@
         bind:this={ta}
         bind:value={value}
         rows="1"
-        placeholder="Ask anything"
+        placeholder={busy ? 'Queue a message…' : 'Ask anything'}
         class="w-full resize-none overflow-y-auto bg-transparent px-1 py-0.5 text-base leading-[1.6] outline-none"
         style="color:var(--text)"
         aria-label="Message"
@@ -650,6 +690,8 @@
         <IconButton title="Attach images (max 4, 20 MB)" onclick={() => fileInput?.click()}>
           <Plus size={16} />
         </IconButton>
+        <!-- model picker: compact trigger anchored at the footer's bottom-left -->
+        <ModelPicker {chat} {onupdated} />
         {#if capabilities.search}
           <IconButton title="Web search (SearXNG)" active={searchOn} onclick={() => (searchOn = !searchOn)}>
             <span class="globe">
@@ -699,24 +741,43 @@
             {/if}
           </div>
         {/if}
-        <ModelPicker {chat} {onupdated} />
-
         <div class="ml-auto flex items-center gap-1">
+          <!-- temporary-chat switch (OWUI style): dashed pill + badge while on;
+               ChatView owns the state and deletes the chat on leave -->
+          <button
+            type="button"
+            role="switch"
+            aria-checked={temporary}
+            class="tempbtn"
+            class:on={temporary}
+            title="Temporary chat — deleted when you leave"
+            onclick={() => ontemporary?.(!temporary)}
+          >
+            <span class="temptrack" aria-hidden="true"><span class="tempthumb"></span></span>
+            {#if temporary}<span class="tempbadge">Temporary</span>{/if}
+          </button>
           {#if SR}
             <IconButton title={micOn ? 'Stop dictation' : 'Dictate (Web Speech)'} active={micOn} onclick={toggleMic}>
               {#if micOn}<MicOff size={15} />{:else}<Mic size={15} />{/if}
             </IconButton>
           {/if}
-          <!-- send morphs IN PLACE into the stop circle while streaming -->
+          <!-- stop circle appears mid-stream; the send circle keeps its
+               up-arrow and queues while busy -->
           {#if busy}
-            <button type="button" class="send" title="Stop generating" aria-label="Stop generating" onclick={onstop}>
+            <button type="button" class="stopbtn" title="Stop generating" aria-label="Stop generating" onclick={onstop}>
               <Square size={11} fill="currentColor" />
             </button>
-          {:else}
-            <button type="button" class="send" title="Send" aria-label="Send message" disabled={!canSend} onclick={doSend}>
-              <ArrowUp size={16} />
-            </button>
           {/if}
+          <button
+            type="button"
+            class="send"
+            title={busy ? 'Queue message' : 'Send'}
+            aria-label={busy ? 'Queue message' : 'Send message'}
+            disabled={!canSend}
+            onclick={doSend}
+          >
+            <ArrowUp size={16} />
+          </button>
         </div>
       </div>
     </div>
@@ -725,6 +786,8 @@
       {#if escHint}
         <!-- armed Esc: accent chip swaps the hint strip (auto-dismiss ~2.5s) -->
         <span class="eschip" role="status">Esc again to stop generating</span>
+      {:else if busy}
+        {sendEnter ? '↵ queue · ⇧↵ newline · ' : '⇧↵ newline · ⌘↵ queue · '}Esc stop · / focus
       {:else}
         {sendEnter ? '↵ send · ⇧↵ newline · ' : '⇧↵ send · '}⌘↵ send · / focus · ↑ edit · ? help
       {/if}
@@ -735,13 +798,12 @@
 <ShortcutsHelp open={shortcutsOpen} onclose={() => (shortcutsOpen = false)} />
 
 <style>
-  /* the ChatGPT pill: --panel, radius 26, soft shadow (§1/§6), plus the OWUI
-     integration pass (docs/DESIGN-REF.md §2): backdrop-blur-md + near-invisible
-     hairline border (light black/8%, dark white/6%). Blur needs a translucent
-     fill to read, so the bg keeps --panel but lets 6% through. */
+  /* OWUI composer container: rounded-3xl, --panel fill, backdrop-blur + the
+     near-invisible hairline border (light black/8%, dark white/6%). Blur needs
+     a translucent fill to read, so the bg keeps --panel but lets 6% through. */
   .pill {
     position: relative; /* anchors the slash-prompt popover */
-    border-radius: 26px;
+    border-radius: 1.5rem; /* rounded-3xl */
     border: 1px solid rgb(0 0 0 / 0.08);
     padding: 10px 12px 8px;
     background: color-mix(in srgb, var(--panel, #2f2f2f) 94%, transparent);
@@ -760,6 +822,21 @@
   .pill.dragging {
     outline: 2px dashed color-mix(in srgb, var(--accent, #ffffff) 45%, transparent);
     outline-offset: 2px;
+  }
+  /* temporary chat (OWUI): dashed frame while the mode is on */
+  .pill.temp {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--muted, #a8a8a8) 45%, transparent);
+  }
+
+  /* queued-send row: compact --panel-2 line above the composer */
+  .qrow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.625rem;
+    background: var(--panel-2, #3a3a3a);
+    padding: 0.3rem 0.4rem 0.3rem 0.65rem;
   }
 
   /* attachment chip: rounded-lg --panel-2 row, 28px thumb (§6) */
@@ -909,6 +986,90 @@
   .send:hover:not(:disabled) {
     filter: brightness(1.08);
     box-shadow: 0 0 12px color-mix(in srgb, var(--acc-strong, var(--accent)) 55%, transparent);
+  }
+
+  /* mid-stream stop circle: quiet --panel-2 sibling left of send */
+  .stopbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    border: 0;
+    background: var(--panel-2, #3a3a3a);
+    color: var(--text);
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+  .stopbtn:hover {
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+    color: var(--accent, #ffffff);
+  }
+
+  /* temporary-chat switch (footer): mini track + on-state accent badge */
+  .tempbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: 1.75rem;
+    padding: 0 0.45rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted, #a8a8a8);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+  .tempbtn:hover {
+    background: var(--fill-hover, rgb(255 255 255 / 0.065));
+    color: var(--text);
+  }
+  .tempbtn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--acc, var(--accent)) 60%, transparent);
+    outline-offset: 1px;
+  }
+  .tempbtn.on {
+    color: var(--acc, var(--accent, #ffffff));
+  }
+  .temptrack {
+    display: inline-flex;
+    align-items: center;
+    width: 1.55rem;
+    height: 0.9rem;
+    flex: none;
+    border-radius: 999px;
+    background: var(--panel-2, #3a3a3a);
+    padding: 0 2px;
+    transition: background 150ms ease;
+  }
+  .tempbtn.on .temptrack {
+    background: var(--acc, var(--accent, #ffffff));
+  }
+  .tempthumb {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+    transition: transform 150ms ease;
+  }
+  .tempbtn.on .tempthumb {
+    transform: translateX(0.6rem);
+  }
+  .tempbadge {
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--acc, var(--accent, #ffffff)) 16%, transparent);
+    color: var(--acc, var(--accent, #ffffff));
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   /* armed-Esc hint chip (quiet accent fill, pill, swaps in on the hint strip) */
