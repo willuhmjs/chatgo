@@ -10,6 +10,8 @@ export interface UIMessage extends Message {
   stopped?: boolean;
   /** user message not yet acknowledged by the `meta` SSE event */
   pending?: boolean;
+  /** why THIS turn's web search failed (live stream only — see `sources`) */
+  search_error?: string;
 }
 
 export interface MsgGroup {

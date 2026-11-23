@@ -188,7 +188,19 @@ func (s *Service) searchAt(ctx context.Context, base, q string, n int) ([]Result
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("search: searxng returned %s", resp.Status)
+		// SearXNG error bodies are short JSON ({"error":"Format ... not
+		// allowed."}) or HTML; the excerpt turns a bare "403 Forbidden" into
+		// a diagnosable message in logs, the chat chip and Admin → Test.
+		excerpt, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		snip := clampRunes(flattenBlock(string(excerpt)), 200)
+		msg := fmt.Sprintf("search: searxng returned %s", resp.Status)
+		if snip != "" {
+			msg += ": " + snip
+		}
+		if h := Hint(errors.New(msg)); h != "" {
+			msg += " — " + h
+		}
+		return nil, errors.New(msg)
 	}
 
 	var payload struct {
@@ -203,7 +215,11 @@ func (s *Service) searchAt(ctx context.Context, base, q string, n int) ([]Result
 		return nil, fmt.Errorf("search: read searxng body: %w", err)
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("search: parse searxng json: %w", err)
+		msg := fmt.Sprintf("search: parse searxng json: %v", err)
+		if h := Hint(errors.New(msg)); h != "" {
+			msg += " — " + h
+		}
+		return nil, errors.New(msg)
 	}
 
 	out := make([]Result, 0, n)
@@ -286,4 +302,31 @@ func clampRunes(s string, n int) string {
 func flattenBlock(s string) string {
 	s = strings.NewReplacer("`", "'", "\n", " ", "\r", " ", "\t", " ").Replace(s)
 	return strings.TrimSpace(s)
+}
+
+// Hint maps a Search/SearchURL failure to one short, actionable remedy
+// ("" when the message already says enough). Used by the Admin → Web search
+// → Test endpoint and folded into error strings at the source, so the chat
+// warning chip never shows a bare transport error.
+func Hint(err error) string {
+	if err == nil {
+		return ""
+	}
+	m := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(m, "format") && (strings.Contains(m, "not allowed") || strings.Contains(m, "403") || strings.Contains(m, "400")):
+		return `enable the JSON API in SearXNG: settings.yml → search: formats: [html, json], then restart SearXNG`
+	case strings.Contains(m, "parse searxng json") || strings.Contains(m, "<!doctype") || strings.Contains(m, "<html"):
+		return `SearXNG replied with HTML, not JSON — add "formats: [html, json]" under "search:" in settings.yml and restart SearXNG`
+	case strings.Contains(m, "loopback") && strings.Contains(m, "blocked"):
+		return "run ChatGo with ALLOW_LOOPBACK=true (or point SearXNG at a non-loopback address)"
+	case strings.Contains(m, "trustedurlnets"), strings.Contains(m, "no permitted address"):
+		return `the SearXNG host resolves to a blocked network — add its CIDR to TRUSTED_URL_NETS (e.g. "10.43.0.0/16" for k3s services, "172.16.0.0/12" for Docker)`
+	case strings.Contains(m, "resolve"):
+		return "hostname did not resolve — check the URL (cluster service names only resolve in-cluster)"
+	case strings.Contains(m, "searxng request"):
+		return "could not reach SearXNG — check the URL, port and that the service is up"
+	default:
+		return ""
+	}
 }

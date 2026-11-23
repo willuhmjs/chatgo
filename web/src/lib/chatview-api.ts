@@ -16,6 +16,8 @@ export interface StreamTitleData {
 }
 export interface StreamSourcesData {
   items?: SourceRef[];
+  /** set when the turn's web search FAILED; items then holds only enricher hits */
+  error?: string;
 }
 export interface StreamErrorData {
   message?: string;

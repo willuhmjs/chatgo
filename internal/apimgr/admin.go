@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"chatgo/internal/api/httpx"
 	"chatgo/internal/audit"
 	"chatgo/internal/auth"
+	"chatgo/internal/search"
 	"chatgo/internal/store"
 )
 
@@ -148,6 +150,7 @@ func registerAdmin(mux *http.ServeMux, d *Deps) {
 	h := &adminH{d: d}
 	mux.HandleFunc("GET /api/settings", h.handleGet)
 	mux.HandleFunc("PUT /api/settings", h.handlePut)
+	mux.HandleFunc("POST /api/settings/search/test", h.handleSearchTest)
 	mux.HandleFunc("GET /api/me/settings", h.handleMeGet)
 	mux.HandleFunc("PUT /api/me/settings", h.handleMePut)
 	mux.HandleFunc("POST /api/me/password", h.handleMePassword)
@@ -240,6 +243,67 @@ func (h *adminH) put(w http.ResponseWriter, r *http.Request) {
 	actor, _ := h.d.Auth.UserFrom(r.Context())
 	audit.Record(r.Context(), h.d.Store.DB, actor, "settings.update", "", h.d.Auth.RequestIP(r))
 	httpx.JSON(w, http.StatusOK, view)
+}
+
+// handleSearchTest POST /api/settings/search/test (admin). Runs one real
+// search against the currently-effective SearXNG target (SEARXNG_URL env
+// first, then the admin search_url setting — the same resolution order as
+// chat.searchWeb) and reports the outcome with an actionable hint. Turns
+// "web search is enabled but the model says it can't search" — which used to
+// live only in server logs — into a one-click diagnosis.
+func (h *adminH) handleSearchTest(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.d.requireAdmin(w, r); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	out := map[string]any{"ok": false, "hits": 0}
+	fail := func(err error) {
+		out["error"] = err.Error()
+		if hint := search.Hint(err); hint != "" && !strings.Contains(err.Error(), hint) {
+			out["hint"] = hint
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	}
+
+	srch := h.d.Search
+	if srch == nil {
+		fail(errors.New("search service unavailable"))
+		return
+	}
+	var (
+		res []search.Result
+		err error
+	)
+	if srch.Enabled {
+		res, err = srch.Search(ctx, "chatgo connectivity test", 3)
+	} else {
+		v, gerr := h.d.Store.Settings.Get(ctx, "search_url") // same key chat.searchWeb dials
+		if gerr != nil {
+			fail(fmt.Errorf("read search_url setting: %w", gerr))
+			return
+		}
+		target := ""
+		if v != nil {
+			target = strings.TrimSpace(*v)
+		}
+		if target == "" {
+			fail(errors.New("no SearXNG target configured — set SEARXNG_URL or the SearXNG URL field above"))
+			return
+		}
+		res, err = srch.SearchURL(ctx, target, "chatgo connectivity test", 3)
+	}
+	if err != nil {
+		fail(err)
+		return
+	}
+	out["ok"] = true
+	out["hits"] = len(res)
+	if len(res) == 0 {
+		out["note"] = "SearXNG answered but returned no results"
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 // ---------- GET/PUT /api/me/settings (self) ----------

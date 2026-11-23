@@ -116,6 +116,7 @@ GET  /files/{id}/{name} (authed, serves original name, content-sniffed type)
 GET  /api/files?kind=artifact  → gallery list
 Folders/Tags: CRUD /api/folders, /api/tags ; PUT /api/chats/{id}/folder ; PUT /api/chats/{id}/tags
 GET/PUT /api/me/settings {theme,…}   | admin: GET/PUT /api/settings
+POST /api/settings/search/test (admin) → {ok,hits,error?,hint?}  live SearXNG probe
 GET /api/users (admin) | POST /api/users/{id}/approve | PUT /api/users/{id}/role
 CRUD /api/tokens → create returns full token once
 POST /v1/chat/completions (Bearer ck_… api token, OpenAI-compatible passthrough w/ user_id binding)
@@ -126,7 +127,7 @@ GET  /api/share/{token} → public read-only chat payload (also /s/{token} SPA r
 Each line: `event: <name>\ndata: <json>\n\n`. Events, in order:
 1. `meta`  `{message_id, chat_id}`
 2. `title` `{title}`  (only if new-chat title was generated; fire early)
-3. `sources` `{items:[{title,url}]}` (only when search enabled)
+3. `sources` `{items:[{title,url}], error?}` (only when search ran; `error` = why it failed, live-stream only, never persisted)
 4. `token` `{content}` many
 5. `done`  `{usage:{in,out}|null}` | `error` `{message}`
 Server writes heartbeats `: ping\n\n` every 15s while waiting upstream.

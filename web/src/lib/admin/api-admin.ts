@@ -120,6 +120,17 @@ export interface ModelToggle {
 
 export const listProvidersAdmin = () => adminReq<ProviderAdmin[]>('GET', '/api/providers');
 
+/** Live web-search probe (POST /api/settings/search/test): dials the
+ *  effective SearXNG target once and reports why it works (or doesn't). */
+export interface SearchTestResult {
+  ok: boolean;
+  hits: number;
+  error?: string;
+  hint?: string;
+  note?: string;
+}
+export const testWebSearch = () => adminReq<SearchTestResult>('POST', '/api/settings/search/test');
+
 /** Full cached model list of one provider (admin; incl. disabled rows). */
 export const listProviderModels = (id: string) =>
   adminReq<ProviderModel[]>('GET', `/api/providers/${id}/models`);

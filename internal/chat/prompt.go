@@ -15,7 +15,9 @@ import (
 
 const (
 	// defaultSystemPrompt is used unless the settings table overrides it.
-	defaultSystemPrompt = "You are ChatGo, a helpful and knowledgeable assistant. " +
+	// Deliberately brand-free: the assistant's identity belongs to the model
+	// (or to the admin-configured prompt), not to a hardcoded string here.
+	defaultSystemPrompt = "You are a helpful and knowledgeable assistant. " +
 		"Answer clearly, admit uncertainty, and use Markdown formatting when it helps."
 
 	settingSystemPrompt = "system_prompt"

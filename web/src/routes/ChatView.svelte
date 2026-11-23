@@ -298,8 +298,10 @@
         window.dispatchEvent(new CustomEvent('chatgo:title', { detail: { chat_id: id, title: t } }));
       },
       sources: (data: unknown) => {
-        const items = (data as StreamSourcesData | null)?.items;
-        if (items?.length && streamMsg) streamMsg.sources = items;
+        const d = (data as StreamSourcesData | null) ?? {};
+        if (!streamMsg) return;
+        if (d.items?.length) streamMsg.sources = d.items;
+        if (d.error) streamMsg.search_error = d.error;
       },
       token: (data: unknown) => queueToken((data as StreamTokenData | null)?.content ?? ''),
       done: (data: unknown) => {

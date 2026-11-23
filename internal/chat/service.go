@@ -106,9 +106,13 @@ type (
 		Title string `json:"title"`
 		URL   string `json:"url"`
 	}
-	// SourcesData is the `sources` payload.
+	// SourcesData is the `sources` payload. Error is set when the turn's
+	// web search FAILED (items then carries only non-search enrichments);
+	// it is streamed for the live turn only — never persisted — so the
+	// composer chip and a reload behave like Open WebUI's status line.
 	SourcesData struct {
 		Items []SourceItem `json:"items"`
+		Error string       `json:"error,omitempty"`
 	}
 	// TokenData is one `token` payload.
 	TokenData struct {
@@ -453,12 +457,17 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 	var sourcesJSON, searchCtx string
 	var items []SourceItem
 	ranSearch := false
+	searchErr := ""
 	if opts.Search && s.Search != nil {
 		results, ran, err := s.searchWeb(ctx, userMsg.Content)
 		ranSearch = ran
 		if ran {
 			if err != nil {
 				// Degrade gracefully: empty sources, no SearchCtx, keep streaming.
+				// The message is surfaced on the `sources` event so the UI can
+				// show WHY (a silently missing search context reads to users as
+				// "the model refuses to search").
+				searchErr = err.Error()
 				slog.Warn("chat: web search failed", "chat_id", chatID, "error", err)
 				results = nil
 			}
@@ -490,7 +499,7 @@ func (s *Service) run(ctx context.Context, out chan<- Event, chat *store.Chat, u
 		}
 	}
 	if ranSearch || len(items) > 0 {
-		if !emit(ctx, out, EventSources, SourcesData{Items: items}) {
+		if !emit(ctx, out, EventSources, SourcesData{Items: items, Error: searchErr}) {
 			return
 		}
 	}

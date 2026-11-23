@@ -374,7 +374,7 @@ func TestCompactionSmallContext(t *testing.T) {
 		t.Fatalf("prompt not compacted: %d messages", len(opts.Messages))
 	}
 	first := opts.Messages[0]
-	if first.Role != "system" || !strings.Contains(first.Content, "ChatGo") {
+	if first.Role != "system" || first.Content != defaultSystemPrompt {
 		t.Fatalf("msg[0] not base system prompt: %+v", first)
 	}
 	if opts.Messages[1].Content != seedMsgs[0][1] || opts.Messages[2].Content != seedMsgs[1][1] {

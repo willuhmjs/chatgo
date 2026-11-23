@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RotateCcw, Save } from 'lucide-svelte';
+  import { RotateCcw, Save, Globe } from 'lucide-svelte';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
   import type { ModelEntry, Registration, SystemSettings } from '$lib/admin/api-admin';
@@ -57,6 +57,24 @@
     }
   }
   void load();
+
+  // ----- web-search live test (POST /api/settings/search/test) -----
+  // Dials the EFFECTIVE target: SEARXNG_URL env wins server-side, else the
+  // saved search_url setting. Unsaved edits can't be tested (the server has
+  // them), hence the save-first hint while the field is dirty.
+  let testing = $state(false);
+  let testResult = $state<admin.SearchTestResult | null>(null);
+  async function runSearchTest() {
+    testing = true;
+    testResult = null;
+    try {
+      testResult = await admin.testWebSearch();
+    } catch (e) {
+      testResult = { ok: false, hits: 0, error: errMsg(e, 'Test request failed') };
+    } finally {
+      testing = false;
+    }
+  }
 
   function reset() {
     if (saved) form = { ...saved };
@@ -168,7 +186,7 @@
             class={`${input} min-h-32 resize-y font-mono text-xs leading-relaxed`}
             style={inputStyle}
             rows={6}
-            placeholder="You are ChatGo, a concise and helpful assistant…"
+            placeholder="You are a helpful and knowledgeable assistant…"
             bind:value={form.system_prompt}
           ></textarea>
         </Field>
@@ -182,6 +200,37 @@
         <Field label="SearXNG URL" hint="Self-hosted SearXNG base URL, e.g. http://searxng:8080. Blank disables web search. Private hosts need the server's TrustedURLNets/AllowLoopback config.">
           <input class={`${input} font-mono text-xs`} style={inputStyle} placeholder="http://searxng:8080" autocomplete="off" bind:value={form.search_url} />
         </Field>
+        <!-- Live probe: surfaces the real failure (json format disabled, SSRF-
+             blocked network, unreachable host) instead of silent degradation -->
+        <div class="flex items-start gap-3">
+          <button
+            type="button"
+            class={btn}
+            style={btnGhostStyle}
+            disabled={testing || form.search_url !== saved?.search_url}
+            title={form.search_url !== saved?.search_url ? 'Save the URL first — the test dials the saved config' : 'Run one search against the configured SearXNG'}
+            onclick={() => void runSearchTest()}
+          >
+            {#if testing}<Spinner size={14} />{:else}<Globe size={14} />{/if}
+            {testing ? 'Testing…' : 'Test web search'}
+          </button>
+          {#if testResult}
+            <div class="min-w-0 flex-1 text-xs leading-relaxed" role="status">
+              {#if testResult.ok}
+                <span style="color:var(--ok, #10a37f)">✓ Working — {testResult.hits} result{testResult.hits === 1 ? '' : 's'} returned.</span>
+                {#if testResult.note}<span class="text-[var(--muted)]"> {testResult.note}</span>{/if}
+              {:else}
+                <span style="color:var(--danger)">✗ {testResult.error}</span>
+                {#if testResult.hint}
+                  <span class="mt-0.5 block text-[var(--muted)]">Fix: {testResult.hint}</span>
+                {/if}
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#if form.search_url !== saved?.search_url && (form.search_url || saved?.search_url)}
+          <p class="-mt-3 text-[11px] text-[var(--faint)]">Save the URL first — the test dials the saved config (or SEARXNG_URL when set).</p>
+        {/if}
       </section>
 
       <section class="flex flex-col gap-4 rounded-2xl p-5" style="background:var(--panel)">

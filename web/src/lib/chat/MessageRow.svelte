@@ -18,6 +18,7 @@
   import Volume2 from 'lucide-svelte/icons/volume-2';
   import VolumeX from 'lucide-svelte/icons/volume-x';
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
+import Globe from 'lucide-svelte/icons/globe';
   import LinkIcon from 'lucide-svelte/icons/link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
@@ -280,6 +281,19 @@
           <button type="button" class="retrypill" disabled={busy} onclick={() => onretry?.(message)}>
             <RefreshCw size={11} /> Retry
           </button>
+        </div>
+      {/if}
+
+      {#if message.search_error}
+        <!-- web search ran for this turn and FAILED (OWUI shows this as a
+             status line; here it persists under the answer): the reply has
+             no web context, and the reason + fix is right here -->
+        <div class="searchwarn" role="status">
+          <Globe size={13} style="flex:none; color:var(--danger)" />
+          <span class="min-w-0 flex-1">
+            <span style="color:var(--text)">Web search failed</span> — this answer has no web context.
+            <span class="searchwarn-detail">{message.search_error.replace(/^search:\s*/, '')}</span>
+          </span>
         </div>
       {/if}
 
@@ -558,6 +572,24 @@
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
     border-radius: 0.75rem;
     background: color-mix(in oklab, var(--danger) 7%, transparent);
+  }
+
+  /* web-search-failed chip: same family as .errline, no action (OWUI status
+     line parity) — visible without hover so the miss is never silent */
+  .searchwarn {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-top: 0.55rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: 0.75rem;
+    background: color-mix(in oklab, var(--danger) 5%, transparent);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--muted, #a8a8a8);
+  }
+  .searchwarn-detail {
+    word-break: break-word;
   }
   .retrypill {
     display: inline-flex;
