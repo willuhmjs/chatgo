@@ -1,0 +1,51 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: chatgo
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+# Unauthenticated login/register/SSO entrypoints — the app rate-limits local
+# login itself (5/min/IP), but registration, OIDC discovery pings and
+# credential stuffing arrive faster than that; cap them at the edge.
+# average is per-second; burst absorbs a page-load burst of XHRs.
+# NOTE: keyed on the connection IP Traefik sees — if Traefik itself sits
+# behind another proxy, trust its forwardedHeaders so clients don't share one bucket.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit-auth
+  namespace: chatgo
+spec:
+  rateLimit:
+    average: 5
+    burst: 10
+---
+# Public share endpoints (/api/share/* + /s/*): unauthenticated, token-gated
+# read-only. Generous enough for a legit viewer scrolling a chat, tight enough
+# to make token enumeration or scraping pointless.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit-share
+  namespace: chatgo
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+---
+# HSTS: 180 days, no subdomains (chat.example.com is a single-leaf homelab cert),
+# no preload list opt-in. Applied on the https routers in ingress.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: hsts
+  namespace: chatgo
+spec:
+  headers:
+    stsSeconds: 15552000
+    stsIncludeSubdomains: false
+    stsPreload: false
