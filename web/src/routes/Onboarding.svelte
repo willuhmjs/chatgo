@@ -146,6 +146,11 @@
       try {
         const r = await api.syncProvider(p.id);
         syncedCount = r.count;
+        // The wizard is the one catalog mutation that bypasses Admin's
+        // ProvidersTab bus broadcast — without this, Home/pickers keep the
+        // empty list loadModels() memoized from before the provider existed
+        // and show 'no models configured' until a hard reload.
+        window.dispatchEvent(new Event('chatgo:models-changed'));
         push(`${r.count} model${r.count === 1 ? '' : 's'} synced from ${p.name}`, 'success');
       } catch {
         syncedCount = null;
