@@ -1,0 +1,10 @@
+bin/
+data/
+node_modules/
+web/dist/
+internal/web/dist/
+*.db
+*.db-*
+.DS_Store
+.env
+deploy/secret.yaml

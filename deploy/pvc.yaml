@@ -1,0 +1,18 @@
+# SQLite DB + uploads. NOT in kustomization.yaml - applied manually:
+#   kubectl apply -f deploy/pvc.yaml
+# local-path on purpose: SQLite needs a local fsync-friendly disk on the `server` node
+# (same reasoning as apps/open-webui/pvc.yaml). Small, so fine on the fast tier.
+# local-path PVs are created with Delete: after it binds, run
+#   kubectl patch pv <pv> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chatgo-data-pvc-enc
+  namespace: chatgo
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
