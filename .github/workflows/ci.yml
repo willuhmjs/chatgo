@@ -40,6 +40,13 @@ jobs:
         working-directory: web
         run: npm ci --ignore-scripts
 
+      # go:embed all:dist (internal/web/web.go) needs the bundle to exist BEFORE
+      # any go tooling runs — dist/ is gitignored build output, so on a clean CI
+      # checkout `go vet ./...` fails without this.
+      - name: Build web bundle (feeds go:embed for lint/test)
+        working-directory: web
+        run: npm run build
+
       - name: Lint
         run: make lint
 
