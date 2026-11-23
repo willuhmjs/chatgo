@@ -129,7 +129,7 @@ copy at [docs/CONFIG.md](docs/CONFIG.md)):
 | `TRUSTED_PROXIES` | *(none)* | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For`/`-Proto` may be believed (client IP for rate limits/logs). Set only when behind a proxy, e.g. `127.0.0.1/32` (host-network Traefik) or `10.42.0.0/16` (k3s pod CIDR) |
 | `TASK_MODEL` | *(none)* | `providerID:modelID` for chat titles/summaries |
 | `SEARXNG_URL` | *(none)* | SearXNG base URL; unset = web-search toggle hidden |
-| `SEARCH_MAX_RESULTS` | `5` | Max SearXNG hits fed into a prompt per turn (clamped to 20) |
+| `SEARCH_MAX_RESULTS` | `5` | Max SearXNG hits per search turn (clamped to 20); admin "Results per message" overrides at runtime |
 | `TRUSTED_URL_NETS` | *(none)* | Comma-separated CIDRs allowed for provider/SearXNG URLs beyond the public internet |
 | `ALLOW_LOOPBACK` | `true` | Allow loopback for in-cluster SearXNG/providers (the k8s manifests in `deploy/` set `false`) |
 | `VERSION` | `dev` | Reported by `/healthz` (overridden at build via `-ldflags -X main.version=`) |

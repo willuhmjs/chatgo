@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -94,6 +95,8 @@ var settingValidators = map[string]func(string) string{
 	"system_prompt":  nil, // global extra system prompt
 	"registration":   validateRegistration,
 	"search_url":     validateSearchURL,
+	// Hits per turn fed to the model; empty = SEARXNG env / built-in default.
+	"search_max_results": validateSearchMaxResults,
 	// Written once the admin finishes the onboarding wizard (global mirror of
 	// the per-user setup_done me-setting).
 	"instance_setup_done": nil,
@@ -140,6 +143,19 @@ func validateSearchURL(v string) string {
 	u, err := url.Parse(v)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "search_url must be an absolute http(s) URL or empty"
+	}
+	return ""
+}
+
+// validateSearchMaxResults accepts "" (fall back to env/default) or an
+// integer within the search service's hard cap.
+func validateSearchMaxResults(v string) string {
+	if v == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 || n > search.HardCap {
+		return "search_max_results must be between 1 and " + strconv.Itoa(search.HardCap) + " (or empty)"
 	}
 	return ""
 }

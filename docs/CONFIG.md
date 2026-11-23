@@ -21,7 +21,7 @@ table lives with the OPS agent; this is the authoritative scaffold copy.
 | `TRUSTED_PROXIES` | *(none)* | Comma-separated CIDRs whose `X-Forwarded-For`/`-Proto` are believed (client IP for rate limits/logs). Only set behind a proxy |
 | `TASK_MODEL` | *(none)* | `providerID:modelID` for chat titles/summaries |
 | `SEARXNG_URL` | *(none)* | SearXNG base URL; unset = web-search toggle hidden |
-| `SEARCH_MAX_RESULTS` | `5` | Max SearXNG hits fed into a prompt per turn (clamped to 20) |
+| `SEARCH_MAX_RESULTS` | `5` | Max SearXNG hits per search turn (clamped to 20); admin "Results per message" overrides at runtime |
 | `TRUSTED_URL_NETS` | *(none)* | Comma-separated CIDRs allowed for provider/SearXNG URLs beyond public internet |
 | `ALLOW_LOOPBACK` | `true` | Allow loopback for in-cluster SearXNG/providers (`deploy/` manifests ship `false`) |
 | `VERSION` | `dev` | Reported by `/healthz` (overridden by `-ldflags -X main.version=`) |

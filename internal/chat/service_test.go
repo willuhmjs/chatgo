@@ -984,3 +984,32 @@ func TestContinueResponse(t *testing.T) {
 		t.Fatalf("leaf=%q, want %q", leaf, a2.ID)
 	}
 }
+
+func TestSearchNPrecedence(t *testing.T) {
+	fc := &fakeClient{chunks: append(sayChunks("ok"), stopChunk(1, 1))}
+	svc, st, _ := newEnv(t, fc, 4096, "")
+	ctx := context.Background()
+
+	if got := svc.searchN(ctx); got != search.MaxResults {
+		t.Fatalf("default searchN = %d, want %d", got, search.MaxResults)
+	}
+	svc.Cfg.SearchMaxResults = 10
+	if got := svc.searchN(ctx); got != 10 {
+		t.Fatalf("env searchN = %d, want 10", got)
+	}
+	// Admin setting beats env; whitespace tolerated; junk ignored; absurd
+	// value clamps to the hard cap instead of erroring the turn.
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"3", 3}, {" 8 ", 8}, {"999", search.HardCap}, {"junk", 10}, {"", 10},
+	} {
+		if err := st.Settings.Set(ctx, "search_max_results", tc.in); err != nil {
+			t.Fatal(err)
+		}
+		if got := svc.searchN(ctx); got != tc.want {
+			t.Fatalf("searchN with setting %q = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

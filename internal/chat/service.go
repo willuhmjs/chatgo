@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -719,12 +720,21 @@ func fireCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 // apimgr/admin.go reports as search_enabled.
 const settingSearchURL = "search_url"
 
-// searchN is how many SearXNG hits a turn requests: SEARCH_MAX_RESULTS from
-// config (default 5), never above the search service's HardCap.
-func (s *Service) searchN() int {
+// searchN is how many SearXNG hits a turn requests, in precedence order:
+// admin "search_max_results" setting (Admin → System → Web search) wins;
+// else SEARCH_MAX_RESULTS env; else the built-in default. Always clamped
+// to the search service's HardCap.
+func (s *Service) searchN(ctx context.Context) int {
 	n := search.MaxResults
 	if s.Cfg != nil && s.Cfg.SearchMaxResults > 0 {
 		n = s.Cfg.SearchMaxResults
+	}
+	if s.Store != nil {
+		if v, err := s.Store.Settings.Get(ctx, "search_max_results"); err == nil && v != nil {
+			if m, err := strconv.Atoi(strings.TrimSpace(*v)); err == nil && m > 0 {
+				n = m
+			}
+		}
 	}
 	if n > search.HardCap {
 		n = search.HardCap
@@ -740,7 +750,7 @@ func (s *Service) searchN() int {
 // caller then emits no `sources` event.
 func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Result, ran bool, err error) {
 	if s.Search.Enabled {
-		results, err := s.Search.Search(ctx, q, s.searchN())
+		results, err := s.Search.Search(ctx, q, s.searchN(ctx))
 		return results, true, err
 	}
 	if s.Cfg != nil && strings.TrimSpace(s.Cfg.SearXNGURL) != "" {
@@ -758,7 +768,7 @@ func (s *Service) searchWeb(ctx context.Context, q string) (results []search.Res
 	if target == "" {
 		return nil, false, nil
 	}
-	results, err = s.Search.SearchURL(ctx, target, q, s.searchN())
+	results, err = s.Search.SearchURL(ctx, target, q, s.searchN(ctx))
 	return results, true, err
 }
 

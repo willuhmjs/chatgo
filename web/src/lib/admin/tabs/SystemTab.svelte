@@ -13,10 +13,10 @@
   // globals the server allowlist accepts (title, kb_embed_model). api-admin's
   // typed get/put is frozen at the four keys, so this tab goes through the raw
   // getSettings/setSettings that same module re-exports instead.
-  type SystemForm = SystemSettings & { title: string; kb_embed_model: string };
+  type SystemForm = SystemSettings & { title: string; kb_embed_model: string; search_max_results: string };
 
   let saved = $state<SystemForm | null>(null);
-  let form = $state<SystemForm>({ title: '', task_model: '', kb_embed_model: '', system_prompt: '', search_url: '', registration: 'approve' });
+  let form = $state<SystemForm>({ title: '', task_model: '', kb_embed_model: '', system_prompt: '', search_url: '', search_max_results: '', registration: 'approve' });
   let models = $state<ModelEntry[]>([]);
   let loading = $state(true);
   let loadError = $state('');
@@ -29,6 +29,7 @@
         form.kb_embed_model !== saved.kb_embed_model ||
         form.system_prompt !== saved.system_prompt ||
         form.search_url !== saved.search_url ||
+        form.search_max_results !== saved.search_max_results ||
         form.registration !== saved.registration),
   );
 
@@ -46,6 +47,7 @@
         kb_embed_model: all['kb_embed_model'] ?? '',
         system_prompt: all['system_prompt'] ?? '',
         search_url: all['search_url'] ?? '',
+        search_max_results: all['search_max_results'] ?? '',
         registration: all['registration'] === 'open' || all['registration'] === 'closed' ? all['registration'] : 'approve',
       };
       form = { ...saved };
@@ -199,6 +201,9 @@
         </div>
         <Field label="SearXNG URL" hint="Self-hosted SearXNG base URL, e.g. http://searxng:8080. Blank disables web search. Private hosts need the server's TrustedURLNets/AllowLoopback config.">
           <input class={`${input} font-mono text-xs`} style={inputStyle} placeholder="http://searxng:8080" autocomplete="off" bind:value={form.search_url} />
+        </Field>
+        <Field label="Results per message" hint="SearXNG hits fed to the model per search (1–20). Blank uses the server default (SEARCH_MAX_RESULTS env or 5). More hits = better grounding but a bigger prompt.">
+          <input class={`${input} font-mono text-xs`} style={inputStyle} inputmode="numeric" autocomplete="off" placeholder="5" bind:value={form.search_max_results} />
         </Field>
         <!-- Live probe: surfaces the real failure (json format disabled, SSRF-
              blocked network, unreachable host) instead of silent degradation -->
