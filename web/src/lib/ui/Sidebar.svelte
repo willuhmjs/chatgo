@@ -427,11 +427,11 @@
     <p class="px-2.5 pt-3 pb-0.5 text-xs font-medium text-[var(--muted)]">{text}</p>
   {/snippet}
 
+<!-- OWUI parity: sidebar shares the canvas background with a hairline
+     divider. The old --bg-deep two-tone read as a misaligned floating
+     panel at near-black dark values (user-reported "ghost strip"). -->
 <aside
   class="chat-sidebar {mobileOpen ? 'is-open' : ''}"
-  <!-- OWUI parity: sidebar shares the canvas background with a hairline
-       divider. The old --bg-deep two-tone read as a misaligned floating
-       panel at near-black dark values (user-reported "ghost strip"). -->
   style="background:var(--bg); border-right:1px solid var(--border); width:{rail ? 72 : 260}px"
   aria-label="Sidebar"
 >
