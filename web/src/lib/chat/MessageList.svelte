@@ -73,6 +73,24 @@
     return () => window.removeEventListener('chatgo:edit-message', onEditMsg);
   });
 
+  // The Composer's armed-Esc gesture asks for the last user prompt (its
+  // textarea starts empty). CustomEvent dispatch is synchronous, so mutating
+  // the request detail here answers the composer inline — ChatView owns the
+  // messages array (outside these walls) and state.svelte.js has no messages
+  // export, so this bus round-trip is the in-walls plumbing.
+  $effect(() => {
+    const onLastUserReq = (e: Event) => {
+      const d = (e as CustomEvent<{ content: string; found: boolean }>).detail;
+      const last = userMsgs[userMsgs.length - 1];
+      if (last?.content) {
+        d.content = last.content;
+        d.found = true;
+      }
+    };
+    window.addEventListener('chatgo:last-user-request', onLastUserReq);
+    return () => window.removeEventListener('chatgo:last-user-request', onLastUserReq);
+  });
+
   // the edited message can vanish under us (regenerate tail-drop) — drop the
   // dangling id so the next ↑ opens the new last user message cleanly
   $effect(() => {

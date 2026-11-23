@@ -128,8 +128,71 @@
     ta.focus();
   });
 
+  // ---------- Esc two-step while streaming (arm → stop + recall prompt) ----------
+  // Esc in the composer during a stream is deliberately NOT a one-key stop:
+  // 1st Esc arms (never stops) — shows an accent chip on the hint strip for
+  // ESC_ARM_MS and hands the LAST USER MESSAGE back into the textarea (caret
+  // at end, focused) so the prompt is ready to tweak and re-send later.
+  // 2nd Esc inside the arm window fires the real stop (existing onstop path).
+  // Honest tradeoff: if a draft is already in the textarea we still arm/show
+  // the hint but NEVER clobber unsaved input — recall only into an empty box.
+  // Own guards win first: the slash popover consumes Esc in handleSlashKey
+  // above; the kb/model popovers and the shortcuts modal cancel Esc in their
+  // capture-phase listeners, and the inline row editor is a different
+  // textarea — none of them can reach this gesture. Not streaming → no-op,
+  // even if a previous arm is lingering (arm always dies with the stream).
+  const ESC_ARM_MS = 2500;
+  let escHint = $state(false);
+  let escArmedAt = 0;
+  let escTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearEscArm(): void {
+    if (escTimer !== undefined) clearTimeout(escTimer);
+    escTimer = undefined;
+    escHint = false;
+    escArmedAt = 0;
+  }
+
+  // hint dismissals covered by this one effect: stream end, stop, error —
+  // busy dropping to false is common to all of them (send clears in doSend)
+  $effect(() => {
+    if (!busy) clearEscArm();
+  });
+
+  function onComposerEsc(): void {
+    if (!busy) return; // not streaming → plain no-op
+    if (escHint && Date.now() - escArmedAt <= ESC_ARM_MS) {
+      clearEscArm();
+      onstop(); // second consecutive Esc → the real stop
+      return;
+    }
+    escHint = true;
+    escArmedAt = Date.now();
+    if (escTimer !== undefined) clearTimeout(escTimer);
+    escTimer = setTimeout(clearEscArm, ESC_ARM_MS);
+    if (!value.trim()) {
+      // MessageList answers synchronously (same bus pattern as
+      // chatgo:edit-message); ChatView owns the messages array outside these
+      // walls and state.svelte.js exposes no messages store to consume.
+      const req = new CustomEvent('chatgo:last-user-request', {
+        detail: { content: '', found: false },
+      });
+      window.dispatchEvent(req);
+      const d = req.detail as { content: string; found: boolean };
+      if (d.found) {
+        value = d.content; // auto-grow $effect re-fits the height
+        ta?.focus();
+        ta?.setSelectionRange(value.length, value.length); // caret at end
+      }
+    }
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     if (slashOpen && handleSlashKey(e)) return;
+    if (e.key === 'Escape') {
+      onComposerEsc();
+      return;
+    }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       // ChatGPT-parity: with an EMPTY composer, ↑/↓ hand off to MessageList's
       // inline-edit walk (opens the last user message / moves the open editor).
@@ -192,6 +255,7 @@
     value = '';
     slashOpen = false;
     slashDismissed = null;
+    clearEscArm(); // any send dismisses the Esc arm/hint
     attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
     attachments = [];
   }
@@ -257,6 +321,7 @@
     () => () => {
       attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
       stopMic(true);
+      clearEscArm();
     },
   );
 
@@ -650,7 +715,12 @@
     </div>
 
     <p class="mt-1.5 px-1 text-[11px]" style="color:var(--faint, #6e6e6e)">
-      {sendEnter ? '↵ send · ⇧↵ newline · ' : '⇧↵ send · '}⌘↵ send · / focus · ↑ edit · ? help
+      {#if escHint}
+        <!-- armed Esc: accent chip swaps the hint strip (auto-dismiss ~2.5s) -->
+        <span class="eschip" role="status">Esc again to stop generating</span>
+      {:else}
+        {sendEnter ? '↵ send · ⇧↵ newline · ' : '⇧↵ send · '}⌘↵ send · / focus · ↑ edit · ? help
+      {/if}
     </p>
   </div>
 </div>
@@ -832,5 +902,28 @@
   .send:hover:not(:disabled) {
     filter: brightness(1.08);
     box-shadow: 0 0 12px color-mix(in srgb, var(--acc-strong, var(--accent)) 55%, transparent);
+  }
+
+  /* armed-Esc hint chip (quiet accent fill, pill, swaps in on the hint strip) */
+  .eschip {
+    display: inline-block;
+    padding: 0.05rem 0.5rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--acc, var(--accent, #ffffff)) 16%, transparent);
+    color: var(--acc, var(--accent, #ffffff));
+    animation: esc-hint-in 120ms ease-out;
+  }
+  @keyframes esc-hint-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .eschip {
+      animation: none;
+    }
   }
 </style>

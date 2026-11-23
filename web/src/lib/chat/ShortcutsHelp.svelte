@@ -10,6 +10,8 @@
 
   interface Row {
     keys: string[];
+    /** chip separator — 'or' for alternatives, 'then' for sequences */
+    sep?: string;
     desc: string;
   }
   const sections: { name: string; rows: Row[] }[] = [
@@ -20,6 +22,7 @@
         { keys: ['⌘↵'], desc: 'Send message (always)' },
         { keys: ['/'], desc: 'Focus the composer' },
         { keys: ['↑'], desc: 'Edit last message (empty composer)' },
+        { keys: ['Esc', 'Esc'], sep: 'then', desc: 'Stop & edit last prompt (while streaming)' },
         { keys: ['?'], desc: 'Open this help' },
       ],
     },
