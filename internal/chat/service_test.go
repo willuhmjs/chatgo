@@ -355,7 +355,7 @@ func TestRegenerateDeletesTailSkipsUserPersist(t *testing.T) {
 func TestCompactionSmallContext(t *testing.T) {
 	fc := &fakeClient{chunks: append(sayChunks("ok"), stopChunk(1, 1))}
 	long := strings.Repeat("x", 400) // ~100 est. tokens per message
-	svc, st, chatID := newEnv(t, fc, 400, "p1:m1")
+	svc, st, chatID := newEnv(t, fc, 512, "p1:m1")
 	var seedMsgs [][2]string
 	for i := 0; i < 12; i++ {
 		role := "user"
@@ -366,7 +366,8 @@ func TestCompactionSmallContext(t *testing.T) {
 	}
 	seed(t, st, chatID, seedMsgs...)
 
-	// Context 400 → trigger 280; seeded history is ~1200 tokens. Compact hard.
+	// Context 512 → trigger 358; seeded history is ~1200 tokens (+ system
+	// prompt with its date anchor). Compact hard.
 	collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "go on"}, SendOpts{}))
 
 	opts, _, _, _ := fc.snapshot()
@@ -374,7 +375,8 @@ func TestCompactionSmallContext(t *testing.T) {
 		t.Fatalf("prompt not compacted: %d messages", len(opts.Messages))
 	}
 	first := opts.Messages[0]
-	if first.Role != "system" || first.Content != defaultSystemPrompt {
+	// content = base prompt + date anchor suffix (see systemPrompt)
+	if first.Role != "system" || !strings.HasPrefix(first.Content, defaultSystemPrompt) {
 		t.Fatalf("msg[0] not base system prompt: %+v", first)
 	}
 	if opts.Messages[1].Content != seedMsgs[0][1] || opts.Messages[2].Content != seedMsgs[1][1] {

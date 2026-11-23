@@ -48,15 +48,22 @@ func estimateTokens(msgs []providers.ChatMessage) int {
 
 // systemPrompt returns the base persona; settings key "system_prompt" wins.
 func (s *Service) systemPrompt(ctx context.Context) string {
-	v, err := s.Store.Settings.Get(ctx, settingSystemPrompt)
-	if err != nil {
-		slog.Warn("chat: read system_prompt failed", "error", err)
+	base := func() string {
+		v, err := s.Store.Settings.Get(ctx, settingSystemPrompt)
+		if err != nil {
+			slog.Warn("chat: read system_prompt failed", "error", err)
+			return defaultSystemPrompt
+		}
+		if v != nil && strings.TrimSpace(*v) != "" {
+			return *v
+		}
 		return defaultSystemPrompt
-	}
-	if v != nil && strings.TrimSpace(*v) != "" {
-		return *v
-	}
-	return defaultSystemPrompt
+	}()
+	// Clock anchor (OWUI parity): "today" / "this week" must resolve from the
+	// real date, not from stale search snippets the model latches onto.
+	// Appended even to admin overrides — no prompt should be date-blind.
+	now := time.Now().UTC()
+	return base + "\n\nCurrent date: " + now.Format("2006-01-02") + " (" + now.Weekday().String() + ", UTC)."
 }
 
 // modelContextLen looks up the chat model's cached context_len, falling back
