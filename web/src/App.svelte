@@ -8,6 +8,7 @@
   import { initShortcuts, onShortcut } from '$lib/shortcuts.svelte.js';
   import { bootstrap, isAdmin, isOnboardDismissed, session, shouldOnboard } from '$lib/session.svelte.js';
   import { load as loadModelPrefs } from '$lib/chat/model-prefs.svelte.js';
+  import { refreshCapabilities } from '$lib/chat/state.svelte.js';
   import { bootAccent } from '$lib/accent-sync.svelte.js';
   import Toasts from '$lib/extra/ToastHost.svelte';
   import CommandPalette from '$lib/extra/CommandPalette.svelte';
@@ -103,6 +104,14 @@
   $effect(() => {
     if (!session.ready || !session.user) return;
     void bootAccent();
+  });
+
+  // Probe the web-search capability once auth is known so BOTH the Home
+  // composer and ChatView's composer can show the Search pill without waiting
+  // for a chat route to mount. Idempotent per app start (cached + capProbed).
+  $effect(() => {
+    if (!session.ready || !session.user) return;
+    void refreshCapabilities(session.user?.role);
   });
 
   // fresh-admin wizard nudge (AUTHGATE-CONTRACT §3): an admin on home whose

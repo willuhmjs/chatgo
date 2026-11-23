@@ -21,6 +21,8 @@
   import Dropdown from '$lib/ui/Dropdown.svelte';
   import MenuItem from '$lib/ui/MenuItem.svelte';
   import SlashPrompts from '$lib/chat/SlashPrompts.svelte';
+  import SearchToggle from '$lib/chat/SearchToggle.svelte';
+  import { capabilities } from '$lib/chat/state.svelte.js';
   import {
     listPromptsCached,
     filterPrompts,
@@ -74,6 +76,7 @@
 
   let draft = $state('');
   let sending = $state(false);
+  let searchOn = $state(false); // OWUI web-search pill (first message carries it)
   let sendOnEnter = $state(getSendOnEnter());
   let ta = $state<HTMLTextAreaElement | undefined>();
 
@@ -254,7 +257,7 @@
     slashOpen = false;
     slashDismissed = null;
     try {
-      const chat = await startChat(text, model);
+      const chat = await startChat(text, model, searchOn);
       navigate(`/c/${chat.id}`);
     } catch (e) {
       push(e instanceof ApiError ? e.message : 'Could not start chat', 'error');
@@ -367,6 +370,9 @@
                   {/if}
                 {/snippet}
               </Dropdown>
+              {#if capabilities.search}
+                <SearchToggle bind:checked={searchOn} />
+              {/if}
               <span class="hidden truncate text-xs text-[var(--faint)] sm:inline">
                 {sendOnEnter ? '↵ send · ⇧↵ newline' : '⌘↵ send'}
               </span>

@@ -32,8 +32,8 @@
   import Plus from 'lucide-svelte/icons/plus';
   import Mic from 'lucide-svelte/icons/mic';
   import MicOff from 'lucide-svelte/icons/mic-off';
-  import Globe from 'lucide-svelte/icons/globe';
   import BookOpen from 'lucide-svelte/icons/book-open';
+  import SearchToggle from './SearchToggle.svelte';
   import Check from 'lucide-svelte/icons/check';
   import ArrowUp from 'lucide-svelte/icons/arrow-up';
   import Square from 'lucide-svelte/icons/square';
@@ -663,7 +663,7 @@
         bind:this={ta}
         bind:value={value}
         rows="1"
-        placeholder={busy ? 'Queue a message…' : 'Ask anything'}
+        placeholder={busy ? 'Queue a message…' : searchOn ? 'Ask — the web will be searched first' : 'Ask anything'}
         class="w-full resize-none overflow-y-auto bg-transparent px-1 py-0.5 text-base leading-[1.6] outline-none"
         style="color:var(--text)"
         aria-label="Message"
@@ -692,13 +692,10 @@
         </IconButton>
         <!-- model picker: compact trigger anchored at the footer's bottom-left -->
         <ModelPicker {chat} {onupdated} />
+        <!-- web search: OWUI labeled pill (shows only when the server has a
+             SearXNG backend configured — see SearchToggle) -->
         {#if capabilities.search}
-          <IconButton title="Web search (SearXNG)" active={searchOn} onclick={() => (searchOn = !searchOn)}>
-            <span class="globe">
-              <Globe size={15} />
-              {#if searchOn}<span class="dot" aria-hidden="true"></span>{/if}
-            </span>
-          </IconButton>
+          <SearchToggle bind:checked={searchOn} />
         {/if}
         {#if kb !== null}
           <!-- 📚 KB collections — multi-select persisted on chat.params -->

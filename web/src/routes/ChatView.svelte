@@ -161,7 +161,10 @@
       if (!firedPending) {
         firedPending = true;
         const pending = takePendingPrompt(id);
-        if (pending) void Promise.resolve().then(() => submit({ content: pending }));
+        if (pending)
+          void Promise.resolve().then(() =>
+            submit({ content: pending.content, search: pending.search || undefined }),
+          );
       }
     } catch (err) {
       if (seq !== loadSeq) return;

@@ -89,23 +89,35 @@ export async function logoutEverywhere(): Promise<void> {
 
 const pendingKey = (chatId: string) => `chatgo:pending-prompt:${chatId}`;
 
-/** Stash a first message so ChatView can auto-send it when it mounts. */
-export function stashPendingPrompt(chatId: string, content: string) {
-  writeLS(pendingKey(chatId), content);
+/** Stash a first message so ChatView can auto-send it when it mounts.
+    JSON shape carries the composer toggles (web search) that must survive the
+    Home → ChatView hop; takePendingPrompt still accepts legacy plain strings. */
+export interface PendingPrompt {
+  content: string;
+  search?: boolean;
+}
+
+export function stashPendingPrompt(chatId: string, prompt: PendingPrompt) {
+  writeLS(pendingKey(chatId), JSON.stringify(prompt));
 }
 
 /** Read + clear the stashed first message for a chat (ChatView integration point). */
-export function takePendingPrompt(chatId: string): string | null {
+export function takePendingPrompt(chatId: string): PendingPrompt | null {
   const k = pendingKey(chatId);
   const v = readLS(k);
-  if (v !== null) {
-    try {
-      localStorage.removeItem(k);
-    } catch {
-      /* ignore */
-    }
+  if (v === null) return null;
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    /* ignore */
   }
-  return v;
+  try {
+    const p = JSON.parse(v) as PendingPrompt;
+    if (p && typeof p.content === 'string') return p;
+  } catch {
+    /* legacy plain-string stash from a pre-search build */
+  }
+  return { content: v };
 }
 
 /**
@@ -117,13 +129,13 @@ export function takePendingPrompt(chatId: string): string | null {
  * TaskModel, falling back to first-48-runes). Pre-naming with a prompt slice
  * made startTitle treat the chat as "already titled" and skip generation.
  */
-export async function startChat(prompt: string, model?: ModelEntry): Promise<Chat> {
+export async function startChat(prompt: string, model?: ModelEntry, search?: boolean): Promise<Chat> {
   const body: Partial<Chat> = {};
   if (model) {
     body.provider_id = model.provider_id;
     body.model_id = model.model_id;
   }
   const chat = await api.createChat(body);
-  stashPendingPrompt(chat.id, prompt);
+  stashPendingPrompt(chat.id, { content: prompt, search: search || undefined });
   return chat;
 }
