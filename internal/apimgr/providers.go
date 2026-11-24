@@ -94,6 +94,7 @@ type modelRowJSON struct {
 	Display    string `json:"display"`
 	ContextLen int    `json:"context_len"`
 	Enabled    bool   `json:"enabled"`
+	MinRole    string `json:"min_role"`
 }
 
 func modelsView(ms []store.ModelRow) []modelRowJSON {
@@ -101,19 +102,22 @@ func modelsView(ms []store.ModelRow) []modelRowJSON {
 	for _, m := range ms {
 		out = append(out, modelRowJSON{
 			ModelID: m.ModelID, Display: m.Display,
-			ContextLen: m.ContextLen, Enabled: m.Enabled,
+			ContextLen: m.ContextLen, Enabled: m.Enabled, MinRole: m.MinRole,
 		})
 	}
 	return out
 }
 
 // modelToggleReq is one entry of the bulk PUT /api/providers/{id}/models body
-// ([{model_id, enabled}, …]). Bulk beats per-model PATCH: the "select all /
-// none" UI and every single toggle land in one round-trip, and the whole
-// write is one store transaction (no half-applied batches).
+// ([{model_id, enabled, min_role?}, …]). Bulk beats per-model PATCH: the "select
+// all / none" UI and every single toggle land in one round-trip, and the whole
+// write is one store transaction (no half-applied batches). MinRole is optional
+// (pointer = "field present"): an omitted min_role keeps the stored value, so a
+// plain enable/disable batch never silently resets visibility.
 type modelToggleReq struct {
-	ModelID string `json:"model_id"`
-	Enabled bool   `json:"enabled"`
+	ModelID string  `json:"model_id"`
+	Enabled bool    `json:"enabled"`
+	MinRole *string `json:"min_role"`
 }
 
 // providerReq is the POST/PUT body. Pointers = "field present": PUT patches
@@ -309,10 +313,11 @@ func (h *providersH) del(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 // handleSync: POST /api/providers/{id}/sync — pull the upstream model list
-// and refresh the cache (context_len persisted). Admin enable/disable choices
-// are PRESERVED: models already cached keep their enabled flag, only models
-// new to the cache start enabled=true. Models that vanished upstream are
-// dropped (the whole cache row-set is replaced).
+// and refresh the cache (context_len persisted). Admin enable/disable AND
+// visibility (min_role) choices are PRESERVED: models already cached keep both
+// flags, only models new to the cache start enabled=true / min_role=” (visible
+// to all). Models that vanished upstream are dropped (the whole cache row-set
+// is replaced).
 func (h *providersH) handleSync(w http.ResponseWriter, r *http.Request) {
 	actor, ok := h.d.requireAdmin(w, r)
 	if !ok {
@@ -365,8 +370,10 @@ func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string, act
 		return
 	}
 	prevEnabled := make(map[string]bool, len(cached))
+	prevRole := make(map[string]string, len(cached))
 	for _, m := range cached {
 		prevEnabled[m.ModelID] = m.Enabled
+		prevRole[m.ModelID] = m.MinRole
 	}
 	rows := make([]store.ModelRow, 0, len(models))
 	added := 0
@@ -379,8 +386,11 @@ func (h *providersH) sync(w http.ResponseWriter, r *http.Request, id string, act
 			enabled = true // first-seen model: instance-default is enabled
 			added++
 		}
+		// min_role survives re-sync exactly like enabled: a returning model
+		// keeps the admin's visibility choice, a first-seen model lands at ''.
 		rows = append(rows, store.ModelRow{
-			ModelID: m.ID, Display: m.Display, ContextLen: m.ContextLen, Enabled: enabled,
+			ModelID: m.ID, Display: m.Display, ContextLen: m.ContextLen,
+			Enabled: enabled, MinRole: prevRole[m.ID],
 		})
 	}
 	if err := h.d.Store.Models.ReplaceForProvider(r.Context(), p.ID, rows); err != nil {
@@ -419,8 +429,9 @@ func (h *providersH) providerModels(w http.ResponseWriter, r *http.Request, id s
 }
 
 // handleProviderModelsUpdate: PUT /api/providers/{id}/models (admin) — bulk
-// enable/disable, body [{model_id, enabled}, …]. Every model_id must exist in
-// the provider's cache (one unknown id → 404, nothing applied). Returns the
+// enable/disable (and optional per-row min_role), body
+// [{model_id, enabled, min_role?}, …]. Every model_id must exist in the
+// provider's cache (one unknown id → 404, nothing applied). Returns the
 // refreshed full list so the admin UI can reconcile without a follow-up GET.
 func (h *providersH) handleProviderModelsUpdate(w http.ResponseWriter, r *http.Request) {
 	actor, ok := h.d.requireAdmin(w, r)
@@ -445,11 +456,21 @@ func (h *providersH) providerModelsUpdate(w http.ResponseWriter, r *http.Request
 		httpx.ErrorJSON(w, http.StatusBadRequest, "at least one model toggle is required")
 		return
 	}
-	want := make(map[string]bool, len(reqs)) // duplicate ids: last write wins
+	want := make(map[string]bool, len(reqs))       // duplicate ids: last write wins
+	wantRole := make(map[string]string, len(reqs)) // optional min_role per row
+	rolePresent := make(map[string]bool, len(reqs))
 	for _, t := range reqs {
 		if t.ModelID == "" {
 			httpx.ErrorJSON(w, http.StatusBadRequest, "model_id is required")
 			return
+		}
+		if t.MinRole != nil {
+			if *t.MinRole != "" && *t.MinRole != store.RoleAdmin {
+				httpx.ErrorJSON(w, http.StatusBadRequest, `min_role must be "" or "admin"`)
+				return
+			}
+			wantRole[t.ModelID] = *t.MinRole
+			rolePresent[t.ModelID] = true
 		}
 		want[t.ModelID] = t.Enabled
 	}
@@ -462,6 +483,9 @@ func (h *providersH) providerModelsUpdate(w http.ResponseWriter, r *http.Request
 	for i := range rows {
 		if en, ok := want[rows[i].ModelID]; ok {
 			rows[i].Enabled = en
+			if rolePresent[rows[i].ModelID] {
+				rows[i].MinRole = wantRole[rows[i].ModelID]
+			}
 			seen++
 		}
 	}
@@ -479,14 +503,19 @@ func (h *providersH) providerModelsUpdate(w http.ResponseWriter, r *http.Request
 }
 
 // handleModels: GET /api/models — flattened enabled models (authed, any role).
+// Models flagged min_role='admin' are stripped for non-admin callers; the
+// admin picker (GET /api/providers/{id}/models) still lists them so they can be
+// managed. Send-path enforcement is the chat service's single checkChatModel
+// choke point (SECREV-3 S2-1), out of this handler's scope.
 func (h *providersH) handleModels(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.d.requireUser(w, r); !ok {
+	u, ok := h.d.requireUser(w, r)
+	if !ok {
 		return
 	}
-	h.models(w, r)
+	h.models(w, r, u.IsAdmin())
 }
 
-func (h *providersH) models(w http.ResponseWriter, r *http.Request) {
+func (h *providersH) models(w http.ResponseWriter, r *http.Request, admin bool) {
 	ms, err := h.d.Store.Models.EnabledModels(r.Context())
 	if err != nil {
 		httpx.InternalError(w, r, err)
@@ -494,6 +523,9 @@ func (h *providersH) models(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(ms))
 	for _, m := range ms {
+		if m.MinRole == store.RoleAdmin && !admin {
+			continue // admins-only model: invisible to every other role
+		}
 		out = append(out, map[string]any{
 			"provider_id": m.ProviderID, "provider": m.ProviderName,
 			"model_id": m.ModelID, "display": m.Display, "context_len": m.ContextLen,

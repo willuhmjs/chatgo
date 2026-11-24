@@ -336,7 +336,8 @@ const meSettingPrefix = "me."
 // onboarding wizard (App.svelte's fresh-admin nudge reads it back); "accent"
 // is reserved for the color-picker wave; "default_model" pins the composer's
 // initial model; "hidden_models" is the picker's per-user hide list; "name"
-// is the profile display name SettingsMe's Save writes (api-shell setMeName).
+// is the profile display name SettingsMe's Save writes (api-shell setMeName);
+// "presets" is the Params drawer's saved preset list (see validateMePresets).
 // All plain strings, 8KB-capped like every other setting value; the model
 // keys and name are further validated by meSettingValidators below.
 var meSettingKeys = map[string]bool{
@@ -346,6 +347,7 @@ var meSettingKeys = map[string]bool{
 	"default_model": true,
 	"hidden_models": true,
 	"name":          true,
+	"presets":       true,
 }
 
 // maxHiddenModels caps one hidden_models list (task: ≤512 entries; the total
@@ -359,6 +361,7 @@ var meSettingValidators = map[string]func(string) string{
 	"default_model": validateMeDefaultModel,
 	"hidden_models": validateMeHiddenModels,
 	"name":          validateMeName,
+	"presets":       validateMePresets,
 }
 
 // maxMeNameRunes caps the profile display name (P0-2: SettingsMe's Save 400'd
@@ -410,6 +413,42 @@ func validateMeHiddenModels(v string) string {
 		i := strings.IndexByte(e, ':')
 		if i <= 0 || i == len(e)-1 {
 			return `hidden_models entries must be "providerID:modelID"`
+		}
+	}
+	return ""
+}
+
+// maxMePresets caps one user's saved chat-param presets (Open WebUI-style
+// "presets": saved system prompt + sampling params + model). The whole array
+// rides a single me-settings value, so the existing 8KB per-value cap already
+// bounds storage; this count cap keeps the picker list usable.
+const maxMePresets = 30
+
+// validateMePresets accepts a JSON array of preset objects. Only identity/
+// labelling is checked (id, name) — params/system/model payloads are opaque
+// here because the chat PATCH path validates sampling params server-side on
+// USE, and re-validating the schema here would double the contract surface.
+func validateMePresets(v string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" || trimmed[0] != '[' {
+		return "presets must be a JSON array"
+	}
+	var entries []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		return "presets must be a JSON array"
+	}
+	if len(entries) > maxMePresets {
+		return "presets must have at most 30 entries"
+	}
+	for _, e := range entries {
+		if strings.TrimSpace(e.ID) == "" || strings.TrimSpace(e.Name) == "" {
+			return "preset entries need id and name"
+		}
+		if utf8.RuneCountInString(e.Name) > 64 {
+			return "preset names must be at most 64 characters"
 		}
 	}
 	return ""

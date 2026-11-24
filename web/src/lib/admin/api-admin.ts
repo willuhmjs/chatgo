@@ -105,17 +105,22 @@ export type ProviderAdmin = Provider & {
 };
 
 /** One cached model row of a provider, INCLUDING admin-disabled ones
- *  (GET /api/models stays the enabled-only chat surface). */
+ *  (GET /api/models stays the enabled-only chat surface). min_role: '' =
+ *  visible to every authed user, 'admin' = admins only (hidden from non-admin
+ *  pickers server-side). */
 export interface ProviderModel {
   model_id: string;
   display: string;
   context_len: number;
   enabled: boolean;
+  min_role: string;
 }
 
 export interface ModelToggle {
   model_id: string;
   enabled: boolean;
+  /** Optional: omit to keep the stored visibility; send '' or 'admin' to set. */
+  min_role?: string;
 }
 
 export const listProvidersAdmin = () => adminReq<ProviderAdmin[]>('GET', '/api/providers');

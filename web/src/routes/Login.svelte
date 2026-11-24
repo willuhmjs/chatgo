@@ -190,7 +190,7 @@
     <span class="flex h-7 w-7 items-center justify-center rounded-lg" style="background:var(--accent); color:var(--accent-fg)">
       <MessageSquare size={15} />
     </span>
-    <span class="text-[15px] font-medium tracking-tight">ChatGo</span>
+    <span class="text-[15px] font-medium tracking-tight">{config?.title?.trim() || 'ChatGo'}</span>
   </div>
 
   {#if banner}
@@ -203,7 +203,7 @@
   <div class="rounded-2xl p-6" style="background:var(--panel); color:var(--text)">
     <h1 class="text-[17px] font-semibold tracking-tight">Welcome back</h1>
     <p class="mb-5 mt-0.5 text-sm" style="color:var(--muted)">
-      {#if totpMode}Two-factor authentication is enabled on this account — enter your code to finish signing in.{:else}Sign in to your ChatGo workspace.{/if}
+      {#if totpMode}Two-factor authentication is enabled on this account — enter your code to finish signing in.{:else}Sign in to your {config?.title?.trim() || 'ChatGo'} workspace.{/if}
     </p>
 
     {#if totpMode}

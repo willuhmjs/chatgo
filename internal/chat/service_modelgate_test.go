@@ -151,3 +151,45 @@ func TestSendAllowsUnpinnedModelChatsCreateAlsoAllows(t *testing.T) {
 	evs := collect(t, mustSend(t, svc, "u1", "c-ghost", providers.ChatMessage{Content: "hi"}, SendOpts{}))
 	wantModelRefused(t, fc, evs, errMsgModelGone, 2) // calls must stay at the two good turns
 }
+
+// Open WebUI-style per-model access control (models.min_role=='admin'): an
+// admin-gated model is cached+enabled, so the enabled check passes — the send
+// path must additionally refuse non-admin chat owners and let admins through
+// (including a chat that already existed when the gate was set). The verdict
+// is per-owner: promoting the owner reopens the very same chat.
+func TestSendEnforcesAdminOnlyModelPerOwner(t *testing.T) {
+	fc := &fakeClient{chunks: append(sayChunks("ok"), stopChunk(1, 1))}
+	svc, st, chatID := newEnv(t, fc, 4096, "")
+	ctx := context.Background()
+
+	gate := func(role string) {
+		if err := st.Models.ReplaceForProvider(ctx, "p1", []store.ModelRow{
+			{ModelID: "m1", Display: "M1", ContextLen: 4096, Enabled: true, MinRole: role},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gate("admin")
+	evs := collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "hi"}, SendOpts{}))
+	wantModelRefused(t, fc, evs, errMsgModelRestricted, 0)
+
+	// Owner promoted → same chat streams again.
+	if err := st.Users.UpdateRole(ctx, "u1", store.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	evs = collect(t, mustSend(t, svc, "u1", chatID, providers.ChatMessage{Content: "hi"}, SendOpts{}))
+	if last := typesOf(evs)[len(evs)-1]; last != EventDone {
+		t.Fatalf("admin-owner send ended with %s (%v)", last, typesOf(evs))
+	}
+
+	// Gate cleared again → normal users stream fine (no stray refusal left).
+	gate("")
+	if err := st.Chats.Create(ctx, &store.Chat{ID: "c-u2", UserID: "u2", ProviderID: "p1", ModelID: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	evs = collect(t, mustSend(t, svc, "u2", "c-u2", providers.ChatMessage{Content: "hi"}, SendOpts{}))
+	if last := typesOf(evs)[len(evs)-1]; last != EventDone {
+		t.Fatalf("ungated send ended with %s (%v)", last, typesOf(evs))
+	}
+}

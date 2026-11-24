@@ -49,6 +49,8 @@ export interface AuthConfig {
   oidc_enabled: boolean;
   oidc_name: string;
   registration: 'open' | 'approve' | 'closed';
+  /** Admin-set instance display name ('' when unset) — see lib/brand. */
+  title?: string;
 }
 export interface Provider {
   id: string;

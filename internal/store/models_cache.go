@@ -26,11 +26,12 @@ func (r *ModelsRepo) ReplaceForProvider(ctx context.Context, providerID string, 
 			m.Display = m.ModelID
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO models (provider_id, model_id, display, context_len, enabled)
-			 VALUES (?1, ?2, ?3, ?4, ?5)
+			`INSERT INTO models (provider_id, model_id, display, context_len, enabled, min_role)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 			 ON CONFLICT(provider_id, model_id) DO UPDATE SET display = excluded.display,
-			 	context_len = excluded.context_len, enabled = excluded.enabled`,
-			m.ProviderID, m.ModelID, m.Display, m.ContextLen, boolInt(m.Enabled)); err != nil {
+			 	context_len = excluded.context_len, enabled = excluded.enabled,
+			 	min_role = excluded.min_role`,
+			m.ProviderID, m.ModelID, m.Display, m.ContextLen, boolInt(m.Enabled), m.MinRole); err != nil {
 			return err
 		}
 	}
@@ -39,7 +40,7 @@ func (r *ModelsRepo) ReplaceForProvider(ctx context.Context, providerID string, 
 
 // ForProvider returns the cached models of one provider (id order).
 func (r *ModelsRepo) ForProvider(ctx context.Context, providerID string) ([]ModelRow, error) {
-	return r.queryModels(ctx, `SELECT provider_id, model_id, display, context_len, enabled
+	return r.queryModels(ctx, `SELECT provider_id, model_id, display, context_len, enabled, min_role
 		FROM models WHERE provider_id = ?1 ORDER BY model_id`, providerID)
 }
 
@@ -72,12 +73,16 @@ type ModelWithProvider struct {
 	ModelID      string
 	Display      string
 	ContextLen   int
+	// MinRole mirrors models.min_role ('' = every authed user, 'admin' =
+	// admins only). GET /api/models hides MinRole=='admin' rows from non-admin
+	// callers; internal dispatch paths (proxy/imggen) read past it.
+	MinRole string
 }
 
 // EnabledModels lists enabled models whose provider is enabled.
 func (r *ModelsRepo) EnabledModels(ctx context.Context) ([]ModelWithProvider, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT m.provider_id, p.name, m.model_id, m.display, m.context_len
+		`SELECT m.provider_id, p.name, m.model_id, m.display, m.context_len, m.min_role
 		 FROM models m JOIN providers p ON p.id = m.provider_id
 		 WHERE m.enabled = 1 AND p.enabled = 1
 		 ORDER BY p.sort ASC, p.name ASC, m.display ASC, m.model_id ASC`)
@@ -88,7 +93,7 @@ func (r *ModelsRepo) EnabledModels(ctx context.Context) ([]ModelWithProvider, er
 	var out []ModelWithProvider
 	for rows.Next() {
 		var m ModelWithProvider
-		if err := rows.Scan(&m.ProviderID, &m.ProviderName, &m.ModelID, &m.Display, &m.ContextLen); err != nil {
+		if err := rows.Scan(&m.ProviderID, &m.ProviderName, &m.ModelID, &m.Display, &m.ContextLen, &m.MinRole); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -106,7 +111,7 @@ func (r *ModelsRepo) queryModels(ctx context.Context, query string, arg string) 
 	for rows.Next() {
 		var m ModelRow
 		var enabled int
-		if err := rows.Scan(&m.ProviderID, &m.ModelID, &m.Display, &m.ContextLen, &enabled); err != nil {
+		if err := rows.Scan(&m.ProviderID, &m.ModelID, &m.Display, &m.ContextLen, &enabled, &m.MinRole); err != nil {
 			return nil, err
 		}
 		m.Enabled = enabled != 0

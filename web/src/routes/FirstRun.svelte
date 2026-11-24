@@ -55,11 +55,11 @@
       >
         <MessageSquare size={15} />
       </span>
-      <span class="text-[15px] font-medium tracking-tight">ChatGo</span>
+      <span class="text-[15px] font-medium tracking-tight">{config?.title?.trim() || 'ChatGo'}</span>
     </div>
 
     <div class="rounded-2xl p-7" style="background:var(--panel)">
-      <h1 class="text-[30px] font-semibold tracking-tight">Welcome to ChatGo</h1>
+      <h1 class="text-[30px] font-semibold tracking-tight">Welcome to {config?.title?.trim() || 'ChatGo'}</h1>
       <p class="mt-1 text-sm" style="color:var(--muted)">Create your admin account</p>
 
       <form onsubmit={submit} class="mt-6 flex flex-col gap-3.5">

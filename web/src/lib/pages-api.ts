@@ -77,6 +77,8 @@ function firstStr(...vals: unknown[]): string {
 //   GET    /api/kb/{id}/files → [{id,name,mime,size|bytes,created_at|created}]
 //   DELETE /api/kb/{id}/files/{fileId} → 204  (assumed sub-path form)
 //   POST   /api/kb/{id}/files multipart, field name "file" (mirrors api.ts uploadFile)
+//   POST   /api/kb/{id}/url {url,name?} → the created file object (201;
+//                               name defaults to the page <title> + host).
 //   POST   /api/kb/{id}/search {q,top_k} → [{content|chunk|text, score, file_name|filename|file|name}]
 //                               (also accepts {results|hits|chunks|data: []})
 
@@ -145,6 +147,18 @@ export async function listKbFiles(collectionId: string): Promise<KbFile[]> {
 
 export const deleteKbFile = (collectionId: string, fileId: string) =>
   req<void>('DELETE', `/api/kb/${encodeURIComponent(collectionId)}/files/${encodeURIComponent(fileId)}`);
+
+/**
+ * Ingest one web page into a collection server-side (fetch + readable-text
+ * extraction happen in internal/kb). `name` overrides the page <title> in
+ * the created file's display name. Resolves with the created file row.
+ */
+export async function kbAddUrl(collectionId: string, url: string, name?: string): Promise<KbFile> {
+  const payload: Raw = { url };
+  if (name) payload.name = name;
+  const raw = await req<Raw>('POST', `/api/kb/${encodeURIComponent(collectionId)}/url`, payload);
+  return normFile(raw ?? {});
+}
 
 export async function searchKb(collectionId: string, q: string, topK = 5): Promise<KbSearchHit[]> {
   const data = await req<unknown>(

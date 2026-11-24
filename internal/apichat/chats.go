@@ -207,8 +207,11 @@ func (d *Deps) ownFolder(ctx context.Context, userID, folderID string) (*store.F
 
 // validateChatModel checks a (provider_id, model_id) pair against the cached
 // catalog: provider must exist and be enabled, model must be a cached,
-// enabled model of that provider. ok = (0, "") style via error.
-func (d *Deps) validateChatModel(ctx context.Context, providerID, modelID string) error {
+// enabled model of that provider. isAdmin gates admin-only models
+// (models.min_role=='admin', Open WebUI-style access control): a non-admin
+// caller is refused even though the row is cached+enabled. ok = (0, "")
+// style via error.
+func (d *Deps) validateChatModel(ctx context.Context, providerID, modelID string, isAdmin bool) error {
 	if providerID == "" {
 		if modelID != "" {
 			return httpErr(http.StatusBadRequest, "provider_id is required with model_id")
@@ -236,6 +239,9 @@ func (d *Deps) validateChatModel(ctx context.Context, providerID, modelID string
 		if models[i].ModelID == modelID {
 			if !models[i].Enabled {
 				return httpErr(http.StatusBadRequest, "model is disabled")
+			}
+			if models[i].MinRole == "admin" && !isAdmin {
+				return httpErr(http.StatusForbidden, "model is restricted to administrators")
 			}
 			return nil
 		}
@@ -283,6 +289,7 @@ func registerChats(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("POST /api/chats/{id}/archive", d.handleArchiveChat)
 	mux.HandleFunc("POST /api/chats/{id}/unarchive", d.handleArchiveChat)
 	mux.HandleFunc("POST /api/chats/{id}/messages/{msgId}/retract", d.handleRetractMessage)
+	registerSuggest(mux, d)
 }
 
 // POST /api/chats/{id}/archive · POST /api/chats/{id}/unarchive —
@@ -380,7 +387,7 @@ func (d *Deps) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := d.validateChatModel(r.Context(), body.ProviderID, body.ModelID); err != nil {
+	if err := d.validateChatModel(r.Context(), body.ProviderID, body.ModelID, u.IsAdmin()); err != nil {
 		d.fail(w, r, err)
 		return
 	}
@@ -470,7 +477,7 @@ func (d *Deps) handlePatchChat(w http.ResponseWriter, r *http.Request) {
 	if body.ModelID.Set {
 		c.ModelID = body.ModelID.Val // null → "" (unsets)
 	}
-	if err := d.validateChatModel(r.Context(), c.ProviderID, c.ModelID); err != nil {
+	if err := d.validateChatModel(r.Context(), c.ProviderID, c.ModelID, u.IsAdmin()); err != nil {
 		d.fail(w, r, err)
 		return
 	}

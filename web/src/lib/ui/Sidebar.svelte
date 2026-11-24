@@ -7,6 +7,7 @@
   import { currentRoute, location, navigate } from '$lib/router.svelte.js';
   import { session, logout } from '$lib/session.svelte.js';
   import { theme, toggleTheme } from '$lib/theme.svelte.js';
+  import { brand } from '$lib/brand.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import { ApiError } from '$lib/api';
   import { confirmDialog } from '$lib/ui/confirm.svelte.js';
@@ -535,14 +536,14 @@
       <span class="min-w-0 flex-1"></span>
       <a
         href="/"
-        aria-label="ChatGo home"
+        aria-label={`${brand.title || 'ChatGo'} home`}
         onclick={(e) => {
           e.preventDefault();
           navigate('/');
           onCloseMobile?.();
         }}
         class="grid size-7 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-[var(--muted)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--text)] {rowFocus}"
-        >C</a
+        >{(brand.title || 'ChatGo').charAt(0)}</a
       >
     </div>
   {/if}

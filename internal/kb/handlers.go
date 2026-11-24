@@ -1,8 +1,8 @@
 package kb
 
-// HTTP surface (FEATURES-V2 §BE-RAG): collections CRUD, multipart text
-// ingest, file listing/removal and scored search, all under /api/kb and all
-// private per user (foreign rows answer 404).
+// HTTP surface (FEATURES-V2 §BE-RAG): collections CRUD, multipart text/docx
+// ingest, URL ingest, file listing/removal and scored search, all under
+// /api/kb and all private per user (foreign rows answer 404).
 
 import (
 	"bytes"
@@ -20,10 +20,13 @@ import (
 )
 
 // textExts is the ingest allowlist: text formats + common code/script
-// extensions (FEATURES-V2: "txt/md/csv/json/log/code"). Anything else —
-// notably PDF/images — is rejected 415 (stdlib-only: no PDF parsing).
+// extensions (FEATURES-V2: "txt/md/csv/json/log/code") plus .docx, which is
+// the one binary container with a stdlib extractor (archive/zip +
+// encoding/xml, see docx.go). Anything else — notably PDF/images — is
+// rejected 415 (stdlib-only: no PDF parsing).
 var textExts = map[string]bool{
-	".txt": true, ".md": true, ".markdown": true, ".mdx": true, ".rst": true,
+	".docx": true,
+	".txt":  true, ".md": true, ".markdown": true, ".mdx": true, ".rst": true,
 	".csv": true, ".tsv": true, ".json": true, ".jsonl": true, ".ndjson": true,
 	".log": true, ".yaml": true, ".yml": true, ".toml": true, ".ini": true,
 	".cfg": true, ".conf": true, ".xml": true, ".html": true, ".htm": true,
@@ -342,7 +345,7 @@ func (d *Deps) ingestUpload(ctx context.Context, collectionID string, fh *multip
 	ext := strings.ToLower(filepath.Ext(name))
 	if !textExts[ext] {
 		return nil, httpErr(http.StatusUnsupportedMediaType,
-			"unsupported file type "+strconv.Quote(ext)+" — accept txt/md/csv/json/log and source-code extensions")
+			"unsupported file type "+strconv.Quote(ext)+" — accept txt/md/docx/csv/json/log and source-code extensions")
 	}
 	if fh.Size > MaxFileBytes {
 		return nil, httpErr(http.StatusRequestEntityTooLarge, "file exceeds the 5 MiB limit")
@@ -359,17 +362,36 @@ func (d *Deps) ingestUpload(ctx context.Context, collectionID string, fh *multip
 	if int64(len(data)) > MaxFileBytes {
 		return nil, httpErr(http.StatusRequestEntityTooLarge, "file exceeds the 5 MiB limit")
 	}
-	mime, err := classifyText(data)
-	if err != nil {
-		return nil, err
+	// .docx is the binary-container exception: the zip is unzipped (bounded,
+	// see docx.go) and its extracted text takes over exactly where a .txt
+	// payload would enter the pipeline. Everything else keeps the text gates.
+	var text []byte
+	var mime string
+	if ext == ".docx" {
+		extracted, err := extractDocxText(data)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(extracted)) > MaxFileBytes {
+			return nil, httpErr(http.StatusRequestEntityTooLarge, "docx text exceeds the 5 MiB ingest limit")
+		}
+		text = []byte(extracted)
+		mime = docxMime
+	} else {
+		var err error
+		mime, err = classifyText(data)
+		if err != nil {
+			return nil, err
+		}
+		text = data
 	}
 	// Chunk straight off the byte buffer (RES-4: no whole-file bytes→string
 	// copy). A leading UTF-8 BOM is trimmed before chunking, exactly like the
 	// old string-based path; the stored byte count intentionally still
 	// includes it.
-	chunks := chunkBytes(bytes.TrimPrefix(data, utf8BOM))
+	chunks := chunkBytes(bytes.TrimPrefix(text, utf8BOM))
 	fileBytes := int64(len(data))
-	data = nil // RES-5: the upload buffer's job is done — release 5 MiB before embedding
+	text, data = nil, nil // RES-5: the upload buffer's job is done — release 5 MiB before embedding
 
 	var target *embedTarget
 	if len(chunks) > 0 {
@@ -422,6 +444,87 @@ func sanitizeName(raw string) string {
 		n = string([]rune(n)[:200])
 	}
 	return n
+}
+
+// --- URL ingest --------------------------------------------------------------
+
+// handleURLIngest fetches one web page server-side (guarded per
+// urlingest.go: SSRF-checked, 15s, ≤2 MiB, ≤3 manually re-guarded redirects)
+// and indexes its readable text through the exact chunk+embed pipeline an
+// uploaded text file uses. The row is named "Title (domain)" (or the bare
+// hostname) with display mime text/uri-list, and the final URL is persisted
+// as a leading "Source: <url>" line inside the indexed text — no schema
+// change. Body {"url": "...", "name": "optional title"} → 201 + fileDTO.
+func (d *Deps) handleURLIngest(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	// Spend gate before any fetch/embedding: like uploads, this route ends
+	// in paid provider calls (same bucket — it is the same ingest spend).
+	if !d.allowSpend(w, u, "kb:upload:", uploadPerMin, "too many kb uploads, try again later") {
+		return
+	}
+	// Global ingest gate (RES-4): chunk+embed work runs on this request too.
+	select {
+	case uploadSlots <- struct{}{}:
+		defer func() { <-uploadSlots }()
+	default:
+		httpx.ErrorJSON(w, http.StatusTooManyRequests, "server busy ingesting, retry")
+		return
+	}
+	c, err := d.getCollection(r.Context(), u.ID, r.PathValue("id"))
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	var in struct {
+		URL  string `json:"url"`
+		Name string `json:"name"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	raw := strings.TrimSpace(in.URL)
+	if raw == "" || len([]rune(raw)) > maxURLLen {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "url is required (max 2048 characters)")
+		return
+	}
+	title := strings.TrimSpace(in.Name)
+	if len([]rune(title)) > maxURLNameLen {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "name too long (max 120 characters)")
+		return
+	}
+	page, err := fetchPage(r.Context(), raw)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	text := "Source: " + page.FinalURL + "\n\n" + extractReadableText(string(page.Body))
+	chunks := chunkText(text)
+	textBytes := int64(len(text))
+	text = "" // release before embedding (mirrors the upload path's data=nil)
+
+	if title == "" {
+		title = page.Title
+	}
+	name := urlFileName(title, page.Host)
+
+	var target *embedTarget
+	if len(chunks) > 0 {
+		target, err = d.pickEmbedModel(r.Context())
+		if err != nil {
+			d.fail(w, r, err)
+			return
+		}
+	}
+	f, err := d.insertFileChunksStream(r.Context(), target, c.ID, name, uriListMime, textBytes, chunks)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, fileToDTO(f))
 }
 
 // --- search --------------------------------------------------------------

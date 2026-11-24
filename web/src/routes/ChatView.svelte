@@ -28,6 +28,7 @@
   } from '$lib/chat-features-api';
   import MessageList from '$lib/chat/MessageList.svelte';
   import Composer from '$lib/chat/Composer.svelte';
+  import SuggestChips from '$lib/chat/SuggestChips.svelte';
   import Welcome from '$lib/chat/Welcome.svelte';
   import ParamDrawer from '$lib/chat/ParamDrawer.svelte';
   import Lightbox from '$lib/chat/Lightbox.svelte';
@@ -41,6 +42,8 @@
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import { push as toast } from '$lib/toast.svelte.js';
+  import { chatToPng } from '$lib/chat/sharecard';
+  import { brandName } from '$lib/brand.svelte.js';
 
   let { id = '' }: { id?: string } = $props();
 
@@ -451,6 +454,31 @@
     return e?.display || mid;
   });
 
+  // Suggestions rail: offered once the chain ends in a COMPLETED assistant
+  // turn (see SuggestChips; the #key resets it per exchange).
+  const lastVisible = $derived(visible.length ? visible[visible.length - 1] : null);
+  const canSuggest = $derived(
+    !stream.active &&
+      !!lastVisible &&
+      lastVisible.role === 'assistant' &&
+      !(lastVisible as { pending?: boolean }).pending &&
+      (lastVisible.content ?? '').trim().length > 0,
+  );
+
+  // Chat → PNG share card (pure client-side; see lib/chat/sharecard.ts).
+  async function exportImageCard(): Promise<void> {
+    try {
+      await chatToPng({
+        title: chat?.title || 'Untitled chat',
+        modelLabel: modelLabel,
+        brand: brandName(),
+        messages: visible.map((m) => ({ role: m.role, content: m.content })),
+      });
+    } catch (e) {
+      toast(`Could not save the image: ${String((e as Error)?.message ?? e)}`, 'error');
+    }
+  }
+
   function submit(body: SendMessageBody): void {
     if (!id || !chat) return;
     withClientContext(body);
@@ -652,7 +680,7 @@
             <IconButton title="Chat parameters" active={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)}>
               <SlidersHorizontal size={15} />
             </IconButton>
-            <ChatActionsMenu {chat} onupdated={chatUpdated} />
+            <ChatActionsMenu {chat} onupdated={chatUpdated} onexportimage={exportImageCard} />
           {:else}
             <div class="flex-1"></div>
           {/if}
@@ -709,6 +737,11 @@
           {:else}
             <!-- empty chat: OWUI-style welcome + suggestion grid (sends on click) -->
             <Welcome model={modelLabel} onselect={(p) => submit({ content: p })} />
+          {/if}
+          {#if canSuggest}
+            {#key lastVisible?.id}
+              <SuggestChips chatId={id} onselect={(t) => submit({ content: t })} />
+            {/key}
           {/if}
           <Composer
             chat={chat}

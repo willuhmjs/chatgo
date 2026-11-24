@@ -104,6 +104,7 @@
       { id: 'a-compare', section: 'Actions', label: 'Go to Compare', hint: '/compare', run: () => (navigate('/compare'), closePalette()) },
       { id: 'a-gallery', section: 'Actions', label: 'Go to Gallery', hint: '/gallery', run: () => (navigate('/gallery'), closePalette()) },
       { id: 'a-knowledge', section: 'Actions', label: 'Go to Knowledge', hint: '/knowledge', run: () => (navigate('/knowledge'), closePalette()) },
+      { id: 'a-voice', section: 'Actions', label: 'Start voice call', hint: 'talk to the model', run: () => (window.dispatchEvent(new Event('chatgo:voice-call')), closePalette()) },
       { id: 'a-images', section: 'Actions', label: 'Go to Images', hint: '/images', run: () => (navigate('/images'), closePalette()) },
       { id: 'a-settings', section: 'Actions', label: 'Go to Settings', hint: '/settings', run: () => (navigate('/settings'), closePalette()) },
       isAdmin() && { id: 'a-admin', section: 'Actions', label: 'Go to Admin', hint: '/admin', run: () => (navigate('/admin'), closePalette()) },

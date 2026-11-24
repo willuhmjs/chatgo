@@ -21,6 +21,7 @@
   import Copy from 'lucide-svelte/icons/copy';
   import Unlink from 'lucide-svelte/icons/unlink';
   import Download from 'lucide-svelte/icons/download';
+  import ImageDown from 'lucide-svelte/icons/image-down';
   import Archive from 'lucide-svelte/icons/archive';
   import Plus from 'lucide-svelte/icons/plus';
   import X from 'lucide-svelte/icons/x';
@@ -32,9 +33,12 @@
   let {
     chat,
     onupdated,
+    onexportimage,
   }: {
     chat: Chat | null;
     onupdated?: (c: Chat) => void;
+    /** Render the visible conversation to a PNG card and download it. */
+    onexportimage?: () => void | Promise<void>;
   } = $props();
 
   let busy = $state(false);
@@ -263,6 +267,12 @@
         {#snippet icon()}<Archive size={14} />{/snippet}
         Export all data (.zip)
       </MenuItem>
+      {#if onexportimage}
+        <MenuItem onclick={() => void onexportimage?.()} {close}>
+          {#snippet icon()}<ImageDown size={14} />{/snippet}
+          Save as image (PNG)
+        </MenuItem>
+      {/if}
 
       <div class="my-1 border-t" style="border-color:var(--border)"></div>
 

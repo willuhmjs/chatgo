@@ -62,6 +62,11 @@ const (
 	// — a vanished model is treated like a disabled one, never passed
 	// through to upstream on trust.
 	errMsgModelGone = "chat: this model is no longer available"
+	// errMsgModelRestricted surfaces when the chat's model carries an admin
+	// min_role (Open WebUI-style per-model access control) but the chat owner
+	// is not an admin — the model row stays cached+enabled for everyone, so
+	// the enabled check alone is not enough; the send path must gate on role.
+	errMsgModelRestricted = "chat: this model is restricted to administrators"
 
 	// turnUpstreamTimeout bounds the whole upstream phase (connect + full
 	// stream) of one turn so a stalled provider cannot pin a turn slot,
@@ -375,6 +380,15 @@ func (s *Service) checkChatModel(ctx context.Context, chat *store.Chat) (refuse 
 		}
 		if !models[i].Enabled {
 			return errMsgModelDisabled, nil
+		}
+		if models[i].MinRole == "admin" {
+			// Admin-gated model. Chats are single-owner and loadChat already
+			// enforced chat.UserID == sender, so the owner's role IS the
+			// sender's. This indexed read runs only on the rare gated branch.
+			owner, err := s.Store.Users.GetByID(ctx, chat.UserID)
+			if err != nil || !owner.IsAdmin() {
+				return errMsgModelRestricted, nil
+			}
 		}
 		return "", nil
 	}

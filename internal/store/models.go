@@ -83,6 +83,9 @@ type ModelRow struct {
 	Display    string
 	ContextLen int
 	Enabled    bool
+	// MinRole gates visibility: '' = every authed user, 'admin' = admins only.
+	// Preserved across re-sync exactly like Enabled (a fresh model lands at '').
+	MinRole string
 }
 
 // Chat is a row in `chats`. LeafID is the id of the active branch's newest

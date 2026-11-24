@@ -161,11 +161,20 @@ func (a *Auth) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "SSO"
 	}
+	// title is the admin-set instance display name (settings key "title",
+	// whitelisted in apimgr). Unset/blank stays "" so the FE renders its own
+	// default brand. A settings-read failure must never fail the public
+	// capabilities probe, so it degrades to "" silently.
+	title := ""
+	if v, err := a.Store.Settings.Get(r.Context(), "title"); err == nil && v != nil {
+		title = strings.TrimSpace(*v)
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"oidc_enabled": a.OIDCEnabled(),
 		"oidc_name":    name,
 		"registration": a.Cfg.Registration,
 		"first_run":    a.isFirstRun(r.Context()),
+		"title":        title,
 	})
 }
 

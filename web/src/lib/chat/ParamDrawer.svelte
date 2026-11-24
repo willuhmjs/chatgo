@@ -13,10 +13,14 @@
     type ChatParams,
   } from '$lib/chatview-api';
   import { memoryCountCached } from '$lib/chat-features-api';
+  import { presets, load as loadPresets, save as savePreset, remove as removePreset } from '$lib/chat/presets.svelte.js';
+  import { findModel } from '$lib/chat/state.svelte.js';
+  import { dispatchPickModel } from '$lib/extra-api';
   import { navigate } from '$lib/router.svelte.js';
   import { push as toast } from '$lib/toast.svelte.js';
   import X from 'lucide-svelte/icons/x';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
+  import BookmarkPlus from 'lucide-svelte/icons/bookmark-plus';
 
   let {
     chatId,
@@ -126,6 +130,74 @@
         toast('Params reset to provider defaults', 'success');
       })
       .catch((err: unknown) => toast(`Reset failed: ${String((err as Error)?.message ?? err)}`, 'error'));
+  }
+
+  // ---------- presets (Open WebUI parity) ----------
+  // Named saves of system prompt + sampling params (+ this chat's model),
+  // stored in me-settings "presets" (see lib/chat/presets.svelte.js).
+  let presetNameOpen = $state(false);
+  let presetName = $state('');
+
+  $effect(() => {
+    if (open) void loadPresets();
+  });
+
+  function applyPreset(p: import('$lib/chat/presets.svelte.js').ChatPreset) {
+    syncing = true;
+    temperature = typeof p.params.temperature === 'number' ? p.params.temperature : 1;
+    topP = typeof p.params.top_p === 'number' ? p.params.top_p : 1;
+    maxTokens = typeof p.params.max_tokens === 'number' ? p.params.max_tokens : null;
+    stopText = Array.isArray(p.params.stop) ? p.params.stop.join(', ') : '';
+    systemPrompt = p.system || '';
+    queueMicrotask(() => (syncing = false));
+    schedule(); // params+system ride the normal debounced PATCH
+    if (p.model) {
+      // Model switch mirrors the palette's pickModel (extra-api //INTEGRATION):
+      // PATCH the chat (durable) + broadcast so open views follow.
+      const i = p.model.indexOf(':');
+      const pid = p.model.slice(0, i);
+      const mid = p.model.slice(i + 1);
+      if (i > 0 && chatId) {
+        api
+          .patchChat(chatId, { provider_id: pid, model_id: mid })
+          .then((c) => {
+            onupdated?.(c);
+            window.dispatchEvent(new CustomEvent('chatgo:chat-updated', { detail: { chat: c } }));
+            const m = findModel(pid, mid);
+            if (m) dispatchPickModel(m);
+          })
+          .catch(() => toast('Preset applied, but the model switch failed', 'error'));
+      }
+    }
+    toast(`Preset “${p.name}” applied`, 'success');
+  }
+
+  async function commitPreset() {
+    const name = presetName.trim().slice(0, 64);
+    presetNameOpen = false;
+    presetName = '';
+    if (!name) return;
+    // The model travels with the preset: read it off the live chat.
+    let model = '';
+    try {
+      const c = await api.getChat(chatId);
+      model = c.provider_id && c.model_id ? `${c.provider_id}:${c.model_id}` : '';
+    } catch {
+      /* keep '' — the rest of the preset still saves */
+    }
+    const id = savePreset({
+      name,
+      model,
+      system: systemPrompt.trim(),
+      params: {
+        temperature,
+        top_p: topP,
+        max_tokens: maxTokens ?? undefined,
+        stop: parseStopList(stopText),
+      },
+    });
+    void id;
+    toast(`Preset “${name}” saved`, 'success');
   }
 
   // ---------- memory (read-only count chip; hidden if endpoint absent) ----------
@@ -264,6 +336,70 @@
         </p>
       </div>
 
+      <!-- presets (OWUI): named system+params(+model) saves, one click to apply -->
+      <div>
+        <p class="label mb-2 block">Presets</p>
+          {#if presets.items.length}
+            <div class="mb-2 flex flex-wrap gap-1.5">
+              {#each presets.items as p (p.id)}
+                <span class="chip">
+                  <button
+                    type="button"
+                    class="chip-apply"
+                    title="Apply ‘{p.name}’{p.model ? ' (incl. model)' : ''}"
+                    onclick={() => applyPreset(p)}>{p.name}</button
+                  >
+                  <button
+                    type="button"
+                    class="chip-x"
+                    aria-label={`Delete preset ${p.name}`}
+                    onclick={() => removePreset(p.id)}
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          {#if presetNameOpen}
+            <div class="flex items-center gap-1.5">
+              <!-- svelte-ignore a11y_autofocus -->
+              <input
+                class="num grow"
+                style="width:auto"
+                maxlength="64"
+                placeholder="Preset name"
+                aria-label="Preset name"
+                bind:value={presetName}
+                autofocus
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void commitPreset();
+                  }
+                  if (e.key === 'Escape') {
+                    presetNameOpen = false;
+                    presetName = '';
+                  }
+                }}
+              />
+              <button type="button" class="quiet" onclick={() => void commitPreset()}>Save</button>
+              <button
+                type="button"
+                class="quiet"
+                onclick={() => {
+                  presetNameOpen = false;
+                  presetName = '';
+                }}>Cancel</button
+              >
+            </div>
+          {:else}
+            <button type="button" class="quiet" onclick={() => (presetNameOpen = true)}>
+              <BookmarkPlus size={13} /> Save current as preset
+            </button>
+          {/if}
+        </div>
+
       {#if memCount !== null}
         <!-- read-only memory status (wave 2); manager lives in Settings → account -->
         <div class="flex items-center gap-2 border-t pt-4" style="border-color:var(--border)">
@@ -373,6 +509,40 @@
   }
   input[type='range']:focus-visible::-webkit-slider-thumb {
     box-shadow: 0 0 0 3px var(--acc-tint-strong, var(--accent-soft, rgb(99 102 241 / 0.18)));
+  }
+
+  /* preset chips: quiet pill + accent apply zone, tiny ghost delete (§5) */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .chip-apply {
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 0.75rem;
+    padding: 0.3rem 0.1rem 0.3rem 0.7rem;
+    cursor: pointer;
+    transition: color 120ms ease;
+  }
+  .chip-apply:hover {
+    color: var(--acc, var(--accent, #ffffff));
+  }
+  .chip-x {
+    display: inline-flex;
+    align-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--faint, #6e6e6e);
+    padding: 0.3rem 0.5rem 0.3rem 0.25rem;
+    cursor: pointer;
+    transition: color 120ms ease;
+  }
+  .chip-x:hover {
+    color: var(--danger, #ef4444);
   }
 
   /* quiet text buttons in the header (§5 "Reset quiet text button") */

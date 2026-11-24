@@ -46,6 +46,15 @@ func enabledOf(rows []modelRowJSON, id string) (bool, bool) {
 	return false, false
 }
 
+func minRoleOf(rows []modelRowJSON, id string) (string, bool) {
+	for _, r := range rows {
+		if r.ModelID == id {
+			return r.MinRole, true
+		}
+	}
+	return "", false
+}
+
 func TestProviderModelsListAndBulkToggle(t *testing.T) {
 	d, _ := testDeps(t)
 	admin := mustUser(t, d.Store, "madm@example.com", store.RoleAdmin)
@@ -89,9 +98,10 @@ func TestProviderModelsListAndBulkToggle(t *testing.T) {
 		}
 	}
 
-	// Chat surface (GET /api/models) now excludes a, includes c.
+	// Chat surface (GET /api/models) now excludes a, includes c (all rows have
+	// min_role='', so a plain user sees every enabled model).
 	rec = httptest.NewRecorder()
-	h.models(rec, httptest.NewRequest("GET", "/api/models", nil))
+	h.models(rec, httptest.NewRequest("GET", "/api/models", nil), false)
 	var chatModels []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &chatModels); err != nil {
 		t.Fatal(err)
@@ -229,15 +239,27 @@ func TestProviderSyncPreservesEnablement(t *testing.T) {
 		}
 		return out
 	}
+	roles := func() map[string]string {
+		t.Helper()
+		rows, err := d.Store.Models.ForProvider(context.Background(), p.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, m := range rows {
+			out[m.ModelID] = m.MinRole
+		}
+		return out
+	}
 
 	// First sync: every model is new → count 3, added 3, all enabled.
 	if resp := sync("a", "b", "c"); resp["count"] != 3 || resp["added"] != 3 {
 		t.Errorf("first sync = %v, want count 3 added 3", resp)
 	}
-	// Admin disables b (and a vanished upstream model must not resurrect
-	// enabled - covered below).
+	// Admin disables b (and marks it admins-only). A vanished upstream model
+	// must not resurrect enabled - covered below.
 	rec := httptest.NewRecorder()
-	h.providerModelsUpdate(rec, putReq(`[{"model_id":"b","enabled":false}]`), p.ID, admin)
+	h.providerModelsUpdate(rec, putReq(`[{"model_id":"b","enabled":false,"min_role":"admin"}]`), p.ID, admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("toggle status = %d, body %s", rec.Code, rec.Body)
 	}
@@ -250,6 +272,11 @@ func TestProviderSyncPreservesEnablement(t *testing.T) {
 	if want := map[string]bool{"a": true, "b": false, "c": true, "d": true}; !maps.Equal(flags(), want) {
 		t.Errorf("flags after resync = %v, want %v", flags(), want)
 	}
+	// min_role survives re-sync exactly like enabled: b keeps 'admin', the rest
+	// (incl. the newly added d) sit at '' (visible to all).
+	if want := map[string]string{"a": "", "b": "admin", "c": "", "d": ""}; !maps.Equal(roles(), want) {
+		t.Errorf("roles after resync = %v, want %v", roles(), want)
+	}
 
 	// Idempotent re-sync adds nothing and still preserves b=off.
 	if resp := sync("a", "b", "c", "d"); resp["added"] != 0 {
@@ -261,6 +288,94 @@ func TestProviderSyncPreservesEnablement(t *testing.T) {
 	}
 	if _, seen := flags()["c"]; seen {
 		t.Error("vanished model survived sync")
+	}
+}
+
+func TestProviderModelsMinRoleAccess(t *testing.T) {
+	d, _ := testDeps(t)
+	admin := mustUser(t, d.Store, "mrole@example.com", store.RoleAdmin)
+	p := seedProvider(t, d, "roleco")
+	seedModels(t, d, p,
+		store.ModelRow{ModelID: "pub", Display: "Public", Enabled: true},
+		store.ModelRow{ModelID: "sec", Display: "Secret", Enabled: true, MinRole: store.RoleAdmin},
+	)
+	h := &providersH{d: d}
+
+	chatIDs := func(adminView bool) map[string]bool {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.models(rec, httptest.NewRequest("GET", "/api/models", nil), adminView)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/models status = %d, body %s", rec.Code, rec.Body)
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, m := range rows {
+			got[m["model_id"].(string)] = true
+		}
+		return got
+	}
+
+	// Non-admin catalog: admins-only row hidden.
+	if got := chatIDs(false); !got["pub"] || got["sec"] {
+		t.Errorf("non-admin catalog = %v, want pub only", got)
+	}
+	// Admin catalog: both rows present.
+	if got := chatIDs(true); !got["pub"] || !got["sec"] {
+		t.Errorf("admin catalog = %v, want pub + sec", got)
+	}
+
+	// Admin management view carries min_role so the editor can render it.
+	rec := httptest.NewRecorder()
+	h.providerModels(rec, httptest.NewRequest("GET", "/", nil), p.ID)
+	rows := decodeRows(t, rec)
+	if role, ok := minRoleOf(rows, "sec"); !ok || role != store.RoleAdmin {
+		t.Errorf("admin view sec min_role = %q/%v, want admin", role, ok)
+	}
+	if role, ok := minRoleOf(rows, "pub"); !ok || role != "" {
+		t.Errorf("admin view pub min_role = %q/%v, want empty", role, ok)
+	}
+
+	// PUT: promote pub to admins-only, demote sec to everyone.
+	rec = httptest.NewRecorder()
+	h.providerModelsUpdate(rec, putReq(`[{"model_id":"pub","enabled":true,"min_role":"admin"},{"model_id":"sec","enabled":true,"min_role":""}]`), p.ID, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("min_role update status = %d, body %s", rec.Code, rec.Body)
+	}
+	// Flipped: the non-admin catalog now shows sec, not pub.
+	if got := chatIDs(false); got["pub"] || !got["sec"] {
+		t.Errorf("non-admin catalog after flip = %v, want sec only", got)
+	}
+}
+
+func TestProviderModelsMinRoleErrors(t *testing.T) {
+	d, _ := testDeps(t)
+	admin := mustUser(t, d.Store, "mroleerr@example.com", store.RoleAdmin)
+	p := seedProvider(t, d, "roleerrco")
+	seedModels(t, d, p, cachedModelRows...)
+	h := &providersH{d: d}
+
+	// An unknown min_role value is rejected (400) and nothing is applied — the
+	// batch carried a real disable of "a" that must NOT take effect.
+	rec := httptest.NewRecorder()
+	h.providerModelsUpdate(rec, putReq(`[{"model_id":"a","enabled":false,"min_role":"root"}]`), p.ID, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("bad min_role status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("body not an error envelope: %s", rec.Body)
+	}
+	rows, err := d.Store.Models.ForProvider(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range rows {
+		if m.ModelID == "a" && !m.Enabled {
+			t.Error("rejected batch applied a→disabled")
+		}
 	}
 }
 

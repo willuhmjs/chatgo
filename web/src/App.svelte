@@ -7,6 +7,7 @@
   import { initTheme } from '$lib/theme.svelte.js';
   import { initShortcuts, onShortcut } from '$lib/shortcuts.svelte.js';
   import { bootstrap, isAdmin, isOnboardDismissed, session, shouldOnboard } from '$lib/session.svelte.js';
+  import { brandName, loadBrand } from '$lib/brand.svelte.js';
   import { load as loadModelPrefs } from '$lib/chat/model-prefs.svelte.js';
   import { refreshCapabilities } from '$lib/chat/state.svelte.js';
   import { bootAccent } from '$lib/accent-sync.svelte.js';
@@ -33,8 +34,10 @@
   import Notes from './routes/Notes.svelte';
   import NoteShare from './routes/NoteShare.svelte';
   import AboutModal from './lib/ui/AboutModal.svelte';
+  import VoiceCall from '$lib/chat/VoiceCall.svelte';
+  import InstallBanner from '$lib/ui/InstallBanner.svelte';
 
-  import { Menu, Plus, X } from 'lucide-svelte';
+  import { Compass, Menu, Plus, X } from 'lucide-svelte';
 
   const route = $derived(currentRoute());
   // auth + public pages render bare (no app chrome)
@@ -83,6 +86,7 @@
     initTheme();
     initShortcuts();
     void bootstrap();
+    loadBrand(); // public endpoint — safe pre-login; brand rows read it live
     return startRouter();
   });
 
@@ -142,7 +146,6 @@
   $effect(() => {
     if (route.name !== 'chat') {
       chatTitle = '';
-      document.title = 'ChatGo';
       return;
     }
     const id = route.params.id;
@@ -153,7 +156,6 @@
       .then((c) => {
         if (cancelled) return;
         chatTitle = c.title || 'Chat';
-        document.title = `${chatTitle} · ChatGo`;
       })
       .catch(() => {
         if (!cancelled) chatTitle = 'Chat';
@@ -161,6 +163,11 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  // Tab title: brand follows the admin-set instance name (see lib/brand).
+  $effect(() => {
+    document.title = route.name === 'chat' && chatTitle ? `${chatTitle} · ${brandName()}` : brandName();
   });
 
   // Live re-title while streaming: ChatView's SSE `title` handler broadcasts
@@ -176,6 +183,16 @@
     };
     window.addEventListener('chatgo:title', onTitle);
     return () => window.removeEventListener('chatgo:title', onTitle);
+  });
+
+  // ----- voice call (OWUI parity): any surface may raise 'chatgo:voice-call'
+  // (Composer button, ⌘K action); the overlay lives at the shell so the call
+  // survives navigation until the user hangs up. -----
+  let voiceOpen = $state(false);
+  $effect(() => {
+    const on = () => (voiceOpen = true);
+    window.addEventListener('chatgo:voice-call', on);
+    return () => window.removeEventListener('chatgo:voice-call', on);
   });
 
   // ⌘B — collapse sidebar (desktop) / toggle drawer (mobile); Esc closes drawer
@@ -252,7 +269,7 @@
         <IconButton label="Open sidebar" onclick={() => (mobileOpen = true)}>
           <Menu class="size-5" />
         </IconButton>
-        <h1 class="min-w-0 flex-1 truncate px-1 text-[15px] font-medium">{chatTitle || 'ChatGo'}</h1>
+        <h1 class="min-w-0 flex-1 truncate px-1 text-[15px] font-medium">{chatTitle || brandName()}</h1>
         <IconButton label="New chat" onclick={() => navigate('/')}>
           <Plus class="size-5" />
         </IconButton>
@@ -282,8 +299,40 @@
         {:else if route.name === 'admin'}
           <Admin />
         {:else}
-          <div class="flex h-full items-center justify-center text-sm text-[var(--muted)]">
-            Not found — <a class="ml-1 text-[var(--acc)] hover:underline" href="/">go home</a>
+          <!-- 404: friendly card (P2-5) — chrome stays, actions adapt to the
+               session; anonymous hits are also bounced to /login by the
+               session gate, this is the pre-redirect/edge surface. -->
+          <div class="flex h-full items-center justify-center p-6">
+            <div class="w-full max-w-sm rounded-2xl p-6 text-center" style="background:var(--panel); border:1px solid var(--border)">
+              <div class="mx-auto mb-3 grid size-10 place-items-center rounded-xl" style="background:var(--fill-hover); color:var(--muted)">
+                <Compass class="size-5" />
+              </div>
+              <h2 class="text-[15px] font-semibold tracking-tight">Page not found</h2>
+              <p class="mt-1 mb-4 text-sm" style="color:var(--muted)">
+                We couldn't find <code class="rounded px-1" style="background:var(--fill-hover)">{location.path}</code> on
+                {brandName()}.
+              </p>
+              <div class="flex items-center justify-center gap-2">
+                <button
+                  class="h-9 rounded-lg px-3.5 text-sm font-medium transition-opacity hover:opacity-90"
+                  style="background:var(--accent); color:var(--accent-fg)"
+                  onclick={() => navigate('/')}
+                >{session.authenticated ? 'Go home' : `Sign in to ${brandName()}`}</button
+                >
+                {#if !session.authenticated}
+                  <a
+                    href="/"
+                    class="h-9 inline-grid place-items-center rounded-lg px-3.5 text-sm"
+                    style="border:1px solid var(--border); color:var(--muted)"
+                    onclick={(e) => {
+                      e.preventDefault();
+                      navigate('/');
+                    }}
+                  >Back to start</a
+                  >
+                {/if}
+              </div>
+            </div>
           </div>
         {/if}
         </div>
@@ -294,6 +343,14 @@
 {/if}
 
 <ConfirmDialog />
+
+{#if voiceOpen}
+  <VoiceCall onclose={() => (voiceOpen = false)} />
+{/if}
+
+{#if session.user}
+  <InstallBanner />
+{/if}
 
 <!-- themed toast stack + global ⌘K palette (FE-extra components, mounted here) -->
 <Toasts />

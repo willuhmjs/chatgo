@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronDown, Inbox, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-svelte';
+  import { ChevronDown, Inbox, Pencil, Plus, RefreshCw, Shield, Trash2 } from 'lucide-svelte';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
   import type { ModelToggle, ProviderAdmin, ProviderModel } from '$lib/admin/api-admin';
@@ -93,11 +93,16 @@
   }
 
   /** Bulk write with optimistic rows + revert-on-error; the PUT answers the
-   *  server-truth list so counts and flags re-sync in one step. */
+   *  server-truth list so counts and flags re-sync in one step. A toggle's
+   *  min_role is optional — omit it (Select all/none) to leave visibility as
+   *  the server has it. */
   async function applyToggles(p: ProviderAdmin, toggles: ModelToggle[]) {
     const prev = models[p.id];
-    const next = new Map(toggles.map((t) => [t.model_id, t.enabled]));
-    models[p.id] = (prev ?? []).map((m) => (next.has(m.model_id) ? { ...m, enabled: next.get(m.model_id)! } : m));
+    const next = new Map(toggles.map((t) => [t.model_id, t]));
+    models[p.id] = (prev ?? []).map((m) => {
+      const t = next.get(m.model_id);
+      return t ? { ...m, enabled: t.enabled, min_role: t.min_role ?? m.min_role } : m;
+    });
     modelsBusy[p.id] = true;
     try {
       models[p.id] = await admin.setProviderModels(p.id, toggles);
@@ -109,6 +114,14 @@
     } finally {
       modelsBusy[p.id] = false;
     }
+  }
+
+  /** Flip one model's visibility floor. Same bulk PUT as the enable toggles —
+   *  carries the model's current enabled state so the write never silently
+   *  re-enables a disabled row. */
+  function setModelRole(p: ProviderAdmin, m: ProviderModel, minRole: string) {
+    if ((m.min_role ?? '') === minRole) return;
+    void applyToggles(p, [{ model_id: m.model_id, enabled: m.enabled, min_role: minRole }]);
   }
 
   async function syncOne(p: ProviderAdmin) {
@@ -377,6 +390,31 @@
                               {#if m.display && m.display !== m.model_id}
                                 <span class="ml-2 font-mono text-[var(--muted)]">{m.model_id}</span>
                               {/if}
+                              {#if m.min_role === 'admin'}
+                                <span class="ml-2 inline-flex items-center gap-1 text-[10px] text-[var(--muted)]" title="Admins only — hidden from other users">
+                                  <Shield size={11} /> admins only
+                                </span>
+                              {/if}
+                            </td>
+                            <td class="{td} w-32">
+                              <!-- Access floor: everyone vs admins only. Same bulk PUT as the
+                                   enable toggle, so the row never re-enables implicitly. -->
+                              <div class="inline-flex overflow-hidden rounded-lg" style="border:1px solid rgba(255,255,255,0.12)" role="group" aria-label="Access for {m.display || m.model_id}">
+                                <button
+                                  class="px-2 py-1 text-[10px] transition-colors"
+                                  style={m.min_role !== 'admin' ? 'background:var(--fill-hover);color:var(--text)' : 'color:var(--muted)'}
+                                  disabled={modelsBusy[p.id] || m.min_role !== 'admin'}
+                                  title="Visible to all users"
+                                  onclick={() => setModelRole(p, m, '')}
+                                >All</button>
+                                <button
+                                  class="px-2 py-1 text-[10px] transition-colors"
+                                  style={m.min_role === 'admin' ? 'background:var(--fill-hover);color:var(--text)' : 'color:var(--muted)'}
+                                  disabled={modelsBusy[p.id] || m.min_role === 'admin'}
+                                  title="Admins only — hidden from non-admin users"
+                                  onclick={() => setModelRole(p, m, 'admin')}
+                                >Admins</button>
+                              </div>
                             </td>
                             <td class="{td} w-24 text-right">
                               {#if m.context_len > 0}<Badge>{ctxLabel(m.context_len)}</Badge>{/if}

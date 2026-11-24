@@ -6,6 +6,7 @@
 // for two unrelated keys and App.svelte's onboarding probe is admin-only,
 // so neither can hand us the value. Idempotent; failures allow a retry.
 import { getMeSettings, setMeSettings } from './api';
+import { syncThemeFromServer } from './theme.svelte.js';
 import {
   ACCENTS,
   isAccentMigrationPending,
@@ -41,6 +42,9 @@ export function bootAccent() {
   started = true;
   void getMeSettings()
     .then((s) => {
+      // Theme shares this exact GET (one me-settings fetch, two keys): apply
+      // before the accent branches, which early-return.
+      syncThemeFromServer(s?.theme);
       const name = parseAccent(s?.[SERVER_KEY]);
       if (name) {
         // Server wins over a stale local choice.

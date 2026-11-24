@@ -24,6 +24,7 @@
     FileText,
     FileUp,
     Inbox,
+    Link,
     LoaderCircle,
     Plus,
     Search,
@@ -31,7 +32,7 @@
     X,
   } from 'lucide-svelte';
 
-  const ACCEPT = '.txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.c,.cc,.cpp,.go,.rs,.py,.ts,.tsx,.js,.jsx,.sh,.sql';
+  const ACCEPT = '.txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.docx,.c,.cc,.cpp,.go,.rs,.py,.ts,.tsx,.js,.jsx,.sh,.sql';
 
   type UploadRow = { uid: number; name: string; pct: number; status: 'uploading' | 'done' | 'error'; error?: string };
   type Seg = { text: string; hit: boolean };
@@ -61,6 +62,10 @@
   let newOpen = $state(false);
   let newName = $state('');
   let creating = $state(false);
+
+  // add-by-URL rows (per collection: drafts survive card collapse, busy gates the button)
+  let urlDrafts = $state<Record<string, string>>({});
+  let urlBusy = $state<Record<string, boolean>>({});
 
   let uploadSeq = 0;
 
@@ -191,6 +196,27 @@
     e.preventDefault();
     dragCol = null;
     if (e.dataTransfer) void uploadFiles(colId, [...e.dataTransfer.files]);
+  }
+
+  /** Fetch a web page into the collection (server does fetch + text extraction). */
+  async function addUrl(colId: string) {
+    const url = (urlDrafts[colId] ?? '').trim();
+    if (!url || urlBusy[colId]) return;
+    if (!/^https?:\/\//i.test(url)) {
+      push('Enter a full URL starting with http:// or https://', 'error');
+      return;
+    }
+    urlBusy[colId] = true;
+    try {
+      const f = await pages.kbAddUrl(colId, url);
+      urlDrafts[colId] = '';
+      push(`Added “${f.name || url}”`, 'success');
+      await loadFiles(colId);
+    } catch (err) {
+      push(pages.errMessage(err, 'Could not add URL'), 'error');
+    } finally {
+      urlBusy[colId] = false;
+    }
   }
 
   async function removeFile(colId: string, f: pages.KbFile) {
@@ -468,7 +494,7 @@
                     <p class="mt-2 text-sm text-[var(--muted)]">
                       Drop files here or <span class="font-medium text-[var(--text)] underline decoration-[var(--border)] underline-offset-4">browse</span>
                     </p>
-                    <p class="mt-0.5 text-xs text-[var(--faint)]">txt · md · csv · json · log · code — up to 5 MiB each</p>
+                    <p class="mt-0.5 text-xs text-[var(--faint)]">txt · md · docx · csv · json · log · code — up to 5 MiB each</p>
                     <input
                       type="file"
                       multiple
@@ -477,6 +503,34 @@
                       bind:this={inputEls[c.id]}
                       onchange={(e) => onPick(c.id, e.currentTarget)}
                     />
+                  </div>
+
+                  <!-- add by URL (server fetches the page + indexes its readable text) -->
+                  <div class="flex items-center gap-2">
+                    <span class="grid size-7 shrink-0 place-items-center rounded-md" style="background:var(--fill-hover); color:var(--muted)">
+                      <Link class="size-3.5" />
+                    </span>
+                    <input
+                      type="url"
+                      class="h-8 min-w-0 flex-1 rounded-lg border-0 px-2.5 text-sm outline-none placeholder:text-[var(--faint)] focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-[var(--accent-soft)]"
+                      style="background:var(--panel-2); color:var(--text)"
+                      placeholder="…or add a web page by URL — https://example.com/article"
+                      aria-label={`Add a URL to ${c.name}`}
+                      disabled={!!urlBusy[c.id]}
+                      bind:value={urlDrafts[c.id]}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void addUrl(c.id);
+                        }
+                      }}
+                    />
+                    <Button variant="secondary" size="sm" disabled={urlBusy[c.id] || !(urlDrafts[c.id] ?? '').trim()} onclick={() => void addUrl(c.id)}>
+                      {#if urlBusy[c.id]}
+                        <LoaderCircle class="size-3.5 animate-spin" />
+                      {/if}
+                      {#if urlBusy[c.id]}Fetching{:else}Add URL{/if}
+                    </Button>
                   </div>
 
                   <!-- citation slide-over entry -->

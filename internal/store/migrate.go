@@ -15,7 +15,7 @@ var schemaSQL string
 
 // schemaVersion is the user_version this build migrates to. Steps are
 // idempotent so re-running on a current DB is a no-op.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migrate applies the embedded schema, then steps user_version up to
 // schemaVersion. Fresh DBs land at the latest version immediately (the DDL
@@ -49,6 +49,45 @@ func (s *Store) migrate() error {
 var migrations = [...]func(*sql.DB) error{
 	1: migrateV2MessageParents, // v1 → v2: message branching (parentId tree + chat leaf)
 	2: migrateV3ChatArchive,    // v2 → v3: chat archive flag (chats.archived_at)
+	3: migrateV4ModelMinRole,   // v3 → v4: per-model access floor (models.min_role)
+}
+
+// migrateV4ModelMinRole adds models.min_role (” = every authed user, 'admin'
+// = admins only) to pre-existing databases. Fresh DBs already carry the column
+// from schema.sql, so existing rows land at ” (visible to all) — never a
+// silent lockdown. Idempotent: PRAGMA table_info is the probe.
+func migrateV4ModelMinRole(db *sql.DB) error {
+	ctx := context.Background()
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(models)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	have := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "min_role" {
+			have = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if have {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE models ADD COLUMN min_role TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 // migrateV3ChatArchive adds chats.archived_at (nullable unix seconds; NULL =

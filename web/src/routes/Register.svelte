@@ -80,7 +80,7 @@
     <span class="flex h-7 w-7 items-center justify-center rounded-lg" style="background:var(--accent); color:var(--accent-fg)">
       <MessageSquare size={15} />
     </span>
-    <span class="text-[15px] font-medium tracking-tight">ChatGo</span>
+    <span class="text-[15px] font-medium tracking-tight">{config?.title?.trim() || 'ChatGo'}</span>
   </div>
 
   <div class="rounded-2xl p-6" style="background:var(--panel); color:var(--text)">
@@ -108,7 +108,7 @@
       <div class="flex flex-col items-center gap-3 py-4 text-center">
         <h1 class="text-[17px] font-semibold tracking-tight">Registration is closed</h1>
         <p class="text-sm leading-relaxed" style="color:var(--muted)">
-          This ChatGo instance isn't accepting new accounts. Ask an administrator to enable registration or invite you
+          {config?.title?.trim() || 'ChatGo'} instance isn't accepting new accounts. Ask an administrator to enable registration or invite you
           through single sign-on.
         </p>
         <a href="/login" class={`${btn} mt-2 w-full`} style={btnGhostStyle}>

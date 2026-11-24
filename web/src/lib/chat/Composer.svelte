@@ -32,6 +32,7 @@
   import Plus from 'lucide-svelte/icons/plus';
   import Mic from 'lucide-svelte/icons/mic';
   import MicOff from 'lucide-svelte/icons/mic-off';
+  import PhoneCall from 'lucide-svelte/icons/phone-call';
   import BookOpen from 'lucide-svelte/icons/book-open';
   import SearchToggle from './SearchToggle.svelte';
   import Check from 'lucide-svelte/icons/check';
@@ -763,6 +764,9 @@
               {#if micOn}<MicOff size={15} />{:else}<Mic size={15} />{/if}
             </IconButton>
           {/if}
+          <IconButton title="Voice call" onclick={() => window.dispatchEvent(new Event('chatgo:voice-call'))}>
+            <PhoneCall size={15} />
+          </IconButton>
           <!-- stop circle appears mid-stream; the send circle keeps its
                up-arrow and queues while busy -->
           {#if busy}

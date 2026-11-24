@@ -92,6 +92,9 @@
       await admin.setSettings({ ...form });
       saved = { ...form };
       push('System settings saved', 'success');
+      // Live brand refresh (lib/brand): an admin renaming the instance sees
+      // the sidebar/login/tab title update without a reload.
+      window.dispatchEvent(new Event('chatgo:brand-changed'));
     } catch (e) {
       push(errMsg(e, 'Could not save settings'), 'error');
     } finally {

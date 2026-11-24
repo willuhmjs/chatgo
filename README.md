@@ -69,7 +69,19 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 - **Command palette** (⌘K), keyboard shortcuts, compare two models
   side-by-side, artifact/image gallery, chat summarizing + context
   compaction for long threads.
-- **Small** — single static binary, distroless image, target < 128 Mi RSS.
+- **Voice call mode** — hands-free dictation → model → read-aloud loop, fully
+  browser-side (Web Speech API); reuses the normal chat turn, so zero added
+  server memory. Mic-launch from any composer or the palette.
+- **Parameter presets** — save a chat's system prompt + sampling params (+
+  model) under a name and re-apply in one click (per-user, me-settings).
+- **Next-message suggestions** — sparkle offers 2–5 follow-up questions from
+  the task model; click to send.
+- **Voice read-aloud + dictation**, **model access control** (per-model
+  admin-only gating enforced on both the catalog and the send path), **PWA**
+  offline shell + install, and **export a chat as a shareable PNG card**.
+- **Small** — single static binary, distroless image, target < 128 Mi RSS
+  (idle RSS ~20 MiB; every feature above is frontend-only or reuses an
+  existing endpoint, so none of it grows the server footprint).
 
 ## Quickstart (Docker)
 

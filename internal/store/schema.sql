@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS models (
 	display TEXT NOT NULL DEFAULT '',
 	context_len INTEGER NOT NULL DEFAULT 0,
 	enabled INTEGER NOT NULL DEFAULT 1,
+	-- '' = visible to every authed user; 'admin' = admins only (hidden from
+	-- non-admin pickers via GET /api/models). Survives re-sync like enabled.
+	min_role TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (provider_id, model_id)
 );
 

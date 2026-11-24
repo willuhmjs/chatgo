@@ -171,6 +171,7 @@ func registerRoutes(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("POST /api/kb/{id}/files", d.handleFileUpload)
 	mux.HandleFunc("GET /api/kb/{id}/files", d.handleFileList)
 	mux.HandleFunc("DELETE /api/kb/{id}/files/{fileId}", d.handleFileDelete)
+	mux.HandleFunc("POST /api/kb/{id}/url", d.handleURLIngest)
 	mux.HandleFunc("POST /api/kb/{id}/search", d.handleSearch)
 }
 
