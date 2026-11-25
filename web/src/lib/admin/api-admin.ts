@@ -30,6 +30,7 @@ export {
   listUsers,
   approveUser,
   setUserRole,
+  deleteUser,
   // api tokens
   listTokens,
   createToken,

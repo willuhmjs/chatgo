@@ -297,6 +297,32 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// PurgeUser deletes every file row of a user plus their on-disk blobs
+// (and thumbnails). Must run BEFORE the user row is deleted (the FK cascade
+// would take the rows — and with them the paths — away while bytes on disk
+// would linger forever). Paged from page 1 every round: deleting the page
+// shifts what remains into it. Used by account deletion (apimgr hook).
+func (s *Service) PurgeUser(ctx context.Context, userID string) error {
+	for {
+		fs, _, err := s.Store.Files.ListByUser(ctx, userID, "", 1, 100)
+		if err != nil {
+			return err
+		}
+		if len(fs) == 0 {
+			return nil
+		}
+		for _, f := range fs {
+			if err := s.Store.Files.Delete(ctx, f.ID); err != nil {
+				return err
+			}
+			if p, err := s.resolvePath(f); err == nil {
+				os.Remove(p)
+				os.Remove(thumbPathFor(p))
+			}
+		}
+	}
+}
+
 // GetThumb opens the generated .thumb.jpg for f (os.ErrNotExist when the file
 // is not an image or the thumbnail failed to generate).
 func (s *Service) GetThumb(f *store.File) (io.ReadCloser, error) {

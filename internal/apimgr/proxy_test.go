@@ -188,3 +188,127 @@ func TestV1ProxyEnabledCacheModelHappy(t *testing.T) {
 		t.Errorf("choices = %+v", resp.Choices)
 	}
 }
+
+// 6. Per-model admin gating (models.min_role='admin') must hold on the /v1
+// proxy too: a plain user's ck_ token gets 404 ("hidden", mirroring
+// GET /api/models) on both the explicit and bare id, while an admin's token
+// resolves normally.
+func TestV1ProxyAdminOnlyModelHiddenFromUsers(t *testing.T) {
+	d, fake := testDeps(t)
+	p := seedProvider(t, d, "openai")
+	seedModels(t, d, p,
+		store.ModelRow{ModelID: "gpt-4o", Enabled: true},
+		store.ModelRow{ModelID: "gpt-4o-adm", Enabled: true, MinRole: "admin"})
+	fake.completeResp = "ok"
+
+	u := mustUser(t, d.Store, "gate@example.com", store.RoleUser)
+	key := mintToken(t, d, u)
+	h := &proxyH{d: d}
+
+	for _, model := range []string{"openai:gpt-4o-adm", "gpt-4o-adm"} {
+		fake.gotModel = ""
+		rec := httptest.NewRecorder()
+		h.handle(rec, proxyReq(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`, key))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("model %q: status = %d, want 404, body %s", model, rec.Code, rec.Body)
+		}
+		if fake.gotModel != "" {
+			t.Errorf("gated model %q reached upstream (model=%q)", model, fake.gotModel)
+		}
+	}
+
+	// Admin's token resolves the same model.
+	admin := mustUser(t, d.Store, "gateadm@example.com", store.RoleAdmin)
+	akey := mintToken(t, d, admin)
+	rec := httptest.NewRecorder()
+	h.handle(rec, proxyReq(`{"model":"openai:gpt-4o-adm","messages":[{"role":"user","content":"hi"}]}`, akey))
+	if rec.Code != http.StatusOK || fake.gotModel != "gpt-4o-adm" {
+		t.Fatalf("admin gated call: status=%d got=%q body=%s", rec.Code, fake.gotModel, rec.Body)
+	}
+}
+
+// idsFrom parses a GET /v1/models response into its id set.
+func idsFrom(t *testing.T, body []byte) map[string]bool {
+	t.Helper()
+	var out struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode /v1/models: %v (%s)", err, body)
+	}
+	if out.Object != "list" {
+		t.Errorf("object = %q, want list", out.Object)
+	}
+	ids := map[string]bool{}
+	for _, m := range out.Data {
+		if m.Object != "model" {
+			t.Errorf("entry object = %q, want model", m.Object)
+		}
+		ids[m.ID] = true
+	}
+	return ids
+}
+
+// 7. GET /v1/models: anon 401; users see "prov:model" + unique bare ids of
+// visible models only (admin-gated and disabled rows hidden); admins see all.
+func TestV1ModelsListingScopedToRole(t *testing.T) {
+	d, _ := testDeps(t)
+	p := seedProvider(t, d, "openai")
+	seedModels(t, d, p,
+		store.ModelRow{ModelID: "gpt-4o", Enabled: true},
+		store.ModelRow{ModelID: "gpt-4o-adm", Enabled: true, MinRole: "admin"},
+		store.ModelRow{ModelID: "gpt-old", Enabled: false}) // admin disabled
+	p2 := seedProvider(t, d, "mirror")
+	seedModels(t, d, p2, store.ModelRow{ModelID: "gpt-4o", Enabled: true}) // collides bare-id
+	h := &proxyH{d: d}
+
+	// Anonymous → 401 (authenticate refuses before any listing).
+	rec := httptest.NewRecorder()
+	h.handleModels(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon status = %d, want 401", rec.Code)
+	}
+
+	u := mustUser(t, d.Store, "lst@example.com", store.RoleUser)
+	key := mintToken(t, d, u)
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	h.handleModels(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user status = %d, body %s", rec.Code, rec.Body)
+	}
+	ids := idsFrom(t, rec.Body.Bytes())
+	for want := range map[string]bool{
+		"openai:gpt-4o": true, "mirror:gpt-4o": true, // prov forms always present
+	} {
+		if !ids[want] {
+			t.Errorf("missing %q in user listing: %s", want, rec.Body)
+		}
+	}
+	for no := range map[string]bool{
+		"gpt-4o-adm": true, "openai:gpt-4o-adm": true, // admin-gated hidden
+		"gpt-old": true, "openai:gpt-old": true, // disabled hidden
+		"gpt-4o": true, // bare-id ambiguous (2 providers) → hidden
+	} {
+		if ids[no] {
+			t.Errorf("user listing leaked %q: %s", no, rec.Body)
+		}
+	}
+
+	admin := mustUser(t, d.Store, "lstadm@example.com", store.RoleAdmin)
+	akey := mintToken(t, d, admin)
+	rec = httptest.NewRecorder()
+	areq := httptest.NewRequest("GET", "/v1/models", nil)
+	areq.Header.Set("Authorization", "Bearer "+akey)
+	h.handleModels(rec, areq)
+	ids = idsFrom(t, rec.Body.Bytes())
+	if !ids["openai:gpt-4o-adm"] || !ids["gpt-4o-adm"] {
+		t.Errorf("admin listing missing gated model ids: %s", rec.Body)
+	}
+}

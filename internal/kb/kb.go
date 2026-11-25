@@ -16,6 +16,7 @@
 package kb
 
 import (
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -145,6 +146,15 @@ func Init(st *store.Store) error {
 		}
 	}
 	return nil
+}
+
+// DeleteUserData removes a user's knowledge collections. kb's tables carry
+// no FK to users (feature-owned DDL), so account deletion cannot rely on
+// CASCADE — files/chunks cascade from the collection row itself. Bound into
+// the delete flow by the integrator via apimgr.SetUserDeleteHook.
+func DeleteUserData(db *sql.DB, userID string) error {
+	_, err := db.Exec(`DELETE FROM kb_collections WHERE user_id = ?1`, userID)
+	return err
 }
 
 // Register mounts the /api/kb surface and (when Deps.Chat is set) registers

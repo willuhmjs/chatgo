@@ -157,6 +157,34 @@ func (r *UsersRepo) SetPassword(ctx context.Context, id, hash string) error {
 	return affected(res, err)
 }
 
+// Delete hard-removes a user. Their FK-linked rows cascade with the row
+// (sessions, folders, tags, chats→messages→sources/ratings, files,
+// api_tokens, prompts, notes); the settings table has no FK, so the user's
+// namespaced me-settings rows ("me.<id>.<key>" — theme, presets, model
+// prefs…) are removed here, or they would outlive the account forever.
+// v2 planes whose tables lack the FK (kb, memories) and any on-disk blobs
+// are cleaned by the caller's pre-delete hook (see apimgr.SetUserDeleteHook).
+func (r *UsersRepo) Delete(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort after commit
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM settings WHERE key = ?1 OR key LIKE ?2`,
+		"me."+id, "me."+id+".%"); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?1`, id)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return affected(res, nil)
+}
+
 func affected(res sql.Result, err error) error {
 	if err != nil {
 		return err

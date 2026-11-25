@@ -11,7 +11,7 @@
   import { ACCENTS, accent, setAccent } from '$lib/accent.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import { logout } from '$lib/session.svelte.js';
-  import { ApiError, importChats, listChats } from '$lib/api';
+  import { ApiError, deleteMe, importChats, listChats } from '$lib/api';
   import type { Chat } from '$lib/api';
   import { changePassword, getSendOnEnter, logoutEverywhere, setMeName, setSendOnEnter } from '$lib/api-shell';
   import {
@@ -410,6 +410,20 @@
       /* still drop local state */
     }
     session.user = null;
+    navigate('/login');
+  }
+
+  // ----- account: deletion (danger zone, OWUI "delete personal account") -----
+  let confirmDeleteMe = $state(false);
+
+  async function doDeleteAccount() {
+    try {
+      await deleteMe();
+    } catch (e) {
+      push(e instanceof ApiError ? e.message : 'Could not delete the account', 'error');
+      throw e; // keep the confirm dialog open (Confirm.svelte contract)
+    }
+    session.user = null; // server killed the row (and with it every session)
     navigate('/login');
   }
 
@@ -876,6 +890,14 @@
         >
           Sign out everywhere
         </button>
+        <button
+          class="{btn} ml-auto"
+          style="background:transparent; color:var(--danger)"
+          title="Permanently delete your account and all of your data"
+          onclick={() => (confirmDeleteMe = true)}
+        >
+          <Trash2 size={13} /> Delete account
+        </button>
       </div>
     </section>
 
@@ -1170,6 +1192,15 @@
   confirmLabel="Sign out"
   danger
   onconfirm={doLogoutEverywhere}
+/>
+
+<Confirm
+  bind:open={confirmDeleteMe}
+  title="Delete your account?"
+  message="Everything is removed immediately and permanently: your chats, files, knowledge collections, notes, memories, prompts and API tokens. There is no undo and no export afterwards — download your data first if you want to keep it."
+  confirmLabel="Delete forever"
+  danger
+  onconfirm={doDeleteAccount}
 />
 
 <Modal bind:open={chatsOpen} title="Extract memories from a chat">

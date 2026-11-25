@@ -38,12 +38,34 @@
   import Check from 'lucide-svelte/icons/check';
   import ArrowUp from 'lucide-svelte/icons/arrow-up';
   import Square from 'lucide-svelte/icons/square';
+  import FileText from 'lucide-svelte/icons/file-text';
   import X from 'lucide-svelte/icons/x';
   import LoaderCircle from 'lucide-svelte/icons/loader-circle';
 
   const MAX_IMAGES = 4;
   const MAX_BYTES = 20 * 1024 * 1024;
   const MAX_LINES = 10;
+  // Inline text-file attachments (OWUI parity, zero server cost: bytes are
+  // read client-side and ride inside the message as a fenced block).
+  const MAX_TEXT_FILES = 4;
+  const MAX_TEXT_BYTES = 100 * 1024;
+  const TEXT_EXT = new Set([
+    'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini',
+    'log', 'xml', 'html', 'htm', 'css', 'scss', 'js', 'mjs', 'jsx', 'ts', 'tsx', 'vue',
+    'svelte', 'py', 'go', 'rs', 'rb', 'php', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cs',
+    'swift', 'sh', 'bash', 'zsh', 'fish', 'sql', 'graphql', 'env', 'conf', 'lua',
+  ]);
+  const TEXT_ACCEPT =
+    '.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.toml,.ini,.log,.xml,.html,.htm,.css,.scss,.js,.mjs,.jsx,.ts,.tsx,.vue,.svelte,.py,.go,.rs,.rb,.php,.java,.kt,.c,.h,.cpp,.hpp,.cs,.swift,.sh,.bash,.zsh,.fish,.sql,.graphql,.env,.conf,.lua';
+
+  function extOf(name: string): string {
+    const i = name.lastIndexOf('.');
+    return i > 0 ? name.slice(i + 1).toLowerCase() : '';
+  }
+  function isTextFile(f: File): boolean {
+    if (f.type.startsWith('image/')) return false;
+    return f.type.startsWith('text/') || f.type === 'application/json' || TEXT_EXT.has(extOf(f.name));
+  }
 
   interface Attachment {
     id: string;
@@ -53,6 +75,8 @@
     status: 'uploading' | 'done' | 'error';
     fileId?: string;
     error?: string;
+    /** inline text-file content (read client-side); present only on text chips */
+    text?: string;
   }
 
   let {
@@ -276,8 +300,16 @@
     const images = attachments
       .filter((a) => a.status === 'done' && a.fileId)
       .map((a) => ({ file_id: a.fileId as string }));
+    // Inline text files ride inside the message body as fenced blocks, so
+    // they survive reload/branching and are searchable — no server storage.
+    let content = text;
+    for (const a of attachments) {
+      if (a.status !== 'done' || a.text === undefined) continue;
+      const fence = a.text.includes('```') ? '````' : '```';
+      content += `\n\nAttached file ${a.name}:\n${fence}\n${a.text}\n${fence}`;
+    }
     onsend({
-      content: text,
+      content,
       images: images.length ? images : undefined,
       search: capabilities.search && searchOn ? true : undefined,
     });
@@ -289,38 +321,73 @@
     attachments = [];
   }
 
-  // ---------- image attachments ----------
+  // ---------- attachments (images upload; text files read inline) ----------
   function addFiles(list: FileList | File[]): void {
     for (const f of Array.from(list)) {
-      if (!f.type.startsWith('image/')) continue;
-      if (attachments.length >= MAX_IMAGES) {
-        toast(`Max ${MAX_IMAGES} images per message`, 'error');
-        return;
-      }
-      if (f.size > MAX_BYTES) {
-        toast(`${f.name} is ${formatBytes(f.size)} (20 MB limit)`, 'error');
+      if (f.type.startsWith('image/')) {
+        addImage(f);
         continue;
       }
-      const att: Attachment = {
+      if (isTextFile(f)) {
+        void addTextFile(f);
+      }
+      // anything else (pdf, office, audio…): silently ignored, matching the
+      // previous behavior for non-images — server-side ingest lives in KB.
+    }
+  }
+
+  function addImage(f: File): void {
+    if (attachments.length >= MAX_IMAGES) {
+      toast(`Max ${MAX_IMAGES} images per message`, 'error');
+      return;
+    }
+    if (f.size > MAX_BYTES) {
+      toast(`${f.name} is ${formatBytes(f.size)} (20 MB limit)`, 'error');
+      return;
+    }
+    const att: Attachment = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: f.name || 'pasted.png',
+      size: f.size,
+      previewUrl: URL.createObjectURL(f),
+      status: 'uploading',
+    };
+    attachments.push(att);
+    const proxy = attachments[attachments.length - 1];
+    api
+      .uploadFile(f, chat?.id)
+      .then((meta) => {
+        proxy.status = 'done';
+        proxy.fileId = meta.id;
+      })
+      .catch((err: unknown) => {
+        proxy.status = 'error';
+        proxy.error = String((err as Error)?.message ?? 'upload failed');
+        toast(`Upload failed: ${proxy.error}`, 'error');
+      });
+  }
+
+  async function addTextFile(f: File): Promise<void> {
+    if (attachments.filter((a) => a.text !== undefined).length >= MAX_TEXT_FILES) {
+      toast(`Max ${MAX_TEXT_FILES} files per message`, 'error');
+      return;
+    }
+    if (f.size > MAX_TEXT_BYTES) {
+      toast(`${f.name} is ${formatBytes(f.size)} (100 KB text limit — use Knowledge for big docs)`, 'error');
+      return;
+    }
+    try {
+      const text = await f.text();
+      attachments.push({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name: f.name || 'pasted.png',
+        name: f.name || 'file.txt',
         size: f.size,
-        previewUrl: URL.createObjectURL(f),
-        status: 'uploading',
-      };
-      attachments.push(att);
-      const proxy = attachments[attachments.length - 1];
-      api
-        .uploadFile(f, chat?.id)
-        .then((meta) => {
-          proxy.status = 'done';
-          proxy.fileId = meta.id;
-        })
-        .catch((err: unknown) => {
-          proxy.status = 'error';
-          proxy.error = String((err as Error)?.message ?? 'upload failed');
-          toast(`Upload failed: ${proxy.error}`, 'error');
-        });
+        previewUrl: '', // text chips render an icon, not a thumbnail
+        status: 'done',
+        text,
+      });
+    } catch {
+      toast(`Could not read ${f.name}`, 'error');
     }
   }
 
@@ -332,7 +399,7 @@
 
   function onPaste(e: ClipboardEvent): void {
     const files = e.clipboardData?.files;
-    if (files && files.length && Array.from(files).some((f) => f.type.startsWith('image/'))) {
+    if (files && files.length && Array.from(files).some((f) => f.type.startsWith('image/') || isTextFile(f))) {
       e.preventDefault();
       addFiles(files);
     }
@@ -640,7 +707,11 @@
         <div class="mb-1.5 flex flex-col items-start gap-1.5">
           {#each attachments as a (a.id)}
             <div class="att">
-              <img src={a.previewUrl} alt={a.name} />
+              {#if a.text !== undefined}
+                <FileText size={20} style="color:var(--muted); flex:none" />
+              {:else}
+                <img src={a.previewUrl} alt={a.name} />
+              {/if}
               <span class="attname">{a.name}</span>
               {#if a.status === 'uploading'}
                 <LoaderCircle size={13} class="animate-spin" style="color:var(--muted); flex:none" />
@@ -684,7 +755,7 @@
         <input
           bind:this={fileInput}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
+          accept={`image/png,image/jpeg,image/webp,image/gif,${TEXT_ACCEPT}`}
           multiple
           class="hidden"
           onchange={(e) => {

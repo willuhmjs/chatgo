@@ -290,6 +290,7 @@ func registerChats(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("POST /api/chats/{id}/unarchive", d.handleArchiveChat)
 	mux.HandleFunc("POST /api/chats/{id}/messages/{msgId}/retract", d.handleRetractMessage)
 	registerSuggest(mux, d)
+	registerTitle(mux, d)
 }
 
 // POST /api/chats/{id}/archive · POST /api/chats/{id}/unarchive —

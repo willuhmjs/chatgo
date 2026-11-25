@@ -21,7 +21,10 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
   the `/onboarding` admin wizard walks provider → task model → invites /
   approvals.
 - **Multi-user with roles** — `admin` / `user` / `pending`, admin user
-  management, approval flow for new signups.
+  management, approval flow for new signups. Admins can delete an account
+  outright (chats, files, knowledge, memories, tokens — everything, disk
+  blobs included; the last admin is protected); every signed-in user can
+  delete *their own* account from settings (`DELETE /api/me`).
 - **OIDC SSO** — standard code flow (+nonce); works out of the box with
   Authelia (`OIDC_ISSUER=https://idp.example.com`), Keycloak, Authentik, etc.
   Local email/password auth (bcrypt) alongside or instead.
@@ -29,13 +32,18 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
   OpenAI-compatible backends; model list sync (`POST /api/providers/{id}/sync`),
   per-chat model & params.
 - **SSE streaming** with token-by-token render, sources/citations, usage, and
-  regenerate; heartbeats survive proxies.
+  regenerate; heartbeats survive proxies. Finished answers show their token
+  counts and (for the stream you watched) a live tokens-per-second readout,
+  like Open WebUI's.
 - **Message branching** — ChatGPT/Open WebUI-style version tree: edit or
   regenerate lands as a *sibling* (history never truncates), a `‹1/2›` pager
   switches versions, and switching lands on the newest continuation of that
   branch (`POST /api/chats/{id}/branch`). Truncated answers can be continued
   in place; queued sends drain automatically after a stream settles.
-- **Vision** — attach png/jpg/webp/gif images, sent as data-URL image parts.
+- **Vision + inline files** — attach png/jpg/webp/gif images, sent as
+  data-URL image parts; drop or paste text/code files (txt, md, csv, json,
+  py, go, … ≤100 KB) and their contents ride inside the message as fenced
+  blocks — zero server storage, searchable, branch-safe.
 - **Web search** — optional [SearXNG](https://docs.searxng.org/) backend;
   per-message toggle injects cited context and shows source chips.
 - **Knowledge bases (RAG)** — upload text documents (md/csv/json/code…) into
@@ -56,8 +64,10 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
 - **Full-text chat search, folders, tags & share links** — SQLite FTS5 over
   all your messages; organize by folder/tag, pin chats; read-only public view
   of a chat at `/s/<token>` (file attachments stripped).
-- **API tokens + OpenAI-compat proxy** — issue `ck_…` tokens and call
-  `POST /v1/chat/completions` against ChatGo itself.
+- **API tokens + OpenAI-compat proxy** — issue `ck_…` tokens, call
+  `GET /v1/models` and `POST /v1/chat/completions` against ChatGo itself;
+  listings and calls are scoped to the token's role (per-model admin gating
+  enforced on the proxy path too — gated models answer plain 404).
 - **Image generation** — `POST /api/images/generate` proxies an
   OpenAI-compatible images endpoint; results land in your file gallery.
 - **TOTP 2FA + admin audit log** — optional per-user authenticator
@@ -68,7 +78,8 @@ feels like ChatGPT / Open WebUI, weighs under 128 MiB of RAM.
   chips) with a per-user picker.
 - **Command palette** (⌘K), keyboard shortcuts, compare two models
   side-by-side, artifact/image gallery, chat summarizing + context
-  compaction for long threads.
+  compaction for long threads, and one-click **regenerate-title** (chat
+  menu → task model re-names the thread).
 - **Voice call mode** — hands-free dictation → model → read-aloud loop, fully
   browser-side (Web Speech API); reuses the normal chat turn, so zero added
   server memory. Mic-launch from any composer or the palette.

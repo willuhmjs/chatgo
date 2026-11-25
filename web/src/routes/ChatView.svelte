@@ -125,6 +125,9 @@
   let tokenBuf = '';
   let rafId = 0;
   let aborted = false;
+  /** wall-clock start of the current stream, for the tok/s readout (local-only:
+   *  the server persists token counts but not the clock; OWUI parity hover) */
+  let streamT0 = 0;
 
   // Esc-Esc retract request from the Composer (armed for the CURRENT stream
   // only; the stop button never sets it). retractChat pins the chat that
@@ -275,6 +278,7 @@
       streaming: true,
     });
     streamMsg = messages[messages.length - 1];
+    streamT0 = Date.now();
     return streamMsg;
   }
 
@@ -313,6 +317,9 @@
         if (u && streamMsg) {
           streamMsg.tokens_in = u.in;
           streamMsg.tokens_out = u.out;
+        }
+        if (streamMsg && streamT0) {
+          streamMsg.duration_ms = Date.now() - streamT0; // powers the tok/s readout
         }
       },
       error: (data: unknown) => {

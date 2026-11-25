@@ -23,6 +23,7 @@
   import Download from 'lucide-svelte/icons/download';
   import ImageDown from 'lucide-svelte/icons/image-down';
   import Archive from 'lucide-svelte/icons/archive';
+  import Sparkles from 'lucide-svelte/icons/sparkles';
   import Plus from 'lucide-svelte/icons/plus';
   import X from 'lucide-svelte/icons/x';
 
@@ -128,6 +129,27 @@
         toast('Share link removed', 'success', 2000);
       })
       .catch((err: unknown) => toast(`Could not unshare: ${msg(err)}`, 'error'))
+      .finally(() => (busy = false));
+  }
+
+  // ---------------- title ----------------
+
+  /** OWUI "Regenerate Title": task model re-names the thread from its opening
+   *  question; the sidebar dot/label and tab title follow via the same events
+   *  the SSE `title` frame uses (see ChatView). */
+  function doRegenTitle(): void {
+    if (!chat || busy) return;
+    const cid = chat.id;
+    busy = true;
+    api
+      .regenerateTitle(cid)
+      .then(({ title }) => {
+        if (!title) return;
+        announce({ ...chat, title } as Chat);
+        window.dispatchEvent(new CustomEvent('chatgo:title', { detail: { chat_id: cid, title } }));
+        toast('Title regenerated', 'success', 2000);
+      })
+      .catch((err: unknown) => toast(`Could not regenerate title: ${msg(err)}`, 'error'))
       .finally(() => (busy = false));
   }
 
@@ -254,6 +276,11 @@
       {/if}
 
       <div class="my-1 border-t" style="border-color:var(--border)"></div>
+
+      <MenuItem onclick={() => void doRegenTitle()} {close}>
+        {#snippet icon()}<Sparkles size={14} />{/snippet}
+        Regenerate title
+      </MenuItem>
 
       <MenuItem onclick={() => exportChat('md')} {close}>
         {#snippet icon()}<Download size={14} />{/snippet}

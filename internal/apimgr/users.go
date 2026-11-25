@@ -1,6 +1,7 @@
 package apimgr
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -23,6 +24,108 @@ func registerUsers(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("POST /api/users/{id}/approve", h.handleApprove)
 	mux.HandleFunc("PUT /api/users/{id}/role", h.handleRole)
 	mux.HandleFunc("POST /api/users/{id}/reset-2fa", h.handleReset2FA)
+	mux.HandleFunc("DELETE /api/users/{id}", h.handleDelete)
+	mux.HandleFunc("DELETE /api/me", h.handleMeDelete)
+}
+
+// userDeleteHook lets the integrator plug cross-plane cleanup into account
+// deletion (kb collections, memories, on-disk file blobs — tables that
+// feature planes own without an FK to users, so the store cascade cannot
+// reach them). Runs BEFORE the user row goes away; a failure aborts the
+// delete (nothing removed yet, retryable). Same integrator-binding pattern
+// as chat.RegisterEnricher / the memory enricher in server.go.
+var userDeleteHook func(ctx context.Context, userID string) error
+
+// SetUserDeleteHook installs that cleanup (nil clears it). Called once at
+// boot; not for runtime use.
+func SetUserDeleteHook(fn func(ctx context.Context, userID string) error) {
+	userDeleteHook = fn
+}
+
+// deleteUser runs the full removal for an already-validated target:
+// cross-plane cleanup hook → row delete (FK cascade takes the core tables,
+// Users.Delete also clears me.<id>.* settings) → audit trail entry.
+func (h *usersH) deleteUser(r *http.Request, target, actor *store.User) error {
+	ctx := r.Context()
+	if userDeleteHook != nil {
+		if err := userDeleteHook(ctx, target.ID); err != nil {
+			return err
+		}
+	}
+	if err := h.d.Store.Users.Delete(ctx, target.ID); err != nil {
+		return err
+	}
+	audit.Record(ctx, h.d.Store.DB, actor, "user.delete",
+		"user_id="+target.ID+" email="+target.Email, h.d.Auth.RequestIP(r))
+	return nil
+}
+
+// handleDelete: DELETE /api/users/{id} — admin removes an account outright
+// (Open WebUI parity). Guards: no self-delete here (use /api/me — the
+// profile path, which keeps the "who pulled the trigger on themselves"
+// audit line honest), and never the last admin (same zero-admin guard as
+// role demotion).
+func (h *usersH) handleDelete(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.d.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == actor.ID {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "delete your own account from your settings (DELETE /api/me)")
+		return
+	}
+	target, err := h.d.Store.Users.GetByID(r.Context(), id)
+	if err != nil {
+		userLookupFail(w, r, err)
+		return
+	}
+	if wroteErr := h.lastAdminGuard(w, r, target); wroteErr {
+		return
+	}
+	if err := h.deleteUser(r, target, actor); err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleMeDelete: DELETE /api/me — self-service account deletion (OWUI
+// "delete personal account"). Same cleanup path; the session cookie is
+// cleared explicitly even though the sessions rows cascade away with the
+// user (a dead-but-still-sent cookie would only confuse the browser).
+func (h *usersH) handleMeDelete(w http.ResponseWriter, r *http.Request) {
+	u, ok := h.d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if wroteErr := h.lastAdminGuard(w, r, u); wroteErr {
+		return
+	}
+	if err := h.deleteUser(r, u, u); err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	h.d.Auth.ClearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// lastAdminGuard answers 400 when removing target would leave the instance
+// with zero admins. Returns true when it wrote the error response.
+func (h *usersH) lastAdminGuard(w http.ResponseWriter, r *http.Request, target *store.User) bool {
+	if target.Role != store.RoleAdmin {
+		return false
+	}
+	admins, err := h.countAdmins(r)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return true
+	}
+	if admins <= 1 {
+		httpx.ErrorJSON(w, http.StatusBadRequest, "cannot delete the last admin")
+		return true
+	}
+	return false
 }
 
 // userJSON mirrors web/src/lib/api.ts User (no password_hash field exists —

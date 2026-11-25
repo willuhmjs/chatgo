@@ -129,6 +129,18 @@ import Globe from 'lucide-svelte/icons/globe';
   // pre-first-token "thinking" beat: placeholder row with no content yet
   const thinking = $derived(!!message.streaming && !message.content && !message.error);
 
+  // tokens/sec from the locally-timed stream (duration_ms never survives a
+  // reload — reloaded rows fall back to the plain count, OWUI does the same)
+  const tps = $derived(
+    message.duration_ms && message.tokens_out
+      ? message.tokens_out / (message.duration_ms / 1000)
+      : 0,
+  );
+  const tokTitle = $derived(
+    `${message.tokens_in ?? 0} prompt → ${message.tokens_out ?? 0} completion tokens` +
+      (message.duration_ms ? ` · ${(message.duration_ms / 1000).toFixed(1)}s` : ''),
+  );
+
   function doCopy(): void {
     void copyText(message.content ?? '').then((ok) =>
       toast(ok ? 'Copied to clipboard' : 'Copy failed', ok ? 'success' : 'error', 2000),
@@ -400,7 +412,9 @@ import Globe from 'lucide-svelte/icons/globe';
           {/if}
           <time class="timechip" title={fmtDateTime(message.created_at)}>{fmtClock(message.created_at)}</time>
           {#if message.tokens_out}
-            <span class="tokcount">{message.tokens_in ?? 0}→{message.tokens_out} tok</span>
+            <span class="tokcount" title={tokTitle}>
+              {message.tokens_in ?? 0}→{message.tokens_out} tok{#if tps} · {tps.toFixed(1)} tok/s{/if}
+            </span>
           {/if}
         </div>
       {/if}

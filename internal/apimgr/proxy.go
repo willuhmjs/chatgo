@@ -47,6 +47,7 @@ type proxyH struct{ d *Deps }
 func registerProxy(mux *http.ServeMux, d *Deps) {
 	h := &proxyH{d: d}
 	mux.HandleFunc("POST /v1/chat/completions", h.handle)
+	mux.HandleFunc("GET /v1/models", h.handleModels)
 }
 
 // ---------- OpenAI wire shapes ----------
@@ -171,7 +172,7 @@ func (h *proxyH) handle(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Model resolution: "prov:model" (provider id or name) or a model id
 	// that is unique across enabled models.
-	prov, modelID, err := h.resolveModel(r.Context(), req.Model)
+	prov, modelID, err := h.resolveModel(r.Context(), req.Model, user.Role == store.RoleAdmin)
 	if err != nil {
 		var pe *proxyError
 		if errors.As(err, &pe) {
@@ -218,6 +219,57 @@ func (h *proxyH) handle(w http.ResponseWriter, r *http.Request) {
 		// Complete has no usage channel (contract interface); zeros, not lies.
 		Usage: chatUsage{},
 	})
+}
+
+// GET /v1/models — OpenAI-shaped catalog of what THIS caller may call:
+// enabled models of enabled providers, minus min_role='admin' rows for
+// non-admins (same hiding rule as GET /api/models and resolveModel, so the
+// list never advertises an id the same token would get 404 on). Ids are
+// "ProviderName:model_id"; a bare model_id is listed additionally when it is
+// unique among the caller's visible set (both forms resolve server-side).
+func (h *proxyH) handleModels(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	ms, err := h.d.Store.Models.EnabledModels(r.Context())
+	if err != nil {
+		slog.Error("proxy: /v1/models listing failed", "err", err)
+		openAIError(w, http.StatusInternalServerError, "model listing failed", "server_error", "")
+		return
+	}
+	admin := user.Role == store.RoleAdmin
+	// Provider created_at for the `created` field (one cheap query).
+	created := map[string]int64{}
+	if provs, err := h.d.Store.Providers.List(r.Context()); err == nil {
+		for _, p := range provs {
+			created[p.ID] = p.CreatedAt
+		}
+	}
+	// Bare-id uniqueness over the caller-visible subset.
+	visible := make([]store.ModelWithProvider, 0, len(ms))
+	bareCount := map[string]int{}
+	for _, m := range ms {
+		if !admin && m.MinRole == "admin" {
+			continue
+		}
+		visible = append(visible, m)
+		bareCount[m.ModelID]++
+	}
+	data := make([]map[string]any, 0, len(visible)*2)
+	for _, m := range visible {
+		data = append(data, map[string]any{
+			"id": m.ProviderName + ":" + m.ModelID, "object": "model",
+			"created": created[m.ProviderID], "owned_by": m.ProviderName,
+		})
+		if bareCount[m.ModelID] == 1 {
+			data = append(data, map[string]any{
+				"id": m.ModelID, "object": "model",
+				"created": created[m.ProviderID], "owned_by": m.ProviderName,
+			})
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 // authenticate resolves the caller (Bearer ck_ token owner, or an attached
@@ -281,13 +333,17 @@ func (h *proxyH) authenticateIdentity(w http.ResponseWriter, r *http.Request) (*
 // enabled=1 — otherwise any "prov:whatever" string would reach upstream
 // (hidden/never-listed models reachable, cost exposure). A bare model id must
 // be unique among enabled models of enabled providers.
-func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Provider, string, error) {
+//
+// admin mirrors the caller's role: models gated with min_role='admin' are
+// invisible to everyone else — answered as plain "not found" (404), matching
+// GET /api/models, which hides them outright rather than leaking existence.
+func (h *proxyH) resolveModel(ctx context.Context, requested string, admin bool) (*store.Provider, string, error) {
 	if provPart, modelID, ok := strings.Cut(requested, ":"); ok && provPart != "" && modelID != "" {
 		p, err := h.lookupProvider(ctx, provPart)
 		if err != nil {
 			return nil, "", err
 		}
-		if err := h.checkCachedModel(ctx, p, modelID); err != nil {
+		if err := h.checkCachedModel(ctx, p, modelID, admin); err != nil {
 			return nil, "", err
 		}
 		return p, modelID, nil
@@ -303,6 +359,9 @@ func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Pro
 	var hit *store.ModelWithProvider
 	n := 0
 	for i := range ms {
+		if !admin && ms[i].MinRole == "admin" {
+			continue // gated model: does not exist for this caller
+		}
 		if ms[i].ModelID == requested {
 			n++
 			hit = &ms[i]
@@ -310,7 +369,9 @@ func (h *proxyH) resolveModel(ctx context.Context, requested string) (*store.Pro
 	}
 	switch {
 	case n == 0:
-		return nil, "", fmt.Errorf("model %q not found", requested)
+		// OpenAI answers 404 model_not_found for unknown models; match it.
+		return nil, "", &proxyError{http.StatusNotFound,
+			fmt.Sprintf("model %q not found", requested), "invalid_request_error", "model_not_found"}
 	case n > 1:
 		return nil, "", fmt.Errorf("model %q is ambiguous — use \"provider:%s\"", requested, requested)
 	}
@@ -368,8 +429,11 @@ func unreadableKeyError(idOrName string) error {
 
 // checkCachedModel enforces the admin models cache for the explicit
 // "provider:model" form: the exact model id must be cached for this provider
-// (else 404 — never synced/listed) and flagged enabled (else 403).
-func (h *proxyH) checkCachedModel(ctx context.Context, p *store.Provider, modelID string) error {
+// (else 404 — never synced/listed), must be flagged enabled (else 403), and
+// must not be min_role='admin' when the caller is not an admin (404 — hidden,
+// not "forbidden", so the proxy never leaks a gated model's existence;
+// mirrors GET /api/models hiding).
+func (h *proxyH) checkCachedModel(ctx context.Context, p *store.Provider, modelID string, admin bool) error {
 	ms, err := h.d.Store.Models.ForProvider(ctx, p.ID)
 	if err != nil {
 		slog.Error("proxy: model cache lookup failed", "provider_id", p.ID, "err", err)
@@ -378,6 +442,10 @@ func (h *proxyH) checkCachedModel(ctx context.Context, p *store.Provider, modelI
 	for _, m := range ms {
 		if m.ModelID != modelID {
 			continue
+		}
+		if !admin && m.MinRole == "admin" {
+			return &proxyError{http.StatusNotFound,
+				fmt.Sprintf("model %q not found for provider %q", modelID, p.Name), "invalid_request_error", "model_not_found"}
 		}
 		if !m.Enabled {
 			return &proxyError{http.StatusForbidden, "model not available", "permission_error", "model_not_available"}

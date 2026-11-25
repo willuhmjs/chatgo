@@ -4,6 +4,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -99,12 +100,77 @@ func (s *Service) applyTitle(ctx context.Context, chatID, title string) bool {
 	if chat.Title != "" && chat.Title != defaultChatTitle {
 		return false // user renamed (or already titled) in the meantime
 	}
+	return s.setTitle(ctx, chat, title)
+}
+
+// setTitle writes title onto a freshly-read chat row. Kept separate from
+// applyTitle so the regenerate path (which by definition replaces an
+// existing title) shares the same re-read-then-write discipline.
+func (s *Service) setTitle(ctx context.Context, chat *store.Chat, title string) bool {
 	chat.Title = title
 	if err := s.Store.Chats.Update(ctx, chat); err != nil {
-		slog.Warn("chat: apply title failed", "chat_id", chatID, "error", err)
+		slog.Warn("chat: apply title failed", "chat_id", chat.ID, "error", err)
 		return false
 	}
 	return true
+}
+
+// ErrTitleUnavailable: the task model is unset/refusing/failed, or the chat
+// has no user message to name. Maps to HTTP 503 (same shape as suggestions).
+var ErrTitleUnavailable = errors.New("chat: title generation unavailable")
+
+// RegenerateTitle is the Open WebUI "Regenerate Title" action: ask the task
+// model for a fresh title for the chat and persist it over whatever is
+// there (unlike the auto-title path, which only fills the default). userID
+// must own the chat (no-existence-leak rule as Send/SuggestNext). Unlike
+// the auto-title fallback, a missing/failing task model is an ERROR here —
+// clicking regenerate and silently getting a truncated message would be
+// indistinguishable from a broken button.
+func (s *Service) RegenerateTitle(ctx context.Context, chatID, userID string) (string, error) {
+	chat, err := s.loadChat(ctx, userID, chatID)
+	if err != nil {
+		return "", err
+	}
+	providerID, modelID, ok := s.taskModel(ctx)
+	if !ok {
+		return "", ErrTitleUnavailable
+	}
+	prov, err := s.taskProvider(ctx, providerID, modelID)
+	if err != nil {
+		return "", ErrTitleUnavailable
+	}
+	msgs, err := s.Store.Messages.CurrentPath(ctx, chatID, chat.LeafID, suggestHistoryLimit)
+	if err != nil {
+		return "", err
+	}
+	seed := ""
+	for i := range msgs {
+		if msgs[i].Role == "user" && strings.TrimSpace(msgs[i].Content) != "" {
+			seed = msgs[i].Content
+			break // the opening question names the thread best
+		}
+	}
+	if seed == "" {
+		return "", ErrTitleUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, backgroundTaskTimeout)
+	defer cancel()
+	out, err := s.Prov.Complete(ctx, prov, modelID, []providers.ChatMessage{
+		{Role: "system", Content: "You name chat threads. Reply with only the title."},
+		{Role: "user", Content: "3-5 word title for: " + seed},
+	})
+	if err != nil {
+		slog.Warn("chat: regenerate title: task model call failed", "error", err)
+		return "", ErrTitleUnavailable
+	}
+	title := cleanTitle(out)
+	if title == "" {
+		return "", ErrTitleUnavailable
+	}
+	if !s.setTitle(ctx, chat, title) {
+		return "", ErrTitleUnavailable
+	}
+	return title, nil
 }
 
 // cleanTitle strips surrounding quotes/whitespace/periods, keeps the first

@@ -97,6 +97,24 @@ func New(d Deps) (*Server, error) {
 	audit.Register(mux, &audit.Deps{DB: d.Store.DB, Auth: d.Auth})
 	imggen.Register(mux, &imggen.Deps{Cfg: d.Cfg, Store: d.Store, Auth: d.Auth, Files: d.Files})
 
+	// Account-deletion cleanup (integrator binding, like the memory enricher
+	// above): kb_collections/memories carry no FK to users (feature-owned
+	// DDL) and uploaded bytes live on disk — the store's FK cascade cannot
+	// reach any of them. The hook runs while the user's rows still exist, so
+	// file paths can be resolved before the blobs are unlinked.
+	apimgr.SetUserDeleteHook(func(ctx context.Context, userID string) error {
+		if err := kb.DeleteUserData(d.Store.DB, userID); err != nil {
+			return err
+		}
+		if err := memory.DeleteUserData(d.Store.DB, userID); err != nil {
+			return err
+		}
+		if d.Files != nil {
+			return d.Files.PurgeUser(ctx, userID)
+		}
+		return nil
+	})
+
 	// SPA fallback (must stay last; /api/* mistakes 404 as JSON below).
 	mux.HandleFunc("GET /", spaHandler(d.Auth))
 

@@ -185,6 +185,8 @@ export const patchChat = (id: string, patch: Partial<Chat>) => req<Chat>('PATCH'
 export const deleteChat = (id: string) => req<void>('DELETE', `/api/chats/${id}`);
 export const shareChat = (id: string) => req<{ token: string }>('POST', `/api/chats/${id}/share`);
 export const unshareChat = (id: string) => req<void>('DELETE', `/api/chats/${id}/share`);
+/** Ask the task model for a fresh chat title (OWUI "Regenerate Title"). */
+export const regenerateTitle = (id: string) => req<{ title: string }>('POST', `/api/chats/${id}/title`);
 export const getShare = (token: string) => req<SharePayload>('GET', `/api/share/${token}`);
 export const setChatFolder = (id: string, folderId: string | null) =>
   req<void>('PUT', `/api/chats/${id}/folder`, { folder_id: folderId });
@@ -427,6 +429,10 @@ export const setSettings = (s: Record<string, string>) => req<Record<string, str
 export const listUsers = () => req<User[]>('GET', '/api/users');
 export const approveUser = (id: string) => req<User>('POST', `/api/users/${id}/approve`);
 export const setUserRole = (id: string, role: string) => req<User>('PUT', `/api/users/${id}/role`, { role });
+/** Admin removes an account outright (chats/files/KB/memories all die with it). */
+export const deleteUser = (id: string) => req<void>('DELETE', `/api/users/${id}`);
+/** Self-service account deletion (the session dies with the account). */
+export const deleteMe = () => req<void>('DELETE', '/api/me');
 
 // ---------- api tokens ----------
 

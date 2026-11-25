@@ -12,6 +12,9 @@ export interface UIMessage extends Message {
   pending?: boolean;
   /** why THIS turn's web search failed (live stream only — see `sources`) */
   search_error?: string;
+  /** stream wall-clock (ms) from placeholder to the `done` event; local to the
+   *  session that streamed it — powers the tok/s readout in MessageRow */
+  duration_ms?: number;
 }
 
 export interface MsgGroup {

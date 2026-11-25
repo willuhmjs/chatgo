@@ -140,6 +140,14 @@ func Init(st *store.Store) error {
 	return nil
 }
 
+// DeleteUserData removes a user's memories (rows + proposals). memories has
+// no FK to users (feature-owned DDL), so account deletion calls this through
+// the integrator's apimgr.SetUserDeleteHook binding.
+func DeleteUserData(db *sql.DB, userID string) error {
+	_, err := db.Exec(`DELETE FROM memories WHERE user_id = ?1`, userID)
+	return err
+}
+
 // Register runs Init and mounts the /api/me/memories surface. A DDL
 // failure is a broken boot, so Register panics rather than serving half a
 // feature (same policy as internal/kb). The enricher is NOT registered

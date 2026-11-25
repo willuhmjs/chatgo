@@ -260,10 +260,11 @@ func TestProxyModelResolution(t *testing.T) {
 		t.Fatalf("bare-id resolve: status=%d got=%q body=%s", rec.Code, fake.gotModel, rec.Body)
 	}
 
-	// Unknown model → 400 (OpenAI error envelope).
+	// Unknown model → 404 model_not_found (OpenAI parity: unknown models are
+	// a 404, not a 400 — same envelope, matches GET /v1/models scoping).
 	rec = httptest.NewRecorder()
 	h.handle(rec, proxyReq(`{"model":"nope","messages":[{"role":"user","content":"x"}]}`, key))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error"`) {
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"model_not_found"`) {
 		t.Fatalf("unknown model: status=%d body=%s", rec.Code, rec.Body)
 	}
 

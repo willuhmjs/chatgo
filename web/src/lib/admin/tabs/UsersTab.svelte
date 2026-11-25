@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCheck, ChevronDown, Copy, Inbox, ShieldOff, Star, UserCheck, Users } from 'lucide-svelte';
+  import { CheckCheck, ChevronDown, Copy, Inbox, ShieldOff, Star, Trash2, UserCheck, Users } from 'lucide-svelte';
   import { session } from '$lib/session.svelte.js';
   import { push } from '$lib/toast.svelte.js';
   import * as admin from '$lib/admin/api-admin';
@@ -30,6 +30,9 @@
   }
   let resetTarget = $state<User | null>(null);
   let confirmReset = $state(false);
+  /** account deletion (DELETE /api/users/{id}) */
+  let deleteTarget = $state<User | null>(null);
+  let confirmDelete = $state(false);
   /** Set after a successful reset — the password exists ONLY in this state. */
   let resetResult = $state<{ email: string; res: Reset2FAResult } | null>(null);
   let resetReveal = $state(false);
@@ -132,6 +135,22 @@
       resetTarget = null;
     } catch (err) {
       push(errMsg(err, 'Could not reset 2FA'), 'error');
+      throw err; // keep the confirm dialog open (Confirm.svelte contract)
+    }
+  }
+
+  // Full account removal (Open WebUI parity): chats, files, KB, memories,
+  // tokens — everything, immediately. Guardrails the server enforces too:
+  // never yourself (that lives in Settings), never the last admin.
+  async function doDeleteUser() {
+    const u = deleteTarget;
+    if (!u) return;
+    try {
+      await admin.deleteUser(u.id);
+      users = users.filter((x) => x.id !== u.id);
+      push(`Deleted ${u.email}`, 'success');
+    } catch (err) {
+      push(errMsg(err, 'Could not delete user'), 'error');
       throw err; // keep the confirm dialog open (Confirm.svelte contract)
     }
   }
@@ -438,17 +457,32 @@
                     </button>
                   </td>
                   <td class="{td} text-right">
-                    <button
-                      class="inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)]"
-                      style="color:var(--danger)"
-                      title="Clear two-factor authentication for {u.email} and sign all their sessions out"
-                      onclick={() => {
-                        resetTarget = u;
-                        confirmReset = true;
-                      }}
-                    >
-                      <ShieldOff size={13} /> Reset 2FA
-                    </button>
+                    <div class="flex items-center justify-end gap-1">
+                      <button
+                        class="inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)]"
+                        style="color:var(--danger)"
+                        title="Clear two-factor authentication for {u.email} and sign all their sessions out"
+                        onclick={() => {
+                          resetTarget = u;
+                          confirmReset = true;
+                        }}
+                      >
+                        <ShieldOff size={13} /> Reset 2FA
+                      </button>
+                      {#if u.id !== me?.id}
+                        <button
+                          class="inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs transition-colors hover:bg-[var(--fill-hover)]"
+                          style="color:var(--danger)"
+                          title="Delete {u.email} and everything they own (chats, files, knowledge, memories)"
+                          onclick={() => {
+                            deleteTarget = u;
+                            confirmDelete = true;
+                          }}
+                        >
+                          <Trash2 size={13} /> Delete
+                        </button>
+                      {/if}
+                    </div>
                   </td>
                 </tr>
 
@@ -603,6 +637,17 @@
   confirmLabel="Reset 2FA"
   danger
   onconfirm={doReset2FA}
+/>
+
+<Confirm
+  bind:open={confirmDelete}
+  title="Delete account"
+  message={deleteTarget
+    ? `Permanently delete ${deleteTarget.email}? Their chats, files, knowledge collections, memories, notes and API tokens are removed immediately. This cannot be undone.`
+    : ''}
+  confirmLabel="Delete account"
+  danger
+  onconfirm={doDeleteUser}
 />
 
 <Modal bind:open={resetReveal} title={resetResult ? `2FA reset — ${resetResult.email}` : '2FA reset'}>
