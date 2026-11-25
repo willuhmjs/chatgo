@@ -702,7 +702,7 @@
 
   <!-- rail: recent chats as icons -->
   {#if rail && !pending}
-    <nav class="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-2" aria-label="Chats (icons)">
+    <nav class="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2 pb-2" aria-label="Chats (icons)">
       {#each chats.slice(0, 30) as c (c.id)}
         <Tooltip text={c.title || 'Untitled'} side="right">
           <a
@@ -716,7 +716,7 @@
               ? 'bg-[var(--acc-tint)] text-[var(--acc)]'
               : ''}"
           >
-            <MessageSquare class="size-4" />
+            <MessageSquare class="size-[18px]" />
           </a>
         </Tooltip>
       {/each}
