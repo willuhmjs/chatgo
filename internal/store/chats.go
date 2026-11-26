@@ -237,3 +237,32 @@ func (r *ChatsRepo) SetArchived(ctx context.Context, id string, archived bool) e
 		 WHERE id = ?1 AND deleted_at IS NULL`, id, boolInt(archived), at)
 	return affected(res, err)
 }
+
+// ArchiveAll archives every live, unarchived chat the user owns and returns
+// how many moved. Already-archived chats keep their original stamp.
+func (r *ChatsRepo) ArchiveAll(ctx context.Context, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE chats SET archived_at = ?2
+		 WHERE user_id = ?1 AND deleted_at IS NULL AND archived_at IS NULL`, userID, nowUnix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteAll soft-deletes every live chat the user owns in one lane
+// (archived=true → only archived chats, false → only the active inbox)
+// and returns how many were deleted.
+func (r *ChatsRepo) DeleteAll(ctx context.Context, userID string, archived bool) (int64, error) {
+	lane := "archived_at IS NULL"
+	if archived {
+		lane = "archived_at IS NOT NULL"
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE chats SET deleted_at = ?2
+		 WHERE user_id = ?1 AND deleted_at IS NULL AND `+lane, userID, nowUnix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

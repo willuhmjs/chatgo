@@ -279,6 +279,43 @@
     }
   }
 
+  async function archiveAll() {
+    const ok = await confirmDialog({
+      title: 'Archive all chats?',
+      message: 'Every chat leaves the sidebar but keeps everything; restore any from Archived.',
+      confirmLabel: 'Archive all',
+    });
+    if (!ok) return;
+    try {
+      const { count } = await api.archiveAllChats();
+      chats = [];
+      total = 0;
+      if (activeId) navigate('/');
+      push(`${count} chat${count === 1 ? '' : 's'} archived`, 'success');
+    } catch (e) {
+      push(e instanceof ApiError ? e.message : 'Archive failed', 'error');
+    }
+  }
+
+  async function deleteAll() {
+    const ok = await confirmDialog({
+      title: archivedView ? 'Delete all archived chats?' : 'Delete all chats?',
+      message: `${archivedView ? 'All archived' : 'All active'} chats will be permanently deleted. This cannot be undone.`,
+      confirmLabel: 'Delete all',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const { count } = await api.deleteAllChats(archivedView);
+      if (!archivedView && activeId) navigate('/');
+      chats = [];
+      total = 0;
+      push(`${count} chat${count === 1 ? '' : 's'} deleted`, 'success');
+    } catch (e) {
+      push(e instanceof ApiError ? e.message : 'Delete failed', 'error');
+    }
+  }
+
   function startMove(c: Chat) {
     movingChat = c;
     moveChoice = c.folder_id ?? '';
@@ -698,6 +735,28 @@
       {#if archivedView}<ArrowLeft class="size-4 shrink-0" />{:else}<Archive class="size-4 shrink-0" />{/if}
       <span>{archivedView ? 'Back to chats' : 'Archived'}</span>
     </button>
+    {#if chats.length > 0}
+      <div class="mx-2 mb-1 flex items-center gap-1">
+        {#if !archivedView}
+          <button
+            type="button"
+            class="flex h-8 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-[var(--faint)] transition-colors hover:bg-[var(--fill-hover)] hover:text-[var(--muted)] {rowFocus}"
+            onclick={() => void archiveAll()}
+          >
+            <Archive class="size-4 shrink-0" />
+            <span>Archive all</span>
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="flex h-8 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-[var(--faint)] transition-colors hover:bg-[var(--fill-hover)] hover:text-red-400 {rowFocus}"
+          onclick={() => void deleteAll()}
+        >
+          <Trash2 class="size-4 shrink-0" />
+          <span>Delete all</span>
+        </button>
+      </div>
+    {/if}
   {/if}
 
   <!-- rail: recent chats as icons -->

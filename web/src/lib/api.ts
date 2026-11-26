@@ -182,6 +182,11 @@ export const listChats = (q: ChatListQuery = {}) => {
 export const createChat = (body: Partial<Chat> = {}) => req<Chat>('POST', '/api/chats', body);
 export const getChat = (id: string) => req<Chat>('GET', `/api/chats/${id}`);
 export const patchChat = (id: string, patch: Partial<Chat>) => req<Chat>('PATCH', `/api/chats/${id}`, patch);
+export const archiveAllChats = () =>
+  req<{ count: number }>('POST', '/api/chats/archive-all');
+/** Delete every chat in one lane (active by default, the archive when true). */
+export const deleteAllChats = (archived = false) =>
+  req<{ count: number }>('DELETE', `/api/chats${archived ? '?archived=1' : ''}`);
 export const deleteChat = (id: string) => req<void>('DELETE', `/api/chats/${id}`);
 export const shareChat = (id: string) => req<{ token: string }>('POST', `/api/chats/${id}/share`);
 export const unshareChat = (id: string) => req<void>('DELETE', `/api/chats/${id}/share`);

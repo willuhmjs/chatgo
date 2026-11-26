@@ -283,6 +283,8 @@ func registerChats(mux *http.ServeMux, d *Deps) {
 	mux.HandleFunc("GET /api/chats", d.handleListChats)
 	mux.HandleFunc("POST /api/chats", d.handleCreateChat)
 	mux.HandleFunc("POST /api/chats/import", d.handleImportChats)
+	mux.HandleFunc("POST /api/chats/archive-all", d.handleArchiveAllChats)
+	mux.HandleFunc("DELETE /api/chats", d.handleDeleteAllChats)
 	mux.HandleFunc("GET /api/chats/{id}", d.handleGetChat)
 	mux.HandleFunc("PATCH /api/chats/{id}", d.handlePatchChat)
 	mux.HandleFunc("DELETE /api/chats/{id}", d.handleDeleteChat)
@@ -312,6 +314,35 @@ func (d *Deps) handleArchiveChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"id": c.ID, "archived": archived})
+}
+
+// POST /api/chats/archive-all — archive every active chat the caller owns.
+func (d *Deps) handleArchiveAllChats(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	n, err := d.Store.Chats.ArchiveAll(r.Context(), u.ID)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+// DELETE /api/chats?archived=1 — delete every chat the caller owns in one
+// lane (active inbox by default, the archive with ?archived=1).
+func (d *Deps) handleDeleteAllChats(w http.ResponseWriter, r *http.Request) {
+	u, ok := d.requireUser(w, r)
+	if !ok {
+		return
+	}
+	n, err := d.Store.Chats.DeleteAll(r.Context(), u.ID, wantsArchived(r))
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"count": n})
 }
 
 // --- handlers -------------------------------------------------------------------
